@@ -1,10 +1,10 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace WSGM.Interop;
+namespace WindowsDeviceControl;
 
 /// <summary>One pre-opened waveOut stream for the short volume feedback cue.</summary>
-internal sealed partial class WaveOutFeedback : IDisposable
+public sealed partial class WaveOutFeedback : IDisposable
 {
     private const uint WaveMapper = uint.MaxValue;
     private const ushort PcmFormat = 1;
@@ -22,7 +22,7 @@ internal sealed partial class WaveOutFeedback : IDisposable
     }
 
     /// <summary>Opens and prewarms the default waveOut endpoint.</summary>
-    internal static int Open(out WaveOutFeedback? feedback)
+    public static int Open(out WaveOutFeedback? feedback)
     {
         feedback = new WaveOutFeedback();
         var result = feedback.OpenCore();
@@ -36,7 +36,7 @@ internal sealed partial class WaveOutFeedback : IDisposable
     }
 
     /// <summary>Writes the cue unless the previous cue is still queued.</summary>
-    internal int Play()
+    public int Play()
     {
         if (_output == 0 || _header == 0)
         {

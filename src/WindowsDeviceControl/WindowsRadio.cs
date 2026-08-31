@@ -13,12 +13,21 @@ using Windows.Devices.Enumeration;
 using Windows.Devices.Radios;
 using Windows.Foundation;
 
-namespace WSGM.Interop;
+namespace WindowsDeviceControl;
 
-/// <summary>Managed Windows radio boundary. WinRT owns radio power and Bluetooth;
-/// WLANAPI owns Wi-Fi because an unpackaged process cannot declare the WinRT
-/// <c>wiFiControl</c> capability.</summary>
-internal static unsafe partial class WindowsRadio
+/// <summary>Windows radio control: adapter power, Bluetooth discovery and pairing, and Wi-Fi.</summary>
+/// <remarks>
+/// WinRT owns radio power and Bluetooth. Wi-Fi goes through WLANAPI rather than WinRT's
+/// <c>WiFiAdapter</c>, because an unpackaged process cannot declare the <c>wiFiControl</c>
+/// capability WinRT requires — which is why an unpackaged desktop, kiosk or service application
+/// cannot use the WinRT Wi-Fi surface at all.
+/// <para>
+/// Every member is synchronous and safe to call from any thread. Windows itself decides what a
+/// given process may do: <see cref="RequestAccess"/> reports whether radio power may be changed,
+/// and <see cref="GetConsent"/> reports the privacy consent recorded for a capability.
+/// </para>
+/// </remarks>
+public static unsafe partial class WindowsRadio
 {
     private const string BluetoothAqs =
         "(System.Devices.Aep.ProtocolId:=\"{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}\""
@@ -78,35 +87,61 @@ internal static unsafe partial class WindowsRadio
     private static readonly ConcurrentDictionary<uint, PendingPairing> PendingPairings = new();
 
     /// <summary>The result of a radio power query.</summary>
-    internal enum Power
+    public enum Power
     {
+        /// <summary>At least one adapter of this kind is on.</summary>
         On,
+
+        /// <summary>Every adapter of this kind is off, and can be turned back on.</summary>
         Off,
+
+        /// <summary>Blocked by the system — typically a hardware switch or airplane mode. Turning
+        /// it on will not succeed until whatever disabled it is reversed.</summary>
         Disabled,
+
+        /// <summary>Present, but Windows did not report a state this API recognizes.</summary>
         Unknown,
+
+        /// <summary>No adapter of this kind exists on the machine.</summary>
         Absent,
     }
 
     /// <summary>Whether Windows permits radio power changes.</summary>
-    internal enum Access
+    public enum Access
     {
+        /// <summary>This process may change radio power.</summary>
         Allowed,
+
+        /// <summary>The user has denied radio control to this application in privacy settings.
+        /// No retry will succeed until the user changes that.</summary>
         DeniedByUser,
+
+        /// <summary>Policy or device configuration denies radio control to every application —
+        /// commonly a managed or kiosk-provisioned machine.</summary>
         DeniedBySystem,
+
+        /// <summary>Windows answered without a reason. Treat as denied, but not permanently.</summary>
         Unspecified,
     }
 
     /// <summary>The privacy consent value reported by the diagnostic registry store.</summary>
-    internal enum Consent
+    public enum Consent
     {
+        /// <summary>Consent is recorded as granted.</summary>
         Allow,
+
+        /// <summary>Consent is recorded as refused.</summary>
         Deny,
+
+        /// <summary>No value is recorded — Windows has not asked yet.</summary>
         Unset,
+
+        /// <summary>The consent store could not be read.</summary>
         Unknown,
     }
 
     /// <summary>One visible Wi-Fi network.</summary>
-    internal readonly record struct WifiNetwork(
+    public readonly record struct WifiNetwork(
         string Ssid,
         int Signal,
         int Security,
@@ -115,10 +150,10 @@ internal static unsafe partial class WindowsRadio
         bool Connected);
 
     /// <summary>The joined Wi-Fi interface state used by shell surfaces.</summary>
-    internal readonly record struct WifiStatus(int State, int Signal, string Ssid);
+    public readonly record struct WifiStatus(int State, int Signal, string Ssid);
 
     /// <summary>One Bluetooth association endpoint.</summary>
-    internal readonly record struct BluetoothDevice(
+    public readonly record struct BluetoothDevice(
         string Id,
         string Name,
         bool Paired,
@@ -127,16 +162,16 @@ internal static unsafe partial class WindowsRadio
         string Container);
 
     /// <summary>A Bluetooth discovery change.</summary>
-    internal readonly record struct BluetoothChange(int Kind, BluetoothDevice Device);
+    public readonly record struct BluetoothChange(int Kind, BluetoothDevice Device);
 
     /// <summary>A pairing question that must be answered before its deferral expires.</summary>
-    internal readonly record struct PairingRequest(uint Token, int Kind, string Pin, string DeviceName);
+    public readonly record struct PairingRequest(uint Token, int Kind, string Pin, string DeviceName);
 
     /// <summary>How a pairing attempt ended, matching the manager's stable result vocabulary.</summary>
-    internal readonly record struct PairingResult(int Outcome, int RawStatus);
+    public readonly record struct PairingResult(int Outcome, int RawStatus);
 
     /// <summary>Reads one radio kind: zero for Wi-Fi, one for Bluetooth.</summary>
-    internal static Power GetPower(int kind)
+    public static Power GetPower(int kind)
     {
         var radios = GetRadios(kind);
         return radios.Count == 0
@@ -145,11 +180,11 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Requests the process' radio-control access from Windows.</summary>
-    internal static Access RequestAccess() => MapAccess(
+    public static Access RequestAccess() => MapAccess(
         Radio.RequestAccessAsync().AsTask().GetAwaiter().GetResult());
 
     /// <summary>Changes every adapter of one radio kind.</summary>
-    internal static Access SetPower(int kind, bool on)
+    public static Access SetPower(int kind, bool on)
     {
         var access = RequestAccess();
         if (access != Access.Allowed)
@@ -189,7 +224,7 @@ internal static unsafe partial class WindowsRadio
 
     /// <summary>Reads a capability consent value for the user and machine.
     /// This is diagnostic only; callers still ask the owning API what it permits.</summary>
-    internal static (Consent User, Consent Machine) GetConsent(string capability) => (
+    public static (Consent User, Consent Machine) GetConsent(string capability) => (
         ReadConsent(Registry.CurrentUser, capability),
         ReadConsent(Registry.LocalMachine, capability));
 
@@ -227,7 +262,14 @@ internal static unsafe partial class WindowsRadio
         }
     }
 
-    internal static Power AggregatePower(IEnumerable<Power> states)
+    /// <summary>Reduces several adapters' power states to the one a caller should act on.</summary>
+    /// <param name="states">The individual adapter states.</param>
+    /// <returns>
+    /// The state that represents the group: any adapter on means on, and a machine-wide block is
+    /// reported ahead of a merely-off adapter, so a caller does not offer to enable a radio that
+    /// airplane mode or a hardware switch will refuse.
+    /// </returns>
+    public static Power AggregatePower(IEnumerable<Power> states)
     {
         var materialized = states.ToArray();
         foreach (var preferred in new[] { Power.On, Power.Off, Power.Disabled, Power.Unknown })
@@ -285,7 +327,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Lists Bluetooth classic and LE association endpoints.</summary>
-    internal static IReadOnlyList<BluetoothDevice> ListBluetoothDevices(bool pairedOnly)
+    public static IReadOnlyList<BluetoothDevice> ListBluetoothDevices(bool pairedOnly)
     {
         var filter = pairedOnly
             ? $"{BluetoothAqs} AND System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True"
@@ -303,7 +345,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Counts connected classic and LE Bluetooth interfaces from PnP state.</summary>
-    internal static int ConnectedBluetoothCount()
+    public static int ConnectedBluetoothCount()
     {
         var selectors = new[]
         {
@@ -316,7 +358,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Starts the live association-endpoint feed. Restarting replaces the old feed.</summary>
-    internal static void StartBluetoothWatch(Action<BluetoothChange> onChange)
+    public static void StartBluetoothWatch(Action<BluetoothChange> onChange)
     {
         StopBluetoothWatch();
         var watcher = DeviceInformation.CreateWatcher(
@@ -390,7 +432,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Stops the Bluetooth feed and revokes every callback before returning.</summary>
-    internal static void StopBluetoothWatch()
+    public static void StopBluetoothWatch()
     {
         BluetoothWatch? watch;
         lock (BluetoothWatchLock)
@@ -410,7 +452,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Begins one bounded custom pairing ceremony on a worker thread.</summary>
-    internal static void PairBluetooth(
+    public static void PairBluetooth(
         string deviceId,
         Action<PairingRequest> onRequest,
         Action<PairingResult?, Exception?> onFinished)
@@ -476,7 +518,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Answers one custom-pairing deferral. Unknown tokens are failures.</summary>
-    internal static void RespondToPairing(uint token, bool accept, string? pin)
+    public static void RespondToPairing(uint token, bool accept, string? pin)
     {
         if (!PendingPairings.TryRemove(token, out var pending))
         {
@@ -505,7 +547,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Removes a Bluetooth pairing.</summary>
-    internal static bool UnpairBluetooth(string deviceId)
+    public static bool UnpairBluetooth(string deviceId)
     {
         var info = DeviceInformation.CreateFromIdAsync(
                 deviceId,
@@ -614,7 +656,7 @@ internal static unsafe partial class WindowsRadio
         TypedEventHandler<DeviceWatcher, object> Completed);
 
     /// <summary>Reads the best current WLAN interface and joined network.</summary>
-    internal static WifiStatus GetWifiStatus()
+    public static WifiStatus GetWifiStatus()
     {
         using var client = WlanClient.Open();
         var selected = SelectInterface(client.Interfaces());
@@ -626,7 +668,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Asks every WLAN adapter for a fresh scan.</summary>
-    internal static void RequestWifiScan()
+    public static void RequestWifiScan()
     {
         using var client = WlanClient.Open();
         Exception? last = null;
@@ -650,7 +692,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Lists visible networks from every adapter, merged by raw SSID.</summary>
-    internal static IReadOnlyList<WifiNetwork> ListWifiNetworks()
+    public static IReadOnlyList<WifiNetwork> ListWifiNetworks()
     {
         using var client = WlanClient.Open();
         var merged = new Dictionary<string, WifiNetworkFacts>(StringComparer.Ordinal);
@@ -687,7 +729,7 @@ internal static unsafe partial class WindowsRadio
 
     /// <summary>Installs or reuses a WLAN profile and waits for the association verdict.</summary>
     /// <returns>Zero on success or the WLAN reason code reported for failure.</returns>
-    internal static uint ConnectWifi(string ssid, string? passphrase)
+    public static uint ConnectWifi(string ssid, string? passphrase)
     {
         ArgumentException.ThrowIfNullOrEmpty(ssid);
         if (passphrase is not null && !WifiProfile.PassphraseIsValid(passphrase))
@@ -829,7 +871,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Disconnects every connected or connecting WLAN interface.</summary>
-    internal static void DisconnectWifi()
+    public static void DisconnectWifi()
     {
         using var client = WlanClient.Open();
         Exception? last = null;
@@ -852,7 +894,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Deletes every saved profile whose document names the SSID.</summary>
-    internal static void ForgetWifi(string ssid)
+    public static void ForgetWifi(string ssid)
     {
         using var client = WlanClient.Open();
         Exception? last = null;
@@ -898,7 +940,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Maps a WLAN reason code to the manager's stable verdict.</summary>
-    internal static int GetReasonVerdict(uint code)
+    public static int GetReasonVerdict(uint code)
     {
         if (code == 0)
         {
@@ -939,7 +981,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Returns Windows' localized text for one WLAN reason code.</summary>
-    internal static string ReasonText(uint code)
+    public static string ReasonText(uint code)
     {
         var buffer = new char[1024];
         fixed (char* text = buffer)
@@ -957,7 +999,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Starts process-wide WLAN change notifications. Restarting replaces the old feed.</summary>
-    internal static void StartWifiWatch(Action<int> onEvent)
+    public static void StartWifiWatch(Action<int> onEvent)
     {
         StopWifiWatch();
         var status = WlanOpenHandle(2, 0, out _, out var handle);
@@ -986,7 +1028,7 @@ internal static unsafe partial class WindowsRadio
     }
 
     /// <summary>Stops the WLAN notification feed.</summary>
-    internal static void StopWifiWatch()
+    public static void StopWifiWatch()
     {
         nint handle;
         lock (WifiWatchLock)
@@ -1400,7 +1442,7 @@ internal static unsafe partial class WindowsRadio
 
         internal nint Handle { get; }
 
-        internal static WlanClient Open()
+        public static WlanClient Open()
         {
             var status = WlanOpenHandle(2, 0, out _, out var handle);
             ThrowIfWlanFailed("WlanOpenHandle", status);
@@ -1458,7 +1500,7 @@ internal static unsafe partial class WindowsRadio
             _callback = OnNotification;
         }
 
-        internal static ConnectionVerdict? TryStart(
+        public static ConnectionVerdict? TryStart(
             Guid adapter,
             string profile,
             out uint status)
@@ -1564,7 +1606,7 @@ internal static unsafe partial class WindowsRadio
         string? ProfileName,
         bool Ambiguous)
     {
-        internal static WifiNetworkFacts Empty(string ssid)
+        public static WifiNetworkFacts Empty(string ssid)
             => new(ssid, [], 0, WifiSecurity.PersonalPsk, 0, false, false, false, null, false);
     }
 

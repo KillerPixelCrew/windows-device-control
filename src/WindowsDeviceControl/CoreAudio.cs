@@ -3,13 +3,16 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 
-namespace WSGM.Interop;
+namespace WindowsDeviceControl;
 
 /// <summary>Managed Core Audio operations used by the shell audio surfaces.</summary>
-internal static partial class CoreAudio
+public static partial class CoreAudio
 {
-    internal const int Render = 0;
-    internal const int Capture = 1;
+    /// <summary>The playback data-flow direction, as Core Audio's <c>EDataFlow</c> spells it.</summary>
+    public const int Render = 0;
+
+    /// <summary>The recording data-flow direction, as Core Audio's <c>EDataFlow</c> spells it.</summary>
+    public const int Capture = 1;
 
     private const int AppCommandVolumeMute = 8;
     private const int AppCommandVolumeDown = 9;
@@ -41,13 +44,13 @@ internal static partial class CoreAudio
     /// <param name="Id">The opaque endpoint identifier used when selecting it.</param>
     /// <param name="Name">The friendly name shown to the user.</param>
     /// <param name="IsDefault">Whether it is the current console default.</param>
-    internal readonly record struct AudioEndpoint(string Id, string Name, bool IsDefault);
+    public readonly record struct AudioEndpoint(string Id, string Name, bool IsDefault);
 
     /// <summary>One device container that exposes Core Audio endpoints.</summary>
-    internal readonly record struct BluetoothAudioContainer(string Container, bool Active);
+    public readonly record struct BluetoothAudioContainer(string Container, bool Active);
 
     /// <summary>Lists every audio endpoint container, including unplugged Bluetooth devices.</summary>
-    internal static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
+    public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
         var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         IMMDeviceEnumerator? enumerator = null;
@@ -101,7 +104,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Requests connection or disconnection for one paired Bluetooth audio device.</summary>
-    internal static void SetBluetoothAudioConnection(string containerId, bool connect)
+    public static void SetBluetoothAudioConnection(string containerId, bool connect)
     {
         ArgumentException.ThrowIfNullOrEmpty(containerId);
         var target = containerId.Trim('{', '}').ToLowerInvariant();
@@ -251,7 +254,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Applies one hardware volume command to the default render endpoint.</summary>
-    internal static int ApplyCommand(int command, out int percentage, out int muted)
+    public static int ApplyCommand(int command, out int percentage, out int muted)
     {
         percentage = 0;
         muted = 0;
@@ -299,7 +302,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Reads the default render endpoint's master volume and mute state.</summary>
-    internal static int GetVolume(out int percentage, out int muted)
+    public static int GetVolume(out int percentage, out int muted)
     {
         percentage = 0;
         muted = 0;
@@ -326,7 +329,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Sets the default render endpoint's master volume.</summary>
-    internal static int SetVolume(int percentage, out int muted)
+    public static int SetVolume(int percentage, out int muted)
     {
         muted = 0;
         IMMDeviceEnumerator? enumerator = null;
@@ -364,7 +367,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Sets the default render endpoint's mute state exactly.</summary>
-    internal static int SetMuted(bool muted)
+    public static int SetMuted(bool muted)
     {
         IMMDeviceEnumerator? enumerator = null;
         IMMDevice? device = null;
@@ -389,7 +392,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Lists the active endpoints for one Core Audio data flow.</summary>
-    internal static int ListEndpoints(int flow, out IReadOnlyList<AudioEndpoint> endpoints)
+    public static int ListEndpoints(int flow, out IReadOnlyList<AudioEndpoint> endpoints)
     {
         var records = new List<AudioEndpoint>();
         endpoints = records;
@@ -485,7 +488,7 @@ internal static partial class CoreAudio
     }
 
     /// <summary>Sets one endpoint as the console, multimedia and communications default.</summary>
-    internal static int SetDefaultEndpoint(string endpointId)
+    public static int SetDefaultEndpoint(string endpointId)
     {
         if (string.IsNullOrEmpty(endpointId))
         {

@@ -3,21 +3,29 @@ using System.Linq;
 using System.Net;
 using System.Text;
 
-namespace WSGM.Interop;
+namespace WindowsDeviceControl;
 
 /// <summary>Pure WLAN profile authoring and parsing helpers.</summary>
-internal static class WifiProfile
+public static class WifiProfile
 {
     /// <summary>The profile shape used for a pre-shared key network.</summary>
-    internal enum PskFlavor
+    public enum PskFlavor
     {
+        /// <summary>WPA3-SAE with WPA2 fallback. Try this first: it joins both WPA3 and
+        /// WPA2 networks, so one profile covers modern and older access points.</summary>
         Wpa3Transition,
+
+        /// <summary>WPA2-Personal with AES. The fallback when the transition profile is
+        /// refused, which older access points do.</summary>
         Wpa2Aes,
+
+        /// <summary>WPA-Personal with TKIP. Last resort for legacy equipment; TKIP is
+        /// deprecated and should not be chosen unless the network requires it.</summary>
         WpaTkip,
     }
 
     /// <summary>Builds a passwordless profile without losing a non-UTF8 SSID.</summary>
-    internal static string CreateOpen(
+    public static string CreateOpen(
         string profileName,
         string ssid,
         byte[] rawSsid,
@@ -44,7 +52,7 @@ internal static class WifiProfile
     }
 
     /// <summary>Builds the precise WPA profile advertised by the access point.</summary>
-    internal static string CreatePsk(
+    public static string CreatePsk(
         string profileName,
         string ssid,
         byte[] rawSsid,
@@ -85,7 +93,7 @@ internal static class WifiProfile
     }
 
     /// <summary>Reads the SSID identity from a Windows-produced profile document.</summary>
-    internal static byte[]? TryReadSsid(string xml)
+    public static byte[]? TryReadSsid(string xml)
     {
         var config = Between(xml, "<SSIDConfig>", "</SSIDConfig>");
         if (config is null)
@@ -114,7 +122,7 @@ internal static class WifiProfile
     }
 
     /// <summary>Checks the 802.11 passphrase and raw-key bounds before WLANAPI sees it.</summary>
-    internal static bool PassphraseIsValid(string passphrase)
+    public static bool PassphraseIsValid(string passphrase)
     {
         if (IsRawKey(passphrase))
         {

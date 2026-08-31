@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0 is the LTS most Windows kiosk, signage and IoT deployments actually run; net10.0 is
+         carried for consumers already on current. Nothing here needs a language or runtime feature
+         newer than .NET 8: LibraryImport is .NET 7+, and the WinRT projections used for radio power
+         and Bluetooth are .NET 6+. The 10.0.19041.0 platform floor is what the WinRT
+         Windows.Devices.* projections and the WLAN API require. -->
+    <TargetFrameworks>net8.0-windows10.0.19041.0;net10.0-windows10.0.19041.0</TargetFrameworks>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>false</ImplicitUsings>
+    <RootNamespace>WindowsDeviceControl</RootNamespace>
+    <AssemblyName>WindowsDeviceControl</AssemblyName>
+
+    <!-- The WLAN API and the backlight ioctl both transfer variable-length structures. They are
+         read through stack buffers and span readers rather than marshalled layouts. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Public surface: every exported member carries documentation, and a missing one fails the
+         build rather than shipping an undocumented API. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <PackageId>WindowsDeviceControl</PackageId>
+    <!-- Pre-1.0 on purpose: the surface is extracted from a working application and is expected to
+         move before it is frozen. -->
+    <Version>0.1.0</Version>
+    <Description>Windows radio, audio and display control for .NET. Wi-Fi enumeration, connection and profile management over the native WLAN API; Bluetooth discovery, pairing with PIN ceremony and unpairing over WinRT; default audio endpoint switching and per-device volume over Core Audio; internal panel brightness over the ACPI backlight interface.</Description>
+    <PackageTags>windows;wifi;wlan;bluetooth;audio;coreaudio;brightness;backlight;kiosk;iot</PackageTags>
+    <!-- A FILE, not an SPDX expression: the licence is MIT with an added OEM-preinstallation
+         restriction, so declaring the `MIT` identifier would misstate the terms to anyone reading
+         the package's metadata. -->
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/KillerPixelCrew/windows-device-control</RepositoryUrl>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

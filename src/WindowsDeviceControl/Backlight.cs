@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace WSGM.Interop;
+namespace WindowsDeviceControl;
 
 /// <summary>Flat Win32 control of the internal panel's backlight through <c>\\.\LCD</c>.</summary>
 /// <remarks>
@@ -20,7 +20,7 @@ namespace WSGM.Interop;
 /// every call; callers translate that into an absent control, never an error state.
 /// </para>
 /// </remarks>
-internal static partial class NativeBacklight
+public static partial class Backlight
 {
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
@@ -36,7 +36,7 @@ internal static partial class NativeBacklight
     /// <summary>Reads the panel's current backlight level.</summary>
     /// <param name="percent">The level, 0 to 100, when this returns true.</param>
     /// <returns>Whether the panel exposes a readable backlight.</returns>
-    internal static unsafe bool TryReadBrightness(out int percent)
+    public static unsafe bool TryReadBrightness(out int percent)
     {
         percent = 0;
         using SafeFileHandle device = OpenLcd();
@@ -69,7 +69,7 @@ internal static partial class NativeBacklight
     /// <summary>Sets the panel's backlight level on both power sources.</summary>
     /// <param name="percent">The level, clamped to 0 to 100.</param>
     /// <returns>Whether the driver took it.</returns>
-    internal static unsafe bool TrySetBrightness(int percent)
+    public static unsafe bool TrySetBrightness(int percent)
     {
         byte level = (byte)Math.Clamp(percent, 0, 100);
         using SafeFileHandle device = OpenLcd();
