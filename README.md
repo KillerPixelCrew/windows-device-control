@@ -104,6 +104,4 @@ documentation admits.
 
 ## Licence
 
-MIT **with an OEM-preinstallation restriction**: free to use, modify and ship in your own software,
-but device manufacturers, system integrators and resellers need written permission before
-preinstalling it on hardware they sell. See `LICENSE`; permission requests go to `git@kpc.bz`.
+MIT. See `LICENSE`.

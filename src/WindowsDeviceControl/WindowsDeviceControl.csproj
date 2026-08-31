@@ -31,10 +31,7 @@
     <Version>0.1.0</Version>
     <Description>Windows radio, audio and display control for .NET. Wi-Fi enumeration, connection and profile management over the native WLAN API; Bluetooth discovery, pairing with PIN ceremony and unpairing over WinRT; default audio endpoint switching and per-device volume over Core Audio; internal panel brightness over the ACPI backlight interface.</Description>
     <PackageTags>windows;wifi;wlan;bluetooth;audio;coreaudio;brightness;backlight;kiosk;iot</PackageTags>
-    <!-- A FILE, not an SPDX expression: the licence is MIT with an added OEM-preinstallation
-         restriction, so declaring the `MIT` identifier would misstate the terms to anyone reading
-         the package's metadata. -->
-    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/KillerPixelCrew/windows-device-control</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -42,7 +39,6 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
-    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
 </Project>
