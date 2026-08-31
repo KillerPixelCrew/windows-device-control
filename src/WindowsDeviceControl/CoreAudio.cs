@@ -5,14 +5,31 @@ using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
 
-/// <summary>Managed Core Audio operations used by the shell audio surfaces.</summary>
+/// <summary>Core Audio endpoint enumeration, default-device selection and master volume.</summary>
+/// <remarks>
+/// Methods returning <see cref="int"/> return an HRESULT: zero is success, anything else is the
+/// failure Core Audio reported, so a caller can log or branch on the real reason rather than a
+/// thrown exception. Audio devices appear and disappear underneath you, and a failure here is
+/// usually a device that vanished rather than a bug.
+/// <para>
+/// <see cref="SetDefaultEndpoint"/> goes through <c>IPolicyConfig</c>, which Microsoft has never
+/// documented and never made public. It is the only way to change the default playback device from
+/// code, and it is used here because there is no alternative — not because it is supported.
+/// </para>
+/// </remarks>
 public static partial class CoreAudio
 {
-    /// <summary>The playback data-flow direction, as Core Audio's <c>EDataFlow</c> spells it.</summary>
-    public const int Render = 0;
+    /// <summary>Which direction of audio endpoint an operation applies to.</summary>
+    /// <remarks>The values match Core Audio's own <c>EDataFlow</c>, so they can be passed straight
+    /// through to the underlying interfaces.</remarks>
+    public enum AudioDirection
+    {
+        /// <summary>Playback endpoints — speakers, headphones, HDMI.</summary>
+        Render = 0,
 
-    /// <summary>The recording data-flow direction, as Core Audio's <c>EDataFlow</c> spells it.</summary>
-    public const int Capture = 1;
+        /// <summary>Recording endpoints — microphones and line inputs.</summary>
+        Capture = 1,
+    }
 
     private const int AppCommandVolumeMute = 8;
     private const int AppCommandVolumeDown = 9;
@@ -47,9 +64,16 @@ public static partial class CoreAudio
     public readonly record struct AudioEndpoint(string Id, string Name, bool IsDefault);
 
     /// <summary>One device container that exposes Core Audio endpoints.</summary>
+    /// <param name="Container">The container identifier, which is what ties an audio endpoint back
+    /// to the Bluetooth device it belongs to.</param>
+    /// <param name="Active">Whether the container currently has an active endpoint — that is,
+    /// whether the device is connected rather than merely paired.</param>
     public readonly record struct BluetoothAudioContainer(string Container, bool Active);
 
-    /// <summary>Lists every audio endpoint container, including unplugged Bluetooth devices.</summary>
+    /// <summary>Lists every audio endpoint container, including disconnected Bluetooth devices.</summary>
+    /// <returns>One entry per container. A paired but disconnected Bluetooth headset appears with
+    /// <see cref="BluetoothAudioContainer.Active"/> false, which is how you offer to reconnect
+    /// it.</returns>
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
         var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -103,7 +127,13 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Requests connection or disconnection for one paired Bluetooth audio device.</summary>
+    /// <summary>Connects or disconnects one paired Bluetooth audio device.</summary>
+    /// <param name="containerId">The container identifier from
+    /// <see cref="ListBluetoothAudioContainers"/>.</param>
+    /// <param name="connect">True to connect, false to disconnect.</param>
+    /// <remarks>The request is made to the audio endpoint's device topology; the device may take a
+    /// moment to appear or disappear afterwards, so re-read the container list rather than assuming
+    /// the change is immediate.</remarks>
     public static void SetBluetoothAudioConnection(string containerId, bool connect)
     {
         ArgumentException.ThrowIfNullOrEmpty(containerId);
@@ -253,7 +283,14 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Applies one hardware volume command to the default render endpoint.</summary>
+    /// <summary>Applies one hardware volume-key command to the default playback endpoint.</summary>
+    /// <param name="command">The <c>APPCOMMAND_VOLUME_*</c> value from a media key: 8 mutes,
+    /// 9 lowers, 10 raises. Other values are rejected.</param>
+    /// <param name="percentage">The resulting volume, 0 to 100.</param>
+    /// <param name="muted">The resulting mute state: non-zero when muted.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <remarks>This applies the same step Windows itself uses for a volume key, so a hardware
+    /// button behaves identically to the built-in handling.</remarks>
     public static int ApplyCommand(int command, out int percentage, out int muted)
     {
         percentage = 0;
@@ -301,7 +338,10 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Reads the default render endpoint's master volume and mute state.</summary>
+    /// <summary>Reads the default playback endpoint's master volume and mute state.</summary>
+    /// <param name="percentage">The current volume, 0 to 100.</param>
+    /// <param name="muted">The current mute state: non-zero when muted.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int GetVolume(out int percentage, out int muted)
     {
         percentage = 0;
@@ -328,7 +368,12 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Sets the default render endpoint's master volume.</summary>
+    /// <summary>Sets the default playback endpoint's master volume.</summary>
+    /// <param name="percentage">The volume to set, 0 to 100. Values outside that range are
+    /// clamped.</param>
+    /// <param name="muted">The mute state afterwards: non-zero when muted. Setting a volume does
+    /// not unmute.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int SetVolume(int percentage, out int muted)
     {
         muted = 0;
@@ -366,7 +411,10 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Sets the default render endpoint's mute state exactly.</summary>
+    /// <summary>Sets the default playback endpoint's mute state.</summary>
+    /// <param name="muted">True to mute, false to unmute. This sets the state rather than
+    /// toggling, so repeating the call is harmless.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int SetMuted(bool muted)
     {
         IMMDeviceEnumerator? enumerator = null;
@@ -391,12 +439,17 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Lists the active endpoints for one Core Audio data flow.</summary>
-    public static int ListEndpoints(int flow, out IReadOnlyList<AudioEndpoint> endpoints)
+    /// <summary>Lists the active audio endpoints in one direction.</summary>
+    /// <param name="direction">Playback or recording endpoints.</param>
+    /// <param name="endpoints">The endpoints found, newest state; empty when the call fails.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    public static int ListEndpoints(
+        AudioDirection direction,
+        out IReadOnlyList<AudioEndpoint> endpoints)
     {
         var records = new List<AudioEndpoint>();
         endpoints = records;
-        if (flow is not Render and not Capture)
+        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
         {
             return InvalidArgument;
         }
@@ -407,7 +460,7 @@ public static partial class CoreAudio
         try
         {
             enumerator = CreateEnumerator();
-            var dataFlow = flow == Render ? DataFlow.Render : DataFlow.Capture;
+            var dataFlow = direction == AudioDirection.Render ? DataFlow.Render : DataFlow.Capture;
             var result = enumerator.EnumAudioEndpoints(
                 dataFlow,
                 DeviceStateActive,
@@ -487,7 +540,19 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Sets one endpoint as the console, multimedia and communications default.</summary>
+    /// <summary>Makes one endpoint the default for every role.</summary>
+    /// <param name="endpointId">The endpoint identifier from
+    /// <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})"/>.</param>
+    /// <returns>Zero on success, otherwise the HRESULT the policy interface returned.</returns>
+    /// <remarks>
+    /// Sets the console, multimedia and communications roles together, which is what a user means
+    /// by "make this my speakers"; setting only one leaves applications split across devices.
+    /// <para>
+    /// This is the <c>IPolicyConfig</c> call — undocumented, never public, and the only way to do
+    /// this from code. Its interface identifier differs across Windows versions, so a failure here
+    /// on a future release is the expected way this breaks.
+    /// </para>
+    /// </remarks>
     public static int SetDefaultEndpoint(string endpointId)
     {
         if (string.IsNullOrEmpty(endpointId))

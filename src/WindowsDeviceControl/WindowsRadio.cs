@@ -82,7 +82,7 @@ public static unsafe partial class WindowsRadio
     private static readonly object WifiWatchLock = new();
     private static nint _wifiWatchHandle;
     private static WlanNotificationCallback? _wifiWatchCallback;
-    private static Action<int>? _wifiEvents;
+    private static Action<WifiWatchEvent>? _wifiEvents;
     private static int _nextPairingToken;
     private static readonly ConcurrentDictionary<uint, PendingPairing> PendingPairings = new();
 
@@ -140,19 +140,193 @@ public static unsafe partial class WindowsRadio
         Unknown,
     }
 
+    /// <summary>Which family of radio adapter an operation applies to.</summary>
+    public enum RadioKind
+    {
+        /// <summary>Every Wi-Fi adapter.</summary>
+        WiFi,
+
+        /// <summary>Every Bluetooth adapter.</summary>
+        Bluetooth,
+    }
+
+    /// <summary>What happened to a device seen by <see cref="StartBluetoothWatch"/>.</summary>
+    public enum BluetoothChangeKind
+    {
+        /// <summary>The device appeared.</summary>
+        Added,
+
+        /// <summary>A property of a known device changed — typically its connected state.</summary>
+        Updated,
+
+        /// <summary>The device disappeared. Only its identifier is meaningful.</summary>
+        Removed,
+
+        /// <summary>The initial sweep finished; everything already present has been reported.
+        /// The watch stays active and keeps reporting later changes.</summary>
+        EnumerationCompleted,
+    }
+
+    /// <summary>What a pairing ceremony is asking the user to do.</summary>
+    /// <remarks>
+    /// The value decides what your UI must show and what
+    /// <see cref="RespondToPairing"/> needs back: only <see cref="ProvidePin"/> requires a PIN
+    /// argument, and the others are answered with accept or reject alone.
+    /// </remarks>
+    public enum PairingKind
+    {
+        /// <summary>Confirm that pairing should proceed. No PIN is involved.</summary>
+        ConfirmOnly,
+
+        /// <summary>Show the PIN carried by the request so the user can type it on the device.</summary>
+        DisplayPin,
+
+        /// <summary>Ask the user for the PIN shown on the device, and pass it back.</summary>
+        ProvidePin,
+
+        /// <summary>Show the PIN and confirm it matches the one on the device.</summary>
+        ConfirmPinMatch,
+
+        /// <summary>A ceremony this library does not recognize. Reject it.</summary>
+        Unknown,
+    }
+
+    /// <summary>How a pairing attempt ended.</summary>
+    public enum PairingOutcome
+    {
+        /// <summary>Paired successfully.</summary>
+        Paired,
+
+        /// <summary>The device was already paired; nothing changed.</summary>
+        AlreadyPaired,
+
+        /// <summary>Cancelled — by your handler rejecting it, or by the user.</summary>
+        Cancelled,
+
+        /// <summary>The attempt failed: rejected, timed out, out of connections, or a hardware
+        /// or authentication failure.</summary>
+        Failed,
+
+        /// <summary>Windows refused this process permission to pair.</summary>
+        AccessDenied,
+
+        /// <summary>Windows reported a status this library does not classify. Consult
+        /// <see cref="PairingResult.RawStatus"/>.</summary>
+        Unknown,
+
+        /// <summary>Another pairing attempt for this device is already running.</summary>
+        AlreadyInProgress,
+    }
+
+    /// <summary>The security a Wi-Fi network requires to join.</summary>
+    public enum WifiSecurity
+    {
+        /// <summary>No authentication.</summary>
+        Open,
+
+        /// <summary>A pre-shared key — the ordinary home and small-office network.</summary>
+        PersonalPsk,
+
+        /// <summary>802.1X enterprise authentication. This library does not build enterprise
+        /// profiles; join these with a profile provisioned by other means.</summary>
+        Enterprise,
+
+        /// <summary>Opportunistic Wireless Encryption: no passphrase, but encrypted.</summary>
+        EnhancedOpen,
+
+        /// <summary>An authentication algorithm this library cannot build a profile for.</summary>
+        Unsupported,
+    }
+
+    /// <summary>The Wi-Fi adapter's connection state.</summary>
+    public enum WifiConnectionState
+    {
+        /// <summary>Joined to a network.</summary>
+        Connected,
+
+        /// <summary>Associating, discovering or authenticating.</summary>
+        Connecting,
+
+        /// <summary>Not joined, and not attempting to join.</summary>
+        Disconnected,
+
+        /// <summary>No adapter, or a state this library does not recognize.</summary>
+        Unknown,
+    }
+
+    /// <summary>Why a join attempt failed, reduced to the outcomes a caller acts on
+    /// differently.</summary>
+    /// <remarks>Produced by <see cref="GetReasonVerdict"/> from a raw WLAN reason code. Use
+    /// <see cref="ReasonText"/> when you want Windows' own wording for the specific code.</remarks>
+    public enum WifiFailureKind
+    {
+        /// <summary>Not a failure — the join succeeded.</summary>
+        None,
+
+        /// <summary>The access point rejected the key. This is the one case where re-prompting
+        /// for the passphrase is the right response.</summary>
+        KeyRejected,
+
+        /// <summary>The profile's security settings do not match what the access point offers,
+        /// so the key was never tried. Reported before association completes.</summary>
+        SecurityMismatch,
+
+        /// <summary>Association or the connection manager gave up: the network was out of range,
+        /// too weak, or stopped responding. Nothing about the passphrase is implied.</summary>
+        Unreachable,
+
+        /// <summary>A reason code outside the ranges this library classifies. Show
+        /// <see cref="ReasonText"/> rather than guessing at a cause.</summary>
+        Unknown,
+    }
+
+    /// <summary>What changed, as reported to a <see cref="StartWifiWatch"/> callback.</summary>
+    /// <remarks>Each value says which query is now worth repeating; neither carries the new data
+    /// itself. Windows raises many more notification codes than these, and the rest describe
+    /// internal state transitions that change nothing a caller can observe, so they are dropped
+    /// rather than passed on as callbacks that lead to identical results.</remarks>
+    public enum WifiWatchEvent
+    {
+        /// <summary>A scan finished or the visible-network list changed. Call
+        /// <see cref="ListWifiNetworks"/> for the new results.</summary>
+        ScanCompleted,
+
+        /// <summary>The adapter connected or disconnected. Call <see cref="GetWifiStatus"/> for
+        /// the new state.</summary>
+        ConnectionChanged,
+    }
+
     /// <summary>One visible Wi-Fi network.</summary>
+    /// <param name="Ssid">The network name. Empty for a hidden network that advertises none.</param>
+    /// <param name="Signal">Signal quality, 0 to 100, as Windows reports it.</param>
+    /// <param name="Security">What joining it requires.</param>
+    /// <param name="Saved">Whether a profile for it already exists on this machine, in which case
+    /// <see cref="ConnectWifi"/> needs no passphrase.</param>
+    /// <param name="Connectable">Whether Windows currently considers it joinable.</param>
+    /// <param name="Connected">Whether this is the network the adapter is joined to.</param>
     public readonly record struct WifiNetwork(
         string Ssid,
         int Signal,
-        int Security,
+        WifiSecurity Security,
         bool Saved,
         bool Connectable,
         bool Connected);
 
-    /// <summary>The joined Wi-Fi interface state used by shell surfaces.</summary>
-    public readonly record struct WifiStatus(int State, int Signal, string Ssid);
+    /// <summary>The Wi-Fi adapter's current state.</summary>
+    /// <param name="State">Whether the adapter is joined, joining, or neither.</param>
+    /// <param name="Signal">Signal quality of the joined network, 0 to 100; zero when not joined.</param>
+    /// <param name="Ssid">The joined network's name; empty when not joined.</param>
+    public readonly record struct WifiStatus(WifiConnectionState State, int Signal, string Ssid);
 
     /// <summary>One Bluetooth association endpoint.</summary>
+    /// <param name="Id">The device identifier, and the handle for every other operation here.</param>
+    /// <param name="Name">The friendly name, for display.</param>
+    /// <param name="Paired">Whether the device is already paired with this machine.</param>
+    /// <param name="CanPair">Whether Windows considers it pairable right now.</param>
+    /// <param name="Connected">Whether it is currently connected. A device can be paired without
+    /// being connected — a headset that is switched off, for instance.</param>
+    /// <param name="Container">The container identifier, which is what ties this device to its
+    /// audio endpoints in <see cref="CoreAudio.ListBluetoothAudioContainers"/>.</param>
     public readonly record struct BluetoothDevice(
         string Id,
         string Name,
@@ -162,16 +336,35 @@ public static unsafe partial class WindowsRadio
         string Container);
 
     /// <summary>A Bluetooth discovery change.</summary>
-    public readonly record struct BluetoothChange(int Kind, BluetoothDevice Device);
+    /// <param name="Kind">What happened to the device.</param>
+    /// <param name="Device">The device it happened to. Only <see cref="BluetoothDevice.Id"/> is
+    /// meaningful when <paramref name="Kind"/> is <see cref="BluetoothChangeKind.Removed"/>, and
+    /// the whole value is default for
+    /// <see cref="BluetoothChangeKind.EnumerationCompleted"/>.</param>
+    public readonly record struct BluetoothChange(BluetoothChangeKind Kind, BluetoothDevice Device);
 
     /// <summary>A pairing question that must be answered before its deferral expires.</summary>
-    public readonly record struct PairingRequest(uint Token, int Kind, string Pin, string DeviceName);
+    /// <param name="Token">Identifies this question; pass it to <see cref="RespondToPairing"/>.</param>
+    /// <param name="Kind">What the user is being asked, and therefore what your UI must show.</param>
+    /// <param name="Pin">The PIN to display, when the ceremony carries one; otherwise empty.</param>
+    /// <param name="DeviceName">The device's friendly name, for your prompt.</param>
+    public readonly record struct PairingRequest(
+        uint Token,
+        PairingKind Kind,
+        string Pin,
+        string DeviceName);
 
-    /// <summary>How a pairing attempt ended, matching the manager's stable result vocabulary.</summary>
-    public readonly record struct PairingResult(int Outcome, int RawStatus);
+    /// <summary>How a pairing attempt ended.</summary>
+    /// <param name="Outcome">The classified result.</param>
+    /// <param name="RawStatus">Windows' own <c>DevicePairingResultStatus</c> value, kept so an
+    /// unclassified outcome can still be diagnosed.</param>
+    public readonly record struct PairingResult(PairingOutcome Outcome, int RawStatus);
 
-    /// <summary>Reads one radio kind: zero for Wi-Fi, one for Bluetooth.</summary>
-    public static Power GetPower(int kind)
+    /// <summary>Reads the combined power state of every adapter of one kind.</summary>
+    /// <param name="kind">Which radio family to read.</param>
+    /// <returns>The aggregate state; <see cref="Power.Absent"/> when the machine has no such
+    /// adapter.</returns>
+    public static Power GetPower(RadioKind kind)
     {
         var radios = GetRadios(kind);
         return radios.Count == 0
@@ -179,12 +372,22 @@ public static unsafe partial class WindowsRadio
             : AggregatePower(radios.Select(radio => MapPower(radio.State)));
     }
 
-    /// <summary>Requests the process' radio-control access from Windows.</summary>
+    /// <summary>Asks Windows whether this process may change radio power.</summary>
+    /// <returns>Whether radio control is permitted, and if not, why.</returns>
+    /// <remarks>Called for you by <see cref="SetPower"/>. Call it directly to decide whether to
+    /// show a radio toggle at all — a denied toggle that silently does nothing is worse than an
+    /// absent one.</remarks>
     public static Access RequestAccess() => MapAccess(
         Radio.RequestAccessAsync().AsTask().GetAwaiter().GetResult());
 
-    /// <summary>Changes every adapter of one radio kind.</summary>
-    public static Access SetPower(int kind, bool on)
+    /// <summary>Turns every adapter of one kind on or off.</summary>
+    /// <param name="kind">Which radio family to change.</param>
+    /// <param name="on">True to turn the radios on, false to turn them off.</param>
+    /// <returns><see cref="Access.Allowed"/> when the change was permitted; otherwise why Windows
+    /// refused. A refusal is reported, not thrown.</returns>
+    /// <exception cref="InvalidOperationException">The machine has no adapter of this kind, or no
+    /// adapter accepted the requested state.</exception>
+    public static Access SetPower(RadioKind kind, bool on)
     {
         var access = RequestAccess();
         if (access != Access.Allowed)
@@ -222,13 +425,21 @@ public static unsafe partial class WindowsRadio
         return refusal ?? Access.Allowed;
     }
 
-    /// <summary>Reads a capability consent value for the user and machine.
-    /// This is diagnostic only; callers still ask the owning API what it permits.</summary>
+    /// <summary>Reads the privacy consent recorded for a capability.</summary>
+    /// <param name="capability">The capability name, as the privacy store spells it — for example
+    /// <c>location</c> or <c>radios</c>.</param>
+    /// <returns>The user-scope and machine-scope consent values.</returns>
+    /// <remarks>
+    /// Diagnostic only: the owning API remains the authority on what is permitted, and this can
+    /// disagree with it. It exists to answer "why did enumeration return nothing" — on a
+    /// provisioned kiosk or signage machine, location consent is commonly off, and Wi-Fi
+    /// enumeration then returns an empty list rather than an error.
+    /// </remarks>
     public static (Consent User, Consent Machine) GetConsent(string capability) => (
         ReadConsent(Registry.CurrentUser, capability),
         ReadConsent(Registry.LocalMachine, capability));
 
-    private static IReadOnlyList<Radio> GetRadios(int kind)
+    private static IReadOnlyList<Radio> GetRadios(RadioKind kind)
     {
         IReadOnlyList<Radio> all;
         lock (RadioCacheLock)
@@ -245,7 +456,10 @@ public static unsafe partial class WindowsRadio
                 _radioCache = (DateTime.UtcNow, all);
             }
         }
-        var expected = kind == 0 ? RadioKind.WiFi : RadioKind.Bluetooth;
+        // Fully qualified: this type declares its own RadioKind, so the WinRT one needs naming.
+        var expected = kind == RadioKind.WiFi
+            ? Windows.Devices.Radios.RadioKind.WiFi
+            : Windows.Devices.Radios.RadioKind.Bluetooth;
         return all.Where(radio => radio.Kind == expected).ToArray();
     }
 
@@ -326,7 +540,11 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Lists Bluetooth classic and LE association endpoints.</summary>
+    /// <summary>Lists Bluetooth devices, classic and Low Energy alike.</summary>
+    /// <param name="pairedOnly">True to list only already-paired devices; false to include every
+    /// device currently visible, which is what a "add a device" screen shows.</param>
+    /// <returns>The devices found. This is a point-in-time snapshot — use
+    /// <see cref="StartBluetoothWatch"/> to follow changes instead of polling this.</returns>
     public static IReadOnlyList<BluetoothDevice> ListBluetoothDevices(bool pairedOnly)
     {
         var filter = pairedOnly
@@ -344,7 +562,10 @@ public static unsafe partial class WindowsRadio
             .ToArray();
     }
 
-    /// <summary>Counts connected classic and LE Bluetooth interfaces from PnP state.</summary>
+    /// <summary>Counts the currently connected Bluetooth devices.</summary>
+    /// <returns>How many classic and Low Energy interfaces PnP reports as connected. Cheaper than
+    /// <see cref="ListBluetoothDevices"/> when all you need is whether anything is connected — for
+    /// a status icon, say.</returns>
     public static int ConnectedBluetoothCount()
     {
         var selectors = new[]
@@ -357,7 +578,16 @@ public static unsafe partial class WindowsRadio
             .AsTask().GetAwaiter().GetResult().Count);
     }
 
-    /// <summary>Starts the live association-endpoint feed. Restarting replaces the old feed.</summary>
+    /// <summary>Starts a live feed of Bluetooth device changes.</summary>
+    /// <param name="onChange">Called for each change. Raised on a Windows device-watcher thread,
+    /// not the caller's — marshal to your UI thread before touching UI state.</param>
+    /// <remarks>
+    /// Starting again replaces the previous feed rather than adding a second one, so this is safe
+    /// to call on every screen entry. The initial sweep reports everything already present as
+    /// <see cref="BluetoothChangeKind.Added"/> and then one
+    /// <see cref="BluetoothChangeKind.EnumerationCompleted"/>; the feed stays live afterwards.
+    /// Always pair with <see cref="StopBluetoothWatch"/> — the watcher holds callbacks alive.
+    /// </remarks>
     public static void StartBluetoothWatch(Action<BluetoothChange> onChange)
     {
         StopBluetoothWatch();
@@ -376,7 +606,7 @@ public static unsafe partial class WindowsRadio
             {
                 records[info.Id] = info;
             }
-            onChange(new BluetoothChange(0, ReadBluetoothDevice(info)));
+            onChange(new BluetoothChange(BluetoothChangeKind.Added, ReadBluetoothDevice(info)));
         };
         TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> updated = (_, update) =>
         {
@@ -388,7 +618,7 @@ public static unsafe partial class WindowsRadio
             }
             if (info is not null)
             {
-                onChange(new BluetoothChange(1, ReadBluetoothDevice(info)));
+                onChange(new BluetoothChange(BluetoothChangeKind.Updated, ReadBluetoothDevice(info)));
                 return;
             }
             try
@@ -402,7 +632,9 @@ public static unsafe partial class WindowsRadio
                 {
                     records[resolved.Id] = resolved;
                 }
-                onChange(new BluetoothChange(1, ReadBluetoothDevice(resolved)));
+                onChange(new BluetoothChange(
+                    BluetoothChangeKind.Updated,
+                    ReadBluetoothDevice(resolved)));
             }
             catch
             {
@@ -415,11 +647,11 @@ public static unsafe partial class WindowsRadio
             {
                 records.Remove(update.Id);
             }
-            onChange(new BluetoothChange(2, new BluetoothDevice(
+            onChange(new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
                 update.Id, string.Empty, false, false, false, string.Empty)));
         };
         TypedEventHandler<DeviceWatcher, object> completed = (_, _) =>
-            onChange(new BluetoothChange(3, default));
+            onChange(new BluetoothChange(BluetoothChangeKind.EnumerationCompleted, default));
         watcher.Added += added;
         watcher.Updated += updated;
         watcher.Removed += removed;
@@ -431,7 +663,10 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Stops the Bluetooth feed and revokes every callback before returning.</summary>
+    /// <summary>Stops reporting Bluetooth device changes.</summary>
+    /// <remarks>Safe to call when no watch is running. Every WinRT event handler is revoked before
+    /// this returns, so once it has, no further callback can arrive — which is what makes it safe
+    /// to tear down whatever state the callback touched.</remarks>
     public static void StopBluetoothWatch()
     {
         BluetoothWatch? watch;
@@ -451,7 +686,19 @@ public static unsafe partial class WindowsRadio
         watch.Watcher.Stop();
     }
 
-    /// <summary>Begins one bounded custom pairing ceremony on a worker thread.</summary>
+    /// <summary>Pairs a Bluetooth device, running the ceremony through your own UI.</summary>
+    /// <param name="deviceId">The device's <see cref="BluetoothDevice.Id"/>.</param>
+    /// <param name="onRequest">Called when Windows asks something — show it, then answer with
+    /// <see cref="RespondToPairing"/>. <b>You must answer</b>: the ceremony holds a deferral that
+    /// expires, and an unanswered request fails the pairing.</param>
+    /// <param name="onFinished">Called once when the attempt ends, with the result, or with an
+    /// exception if one escaped. Both arguments are null only if the attempt was abandoned.</param>
+    /// <remarks>
+    /// Returns immediately; the ceremony runs on a worker thread and both callbacks are raised
+    /// there. This is the piece that is hard to find elsewhere — Windows supports several pairing
+    /// ceremonies, and the right one depends on the device, so
+    /// <see cref="PairingRequest.Kind"/> tells you which prompt to show.
+    /// </remarks>
     public static void PairBluetooth(
         string deviceId,
         Action<PairingRequest> onRequest,
@@ -517,7 +764,14 @@ public static unsafe partial class WindowsRadio
         });
     }
 
-    /// <summary>Answers one custom-pairing deferral. Unknown tokens are failures.</summary>
+    /// <summary>Answers a pairing question raised by <see cref="PairBluetooth"/>.</summary>
+    /// <param name="token">The <see cref="PairingRequest.Token"/> being answered. A token that is
+    /// unknown or already answered is ignored.</param>
+    /// <param name="accept">True to proceed with pairing, false to reject it.</param>
+    /// <param name="pin">The PIN the user entered. Required when
+    /// <see cref="PairingRequest.Kind"/> is <see cref="PairingKind.ProvidePin"/>, and ignored
+    /// otherwise.</param>
+    /// <remarks>Safe to call from any thread, including directly from the request callback.</remarks>
     public static void RespondToPairing(uint token, bool accept, string? pin)
     {
         if (!PendingPairings.TryRemove(token, out var pending))
@@ -547,6 +801,9 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Removes a Bluetooth pairing.</summary>
+    /// <param name="deviceId">The device's <see cref="BluetoothDevice.Id"/>.</param>
+    /// <returns><see langword="true"/> when the device is no longer paired, including when it was
+    /// not paired to begin with.</returns>
     public static bool UnpairBluetooth(string deviceId)
     {
         var info = DeviceInformation.CreateFromIdAsync(
@@ -621,22 +878,23 @@ public static unsafe partial class WindowsRadio
             container);
     }
 
-    private static int MapPairingKind(DevicePairingKinds kind) => kind switch
+    private static PairingKind MapPairingKind(DevicePairingKinds kind) => kind switch
     {
-        DevicePairingKinds.ConfirmOnly => 0,
-        DevicePairingKinds.DisplayPin => 1,
-        DevicePairingKinds.ProvidePin => 2,
-        DevicePairingKinds.ConfirmPinMatch => 3,
-        _ => 4,
+        DevicePairingKinds.ConfirmOnly => PairingKind.ConfirmOnly,
+        DevicePairingKinds.DisplayPin => PairingKind.DisplayPin,
+        DevicePairingKinds.ProvidePin => PairingKind.ProvidePin,
+        DevicePairingKinds.ConfirmPinMatch => PairingKind.ConfirmPinMatch,
+        _ => PairingKind.Unknown,
     };
 
-    private static int MapPairingOutcome(DevicePairingResultStatus status) => status switch
+    private static PairingOutcome MapPairingOutcome(DevicePairingResultStatus status) => status switch
     {
-        DevicePairingResultStatus.Paired => 0,
-        DevicePairingResultStatus.AlreadyPaired => 1,
-        DevicePairingResultStatus.RejectedByHandler or DevicePairingResultStatus.PairingCanceled => 2,
-        DevicePairingResultStatus.AccessDenied => 4,
-        DevicePairingResultStatus.OperationAlreadyInProgress => 6,
+        DevicePairingResultStatus.Paired => PairingOutcome.Paired,
+        DevicePairingResultStatus.AlreadyPaired => PairingOutcome.AlreadyPaired,
+        DevicePairingResultStatus.RejectedByHandler or DevicePairingResultStatus.PairingCanceled =>
+            PairingOutcome.Cancelled,
+        DevicePairingResultStatus.AccessDenied => PairingOutcome.AccessDenied,
+        DevicePairingResultStatus.OperationAlreadyInProgress => PairingOutcome.AlreadyInProgress,
         DevicePairingResultStatus.Failed
             or DevicePairingResultStatus.ConnectionRejected
             or DevicePairingResultStatus.TooManyConnections
@@ -644,8 +902,8 @@ public static unsafe partial class WindowsRadio
             or DevicePairingResultStatus.AuthenticationTimeout
             or DevicePairingResultStatus.AuthenticationNotAllowed
             or DevicePairingResultStatus.AuthenticationFailure
-            or DevicePairingResultStatus.NoSupportedProfiles => 3,
-        _ => 5,
+            or DevicePairingResultStatus.NoSupportedProfiles => PairingOutcome.Failed,
+        _ => PairingOutcome.Unknown,
     };
 
     private sealed record BluetoothWatch(
@@ -655,7 +913,9 @@ public static unsafe partial class WindowsRadio
         TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> Removed,
         TypedEventHandler<DeviceWatcher, object> Completed);
 
-    /// <summary>Reads the best current WLAN interface and joined network.</summary>
+    /// <summary>Reads the Wi-Fi adapter's current state and joined network.</summary>
+    /// <returns>The state, signal and network name. On a machine with several adapters this
+    /// reports the one Windows is actually using.</returns>
     public static WifiStatus GetWifiStatus()
     {
         using var client = WlanClient.Open();
@@ -667,7 +927,12 @@ public static unsafe partial class WindowsRadio
             current?.Ssid ?? string.Empty);
     }
 
-    /// <summary>Asks every WLAN adapter for a fresh scan.</summary>
+    /// <summary>Asks every Wi-Fi adapter to scan for networks.</summary>
+    /// <remarks>Returns as soon as the request is made, not when scanning finishes — results
+    /// arrive seconds later. Watch for completion with <see cref="StartWifiWatch"/> rather than
+    /// calling <see cref="ListWifiNetworks"/> immediately, which would return the previous
+    /// results.</remarks>
+    /// <exception cref="InvalidOperationException">No adapter accepted the scan request.</exception>
     public static void RequestWifiScan()
     {
         using var client = WlanClient.Open();
@@ -691,7 +956,12 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Lists visible networks from every adapter, merged by raw SSID.</summary>
+    /// <summary>Lists the Wi-Fi networks currently visible.</summary>
+    /// <returns>Networks from every adapter, merged by SSID and ordered strongest first.</returns>
+    /// <remarks>Returns the last scan's results rather than scanning — call
+    /// <see cref="RequestWifiScan"/> first for fresh ones. An empty list on a machine that clearly
+    /// has networks nearby usually means location consent is denied; see
+    /// <see cref="GetConsent"/>.</remarks>
     public static IReadOnlyList<WifiNetwork> ListWifiNetworks()
     {
         using var client = WlanClient.Open();
@@ -720,15 +990,27 @@ public static unsafe partial class WindowsRadio
             .Select(network => new WifiNetwork(
                 network.Ssid,
                 network.Signal,
-                (int)network.Security,
+                network.Security,
                 network.Saved,
                 network.Connectable,
                 network.Connected))
             .ToArray();
     }
 
-    /// <summary>Installs or reuses a WLAN profile and waits for the association verdict.</summary>
-    /// <returns>Zero on success or the WLAN reason code reported for failure.</returns>
+    /// <summary>Joins a Wi-Fi network, creating or reusing its profile, and waits for the result.</summary>
+    /// <param name="ssid">The network name to join.</param>
+    /// <param name="passphrase">The passphrase, or <see langword="null"/> to use the saved profile
+    /// — which is what <see cref="WifiNetwork.Saved"/> tells you exists. Required for a protected
+    /// network with no saved profile.</param>
+    /// <returns>Zero when joined; otherwise the WLAN reason code. Pass it to
+    /// <see cref="ReasonText"/> for a message and <see cref="GetReasonVerdict"/> to decide whether
+    /// retrying or re-prompting for the passphrase is worthwhile.</returns>
+    /// <exception cref="ArgumentException"><paramref name="ssid"/> is null or empty.</exception>
+    /// <remarks>
+    /// Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
+    /// a stored profile before joining a protected network, so one is written first when needed —
+    /// which is why a wrong passphrase leaves a profile behind that a later call will reuse.
+    /// </remarks>
     public static uint ConnectWifi(string ssid, string? passphrase)
     {
         ArgumentException.ThrowIfNullOrEmpty(ssid);
@@ -780,7 +1062,7 @@ public static unsafe partial class WindowsRadio
             if (last is not null)
             {
                 if (last is WlanReasonException reason
-                    && GetReasonVerdict(reason.ReasonCode) != 4)
+                    && GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
                 {
                     return reason.ReasonCode;
                 }
@@ -806,7 +1088,8 @@ public static unsafe partial class WindowsRadio
                     facts.RawSsid,
                     facts.Security == WifiSecurity.EnhancedOpen));
             }
-            catch (WlanReasonException reason) when (GetReasonVerdict(reason.ReasonCode) != 4)
+            catch (WlanReasonException reason)
+                when (GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
             {
                 return reason.ReasonCode;
             }
@@ -852,7 +1135,11 @@ public static unsafe partial class WindowsRadio
             }
             if (outcome is { } failed)
             {
-                if (GetReasonVerdict(failed.Reason) is 1 or 2)
+                // A key or profile the access point rejected leaves behind a profile that would
+                // keep failing on every automatic reconnect, so it is rolled back. An unreachable
+                // network's profile is kept: it is probably correct and simply out of range.
+                if (GetReasonVerdict(failed.Reason)
+                    is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch)
                 {
                     RollBackProfile(client.Handle, choice.Adapter.Id, authored, authoredOverExisting);
                 }
@@ -870,14 +1157,18 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Disconnects every connected or connecting WLAN interface.</summary>
+    /// <summary>Disconnects every Wi-Fi adapter that is connected or connecting.</summary>
+    /// <remarks>Leaves saved profiles in place, so Windows may reconnect automatically. Use
+    /// <see cref="ForgetWifi"/> to stop that.</remarks>
+    /// <exception cref="Win32Exception">An adapter refused to disconnect.</exception>
     public static void DisconnectWifi()
     {
         using var client = WlanClient.Open();
         Exception? last = null;
         foreach (var adapter in client.Interfaces())
         {
-            if (MapInterfaceState(adapter.State) is not 0 and not 1)
+            if (MapInterfaceState(adapter.State)
+                is not WifiConnectionState.Connected and not WifiConnectionState.Connecting)
             {
                 continue;
             }
@@ -893,7 +1184,11 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Deletes every saved profile whose document names the SSID.</summary>
+    /// <summary>Forgets a network by deleting every saved profile for it.</summary>
+    /// <param name="ssid">The network name to forget.</param>
+    /// <remarks>Matches on the SSID inside each profile document rather than on the profile's
+    /// name, so a profile Windows saved under a different name is still removed. Doing nothing
+    /// because no profile matched is success, not an error.</remarks>
     public static void ForgetWifi(string ssid)
     {
         using var client = WlanClient.Open();
@@ -939,27 +1234,36 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Maps a WLAN reason code to the manager's stable verdict.</summary>
-    public static int GetReasonVerdict(uint code)
+    /// <summary>Classifies a WLAN reason code into the kind of failure it represents.</summary>
+    /// <param name="code">A reason code, as returned by
+    /// <see cref="ConnectWifi(string, string?)"/> or carried on a
+    /// <see cref="WlanReasonException"/>.</param>
+    /// <returns>Which of the few outcomes a caller can act on differently.</returns>
+    /// <remarks>Windows defines hundreds of reason codes across four numbering ranges, and the
+    /// exact code is only useful as text. What a caller needs to decide is narrower: whether to
+    /// re-prompt for the passphrase, or to say the network could not be reached. Blaming a wrong
+    /// passphrase for an association timeout is the worse mistake, because the user retypes a
+    /// passphrase that was already correct.</remarks>
+    public static WifiFailureKind GetReasonVerdict(uint code)
     {
         if (code == 0)
         {
-            return 0;
+            return WifiFailureKind.None;
         }
         if (code >= ReasonMsmsecBase && code < ReasonMsmsecConnectBase)
         {
-            return 2;
+            return WifiFailureKind.SecurityMismatch;
         }
         if (code >= ReasonMsmBase && code <= ReasonMsmEnd
             || code >= ReasonAcBase && code <= ReasonAcEnd)
         {
-            return 3;
+            return WifiFailureKind.Unreachable;
         }
         if (code >= ReasonMsmsecConnectBase && code <= ReasonMsmsecEnd)
         {
-            return 1;
+            return WifiFailureKind.KeyRejected;
         }
-        return 4;
+        return WifiFailureKind.Unknown;
     }
 
     private static bool PollForConnection(
@@ -980,7 +1284,10 @@ public static unsafe partial class WindowsRadio
         return false;
     }
 
-    /// <summary>Returns Windows' localized text for one WLAN reason code.</summary>
+    /// <summary>Looks up Windows' own description of a WLAN reason code.</summary>
+    /// <param name="code">The reason code to describe.</param>
+    /// <returns>The description in the user's display language, or <c>"Wi-Fi reason code N"</c>
+    /// when Windows has no text for the code. Never empty, so it is always safe to show.</returns>
     public static string ReasonText(uint code)
     {
         var buffer = new char[1024];
@@ -998,8 +1305,16 @@ public static unsafe partial class WindowsRadio
         return result.Length == 0 ? $"Wi-Fi reason code {code}" : result;
     }
 
-    /// <summary>Starts process-wide WLAN change notifications. Restarting replaces the old feed.</summary>
-    public static void StartWifiWatch(Action<int> onEvent)
+    /// <summary>Starts reporting Wi-Fi scan and connection changes.</summary>
+    /// <param name="onEvent">Called on a Windows service thread, not the caller's. Marshal to your
+    /// UI thread before touching UI state, and keep the callback short — it runs inside the WLAN
+    /// notification path. Exceptions it throws are swallowed, because a native callback cannot
+    /// propagate them.</param>
+    /// <exception cref="Win32Exception">The WLAN handle could not be opened, or Windows refused to
+    /// register for notifications.</exception>
+    /// <remarks>There is one feed per process: calling this again replaces the previous callback
+    /// rather than adding a second one. Pair it with <see cref="StopWifiWatch"/>.</remarks>
+    public static void StartWifiWatch(Action<WifiWatchEvent> onEvent)
     {
         StopWifiWatch();
         var status = WlanOpenHandle(2, 0, out _, out var handle);
@@ -1027,7 +1342,10 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Stops the WLAN notification feed.</summary>
+    /// <summary>Stops reporting Wi-Fi changes and releases the notification handle.</summary>
+    /// <remarks>Safe to call when no watch is running. Call it before the process exits: the
+    /// callback is held by native code, and leaving it registered risks a call into an unloaded
+    /// delegate.</remarks>
     public static void StopWifiWatch()
     {
         nint handle;
@@ -1058,15 +1376,15 @@ public static unsafe partial class WindowsRadio
             {
                 return;
             }
-            var eventCode = notification.Code switch
+            WifiWatchEvent? change = notification.Code switch
             {
-                AcmScanComplete or AcmScanListRefresh => 0,
-                AcmConnectionComplete or AcmDisconnected => 1,
-                _ => -1,
+                AcmScanComplete or AcmScanListRefresh => WifiWatchEvent.ScanCompleted,
+                AcmConnectionComplete or AcmDisconnected => WifiWatchEvent.ConnectionChanged,
+                _ => null,
             };
-            if (eventCode >= 0)
+            if (change is { } raised)
             {
-                _wifiEvents?.Invoke(eventCode);
+                _wifiEvents?.Invoke(raised);
             }
         }
         catch
@@ -1076,18 +1394,21 @@ public static unsafe partial class WindowsRadio
     }
 
     private static WlanInterfaceInfo SelectInterface(IReadOnlyList<WlanInterfaceInfo> interfaces)
-        => interfaces.FirstOrDefault(adapter => MapInterfaceState(adapter.State) == 0) is var connected
+        => interfaces.FirstOrDefault(adapter =>
+                MapInterfaceState(adapter.State) == WifiConnectionState.Connected) is var connected
             && connected.Id != Guid.Empty
                 ? connected
                 : interfaces[0];
 
-    private static int MapInterfaceState(int state) => state switch
+    private static WifiConnectionState MapInterfaceState(int state) => state switch
     {
-        WlanInterfaceStateConnected or WlanInterfaceStateAdHocFormed => 0,
+        WlanInterfaceStateConnected or WlanInterfaceStateAdHocFormed =>
+            WifiConnectionState.Connected,
         WlanInterfaceStateAssociating or WlanInterfaceStateDiscovering
-            or WlanInterfaceStateAuthenticating => 1,
-        WlanInterfaceStateDisconnecting or WlanInterfaceStateDisconnected => 2,
-        _ => 3,
+            or WlanInterfaceStateAuthenticating => WifiConnectionState.Connecting,
+        WlanInterfaceStateDisconnecting or WlanInterfaceStateDisconnected =>
+            WifiConnectionState.Disconnected,
+        _ => WifiConnectionState.Unknown,
     };
 
     private static CurrentConnection? TryCurrentConnection(nint client, Guid adapter)
@@ -1107,7 +1428,7 @@ public static unsafe partial class WindowsRadio
         try
         {
             var current = Marshal.PtrToStructure<WlanConnectionAttributes>(data);
-            if (MapInterfaceState(current.State) != 0)
+            if (MapInterfaceState(current.State) != WifiConnectionState.Connected)
             {
                 return null;
             }
@@ -1575,14 +1896,6 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    private enum WifiSecurity
-    {
-        Open,
-        PersonalPsk,
-        Enterprise,
-        EnhancedOpen,
-        Unsupported,
-    }
 
     private readonly record struct CurrentConnection(string Ssid, int Signal);
     private readonly record struct ConnectionOutcome(bool Succeeded, uint Reason);

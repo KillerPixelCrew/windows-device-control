@@ -22,6 +22,15 @@
          build rather than shipping an undocumented API. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- CS1591 (missing member doc) is on by default with the documentation file. CS1573 is not
+         reported unless asked for: it catches a member that documents SOME parameters and silently
+         omits the rest, which is exactly the state that produces a half-filled IntelliSense
+         tooltip. Both are errors here so the surface cannot regress. -->
+    <WarningsAsErrors>$(WarningsAsErrors);CS1573;CS1591</WarningsAsErrors>
+    <NoWarn />
+    <!-- Emit the parameter names in the reference assembly too, so consumers see them even when
+         only the compiled library is available. -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
   <PropertyGroup Label="Package">

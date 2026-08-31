@@ -24,7 +24,16 @@ public static class WifiProfile
         WpaTkip,
     }
 
-    /// <summary>Builds a passwordless profile without losing a non-UTF8 SSID.</summary>
+    /// <summary>Builds a profile for a network that needs no passphrase.</summary>
+    /// <param name="profileName">The name Windows stores the profile under. Conventionally the
+    /// SSID.</param>
+    /// <param name="ssid">The network name as text, used when the SSID is valid UTF-8.</param>
+    /// <param name="rawSsid">The SSID's exact bytes. When these are not valid UTF-8 the profile
+    /// carries them as hex instead, which is the only way to join such a network.</param>
+    /// <param name="enhancedOpen">True for Opportunistic Wireless Encryption (OWE), false for a
+    /// genuinely unencrypted network.</param>
+    /// <returns>The profile XML, ready for
+    /// <see cref="WindowsRadio.ConnectWifi(string, string?)"/>.</returns>
     public static string CreateOpen(
         string profileName,
         string ssid,
@@ -51,7 +60,19 @@ public static class WifiProfile
             """;
     }
 
-    /// <summary>Builds the precise WPA profile advertised by the access point.</summary>
+    /// <summary>Builds a profile for a pre-shared-key network.</summary>
+    /// <param name="profileName">The name Windows stores the profile under. Conventionally the
+    /// SSID.</param>
+    /// <param name="ssid">The network name as text, used when the SSID is valid UTF-8.</param>
+    /// <param name="rawSsid">The SSID's exact bytes, carried as hex when they are not valid
+    /// UTF-8.</param>
+    /// <param name="passphrase">The passphrase, or a 64-character hex key. Validate it first with
+    /// <see cref="PassphraseIsValid"/>; a raw key is detected and declared as one.</param>
+    /// <param name="flavor">Which WPA shape to write. The profile must match what the access point
+    /// advertises, so try <see cref="PskFlavor.Wpa3Transition"/> and fall back if it is
+    /// refused.</param>
+    /// <returns>The profile XML, ready for
+    /// <see cref="WindowsRadio.ConnectWifi(string, string?)"/>.</returns>
     public static string CreatePsk(
         string profileName,
         string ssid,
@@ -92,7 +113,10 @@ public static class WifiProfile
             """;
     }
 
-    /// <summary>Reads the SSID identity from a Windows-produced profile document.</summary>
+    /// <summary>Reads the SSID out of a profile document Windows produced.</summary>
+    /// <param name="xml">The profile XML, as returned by WLANAPI when a saved profile is read.</param>
+    /// <returns>The SSID's exact bytes, or <see langword="null"/> when the document carries no
+    /// readable SSID. Bytes rather than a string, because an SSID need not be valid UTF-8.</returns>
     public static byte[]? TryReadSsid(string xml)
     {
         var config = Between(xml, "<SSIDConfig>", "</SSIDConfig>");
@@ -121,7 +145,11 @@ public static class WifiProfile
             : null;
     }
 
-    /// <summary>Checks the 802.11 passphrase and raw-key bounds before WLANAPI sees it.</summary>
+    /// <summary>Checks a passphrase against the 802.11 bounds before WLANAPI sees it.</summary>
+    /// <param name="passphrase">The passphrase or raw key to check.</param>
+    /// <returns><see langword="true"/> for a 64-character hex key, or for 8 to 63 printable ASCII
+    /// characters. Checking here turns an unhelpful driver-level refusal into a message you can
+    /// show the user before anything is attempted.</returns>
     public static bool PassphraseIsValid(string passphrase)
     {
         if (IsRawKey(passphrase))

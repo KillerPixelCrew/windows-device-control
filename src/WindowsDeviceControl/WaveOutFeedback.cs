@@ -22,6 +22,11 @@ public sealed partial class WaveOutFeedback : IDisposable
     }
 
     /// <summary>Opens and prewarms the default waveOut endpoint.</summary>
+    /// <param name="feedback">The opened stream on success; <see langword="null"/> otherwise. The
+    /// caller owns it and must dispose it.</param>
+    /// <returns>Zero on success, otherwise the <c>MMRESULT</c> waveOut returned.</returns>
+    /// <remarks>Opening is separated from playing on purpose: opening a waveOut endpoint takes
+    /// long enough to be audible as a delay, so the stream is opened once and kept.</remarks>
     public static int Open(out WaveOutFeedback? feedback)
     {
         feedback = new WaveOutFeedback();
@@ -35,7 +40,12 @@ public sealed partial class WaveOutFeedback : IDisposable
         return result;
     }
 
-    /// <summary>Writes the cue unless the previous cue is still queued.</summary>
+    /// <summary>Plays the cue, unless the previous one is still queued.</summary>
+    /// <returns>Zero on success or when the previous cue is still playing, otherwise the
+    /// <c>MMRESULT</c> waveOut returned.</returns>
+    /// <remarks>Dropping the cue while one is queued is deliberate: holding a volume key repeats
+    /// faster than the sound lasts, and queueing every repeat turns the feedback into a
+    /// rattle.</remarks>
     public int Play()
     {
         if (_output == 0 || _header == 0)
