@@ -407,8 +407,8 @@ public static partial class CoreAudio
     /// <summary>Sets the default playback endpoint's master volume.</summary>
     /// <param name="percentage">The volume to set, 0 to 100. Values outside that range are
     /// clamped.</param>
-    /// <param name="muted">The mute state afterwards: non-zero when muted. Setting a volume does
-    /// not unmute.</param>
+    /// <param name="muted">The mute state afterwards: non-zero when muted. A positive volume
+    /// also unmutes the endpoint.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int SetVolume(int percentage, out int muted) =>
         SetVolume(AudioDirection.Render, percentage, out muted);
