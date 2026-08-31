@@ -42,7 +42,13 @@ var status   = WindowsRadio.GetWifiStatus();
 var networks = WindowsRadio.ListWifiNetworks();
 WindowsRadio.RequestWifiScan();
 uint reason  = WindowsRadio.ConnectWifi("MyNetwork", "passphrase");   // 0 = joined
-if (reason != 0) Console.WriteLine(WindowsRadio.ReasonText(reason));  // decoded WLAN reason
+if (reason != 0)
+{
+    Console.WriteLine(WindowsRadio.ReasonText(reason));               // Windows' own wording
+    // ...and only re-prompt when the key was actually the problem.
+    if (WindowsRadio.GetReasonVerdict(reason) == WindowsRadio.WifiFailureKind.KeyRejected)
+        AskForPassphraseAgain();
+}
 WindowsRadio.ForgetWifi("MyNetwork");
 
 // Bluetooth, including the pairing ceremony
@@ -56,11 +62,11 @@ WindowsRadio.PairBluetooth(deviceId, onRequest: request =>
 });
 
 // Radio power (airplane-mode aware)
-WindowsRadio.GetPower(kind: 1);                 // Bluetooth
-WindowsRadio.SetPower(kind: 0, on: true);       // Wi-Fi
+WindowsRadio.GetPower(WindowsRadio.RadioKind.Bluetooth);
+WindowsRadio.SetPower(WindowsRadio.RadioKind.WiFi, on: true);
 
 // Audio
-CoreAudio.ListEndpoints(CoreAudio.Render, out var outputs);
+CoreAudio.ListEndpoints(CoreAudio.AudioDirection.Render, out var outputs);
 CoreAudio.SetDefaultEndpoint(outputs[0].Id);    // the undocumented one
 CoreAudio.SetVolume(35, out _);
 CoreAudio.SetMuted(true);
@@ -92,15 +98,26 @@ Documented rather than discovered at deployment time:
 
 ## Status
 
-**Pre-1.0. The surface will move before it is frozen.** It is extracted from one application, and
-some signatures still show it — `GetPower(int kind)` and `CoreAudio.ListEndpoints(int flow)` should
-be enums, and `BluetoothChange.Kind`, `PairingResult.Outcome` and `WifiNetwork.Security` are
-integers where they should be named values. Those are the first changes planned; pin an exact
-version if that matters to you.
+**Pre-1.0. The surface can still move before it is frozen** — pin an exact version if that matters
+to you.
+
+The integers the first extraction inherited are gone: radio kind, audio direction, network security,
+connection state, pairing kind and outcome, watch events, volume-key commands and Wi-Fi failure
+classification are all named enums. Every public member is documented, and the build fails on one
+that is not, so IntelliSense is the reference — including the parts that are easy to get wrong, such
+as which callbacks arrive on a Windows service thread and which calls return before the work they
+started has finished.
+
+Two integer contracts are kept deliberately, because renaming them would hide what they are:
+`ConnectWifi` returns Windows' raw WLAN reason code (pass it to `ReasonText` or `GetReasonVerdict`),
+and the `CoreAudio` methods return HRESULTs.
 
 Issues and pull requests welcome, especially hardware reports: the behaviour of Wi-Fi drivers,
 Bluetooth stacks and backlight interfaces varies more across machines than any of the underlying
 documentation admits.
+
+`docs/radios.md` records the platform constraints behind all of this, including the approaches that
+were tried and disproven.
 
 ## Licence
 

@@ -31,9 +31,21 @@ public static partial class CoreAudio
         Capture = 1,
     }
 
-    private const int AppCommandVolumeMute = 8;
-    private const int AppCommandVolumeDown = 9;
-    private const int AppCommandVolumeUp = 10;
+    /// <summary>What a hardware volume key is asking for.</summary>
+    /// <remarks>The values are Windows' own <c>APPCOMMAND_VOLUME_*</c> constants, so the command
+    /// decoded from a <c>WM_APPCOMMAND</c> message can be cast directly to this enum.</remarks>
+    public enum VolumeCommand
+    {
+        /// <summary>Mute if unmuted, unmute if muted.</summary>
+        ToggleMute = 8,
+
+        /// <summary>One step quieter, by Windows' own step size.</summary>
+        StepDown = 9,
+
+        /// <summary>One step louder, by Windows' own step size.</summary>
+        StepUp = 10,
+    }
+
     private const int ClsctxAll = 23;
     private const uint DeviceStateActive = 1;
     private const uint DeviceStateAll = 0x0000000F;
@@ -284,14 +296,18 @@ public static partial class CoreAudio
     }
 
     /// <summary>Applies one hardware volume-key command to the default playback endpoint.</summary>
-    /// <param name="command">The <c>APPCOMMAND_VOLUME_*</c> value from a media key: 8 mutes,
-    /// 9 lowers, 10 raises. Other values are rejected.</param>
+    /// <param name="command">What the key asked for. The values match the
+    /// <c>APPCOMMAND_VOLUME_*</c> constants a <c>WM_APPCOMMAND</c> message carries, so the value
+    /// decoded from that message can be cast straight to this enum; anything else is
+    /// rejected.</param>
     /// <param name="percentage">The resulting volume, 0 to 100.</param>
     /// <param name="muted">The resulting mute state: non-zero when muted.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>This applies the same step Windows itself uses for a volume key, so a hardware
-    /// button behaves identically to the built-in handling.</remarks>
-    public static int ApplyCommand(int command, out int percentage, out int muted)
+    /// button behaves identically to the built-in handling — which is the point: a step computed
+    /// by hand lands on different values than the system's and makes the button feel wrong.
+    /// </remarks>
+    public static int ApplyCommand(VolumeCommand command, out int percentage, out int muted)
     {
         percentage = 0;
         muted = 0;
@@ -307,17 +323,17 @@ public static partial class CoreAudio
             }
             switch (command)
             {
-                case AppCommandVolumeMute:
+                case VolumeCommand.ToggleMute:
                     result = volume.GetMute(out var isMuted);
                     if (result >= 0)
                     {
                         result = volume.SetMute(!isMuted, 0);
                     }
                     break;
-                case AppCommandVolumeDown:
+                case VolumeCommand.StepDown:
                     result = volume.VolumeStepDown(0);
                     break;
-                case AppCommandVolumeUp:
+                case VolumeCommand.StepUp:
                     result = volume.VolumeStepUp(0);
                     break;
                 default:
