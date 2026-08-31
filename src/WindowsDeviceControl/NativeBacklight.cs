@@ -6,12 +6,12 @@ namespace WSGM.Interop;
 
 /// <summary>Flat Win32 control of the internal panel's backlight through <c>\\.\LCD</c>.</summary>
 /// <remarks>
-/// The ACPI backlight driver's legacy device interface, chosen over WMI deliberately: the WMI
-/// classes (<c>WmiMonitorBrightnessMethods</c>) are the same driver behind COM, which the NativeAOT
-/// publish has disabled. Device-verified on the reference Claw 2026-08-30 — a set through this
-/// interface reads back identically through WMI, so the two are one backlight.
+/// The ACPI backlight driver's legacy device interface. Device verification on the reference Claw
+/// showed that values written here read back identically through
+/// <c>WmiMonitorBrightnessMethods</c>; the direct interface reaches the same driver with one small,
+/// synchronous Win32 transaction and no WMI session.
 /// <para>
-/// The transfer is the documented <c>DISPLAY_BRIGHTNESS</c> triple: policy byte, then the DC and AC
+/// The transfer is the documented <c>DISPLAY_BRIGHTNESS</c> triple: policy byte, then the AC and DC
 /// levels as percent. Writes set both power sources to the same level, because a slider that only
 /// moves the panel on one of them looks broken exactly half the time.
 /// </para>
@@ -62,7 +62,7 @@ internal static partial class NativeBacklight
         }
 
         // The AC level; on the reference device both levels track the same slider.
-        percent = buffer[2];
+        percent = buffer[1];
         return percent is >= 0 and <= 100;
     }
 
