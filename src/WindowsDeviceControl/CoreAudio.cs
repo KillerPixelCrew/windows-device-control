@@ -316,7 +316,11 @@ public static partial class CoreAudio
         IAudioEndpointVolume? volume = null;
         try
         {
-            var result = OpenDefaultRenderVolume(out enumerator, out device, out volume);
+            var result = OpenDefaultVolume(
+                AudioDirection.Render,
+                out enumerator,
+                out device,
+                out volume);
             if (result < 0 || volume is null)
             {
                 return result;
@@ -358,16 +362,32 @@ public static partial class CoreAudio
     /// <param name="percentage">The current volume, 0 to 100.</param>
     /// <param name="muted">The current mute state: non-zero when muted.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
-    public static int GetVolume(out int percentage, out int muted)
+    public static int GetVolume(out int percentage, out int muted) =>
+        GetVolume(AudioDirection.Render, out percentage, out muted);
+
+    /// <summary>Reads the default endpoint's master volume and mute state in one direction.</summary>
+    /// <param name="direction">Playback or recording endpoint.</param>
+    /// <param name="percentage">The current volume, 0 to 100.</param>
+    /// <param name="muted">The current mute state: non-zero when muted.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    public static int GetVolume(
+        AudioDirection direction,
+        out int percentage,
+        out int muted)
     {
         percentage = 0;
         muted = 0;
+        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
+        {
+            return InvalidArgument;
+        }
+
         IMMDeviceEnumerator? enumerator = null;
         IMMDevice? device = null;
         IAudioEndpointVolume? volume = null;
         try
         {
-            var result = OpenDefaultRenderVolume(out enumerator, out device, out volume);
+            var result = OpenDefaultVolume(direction, out enumerator, out device, out volume);
             return result < 0 || volume is null
                 ? result
                 : ReadVolume(volume, out percentage, out muted);
@@ -390,16 +410,34 @@ public static partial class CoreAudio
     /// <param name="muted">The mute state afterwards: non-zero when muted. Setting a volume does
     /// not unmute.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
-    public static int SetVolume(int percentage, out int muted)
+    public static int SetVolume(int percentage, out int muted) =>
+        SetVolume(AudioDirection.Render, percentage, out muted);
+
+    /// <summary>Sets the default endpoint's master volume in one direction.</summary>
+    /// <param name="direction">Playback or recording endpoint.</param>
+    /// <param name="percentage">The volume to set, 0 to 100. Values outside that range are
+    /// clamped.</param>
+    /// <param name="muted">The mute state afterwards: non-zero when muted. A positive volume
+    /// also unmutes the endpoint.</param>
+    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    public static int SetVolume(
+        AudioDirection direction,
+        int percentage,
+        out int muted)
     {
         muted = 0;
+        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
+        {
+            return InvalidArgument;
+        }
+
         IMMDeviceEnumerator? enumerator = null;
         IMMDevice? device = null;
         IAudioEndpointVolume? volume = null;
         try
         {
             percentage = Math.Clamp(percentage, 0, 100);
-            var result = OpenDefaultRenderVolume(out enumerator, out device, out volume);
+            var result = OpenDefaultVolume(direction, out enumerator, out device, out volume);
             if (result >= 0 && volume is not null)
             {
                 result = volume.SetMasterVolumeLevelScalar(percentage / 100.0f, 0);
@@ -438,7 +476,11 @@ public static partial class CoreAudio
         IAudioEndpointVolume? volume = null;
         try
         {
-            var result = OpenDefaultRenderVolume(out enumerator, out device, out volume);
+            var result = OpenDefaultVolume(
+                AudioDirection.Render,
+                out enumerator,
+                out device,
+                out volume);
             return result < 0 || volume is null
                 ? result
                 : volume.SetMute(muted, 0);
@@ -604,7 +646,8 @@ public static partial class CoreAudio
     private static IMMDeviceEnumerator CreateEnumerator()
         => (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
 
-    private static int OpenDefaultRenderVolume(
+    private static int OpenDefaultVolume(
+        AudioDirection direction,
         out IMMDeviceEnumerator? enumerator,
         out IMMDevice? device,
         out IAudioEndpointVolume? volume)
@@ -612,7 +655,7 @@ public static partial class CoreAudio
         enumerator = CreateEnumerator();
         volume = null;
         var result = enumerator.GetDefaultAudioEndpoint(
-            DataFlow.Render,
+            direction == AudioDirection.Render ? DataFlow.Render : DataFlow.Capture,
             Role.Console,
             out device);
         if (result < 0 || device is null)
