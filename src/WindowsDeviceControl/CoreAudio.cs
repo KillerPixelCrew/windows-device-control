@@ -755,7 +755,10 @@ public static partial class CoreAudio
     }
 
     [ComImport]
-    [Guid("0BD7A1BE-7A1A-44DB-8397-C0A0D54E5B4A")]
+    // IID_IMMDeviceCollection from mmdeviceapi.h. A wrong IID here is invisible until runtime:
+    // EnumAudioEndpoints succeeds natively, then the interop QI for the declared IID answers
+    // E_NOINTERFACE and every endpoint enumeration throws InvalidCastException.
+    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IMMDeviceCollection
     {
