@@ -67,7 +67,7 @@ WindowsRadio.SetPower(WindowsRadio.RadioKind.WiFi, on: true);
 
 // Audio
 CoreAudio.ListEndpoints(CoreAudio.AudioDirection.Render, out var outputs);
-CoreAudio.SetDefaultEndpoint(outputs[0].Id);    // the undocumented one
+CoreAudio.SetDefaultEndpoint(outputs[0].Id, out var roleResults); // transactional per-role results
 CoreAudio.SetVolume(35, out _);
 CoreAudio.SetMuted(true);
 

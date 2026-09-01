@@ -14,7 +14,8 @@ Radio access and power use `Windows.Devices.Radios.Radio`. Always request access
 state, enumerate every adapter of the requested kind, and apply the requested state to all of them.
 A machine can expose more than one Bluetooth or Wi-Fi radio — handhelds routinely do — and changing
 only the first leaves a UI claiming a state that does not describe the machine. Aggregate state is
-deterministic: On wins over Off, then Disabled, then Unknown; an empty adapter set is Absent.
+deterministic: On wins, then Disabled, then Off, then Unknown; an empty adapter set is Absent. A
+machine-wide or hardware block therefore cannot be hidden by an adapter that is merely off.
 
 Radio enumeration returns adapters only when the process architecture matches Windows. An AnyCPU
 process that lands on x86 under an x64 Windows enumerates nothing and reports Absent, which looks
@@ -56,9 +57,10 @@ Profile generation preserves these rules:
   additionally gets the WPA-TKIP form Windows expects.
 - Enhanced Open uses OWE and is not presented as an unsecured legacy network. Enterprise and WEP
   networks stay visible, but this library does not invent an EAP or WEP credential flow.
-- Pick a collision-free temporary profile name. A failed key or authentication attempt removes the
-  profile it authored, while a pre-existing saved profile is never overwritten or deleted as
-  rollback.
+- Pick a collision-free temporary profile name and fail if the bounded suffix space is exhausted.
+  When credentials replace a profile for the same exact SSID, snapshot its XML first and restore it
+  on failure. Unreadable profile XML is never treated as an SSID and is never overwritten or
+  deleted by inference. A failed key or authentication attempt removes a newly authored profile.
 - Create all-user profiles. A user-scope profile cannot be used from a shell-less or elevated
   context and would not appear in Windows' normal network list.
 
@@ -72,7 +74,9 @@ authentication or key failure. An association timeout must not be blamed on the 
 will retype a password that was already correct, and the real cause — range — goes unmentioned.
 
 Live change notification uses ACM and MSM sources, with an ACM-only fallback for drivers that reject
-the combined subscription.
+the combined subscription. Connection-attempt failures are observable changes too. Watch start,
+stop and callback delivery are serialized so replacing or stopping a watch cannot leave a native
+callback targeting discarded state.
 
 ## Bluetooth discovery and pairing
 
@@ -94,13 +98,14 @@ DisplayPin, ProvidePin and ConfirmPinMatch. Two constraints are easy to get wron
 pairing rather than failing it:
 
 - The `PairingRequested` deferral must stay alive until the answer is applied.
-- The answer must be completed on an MTA worker. Completing the WinRT deferral from a UI thread was
-  observed to hang pairing indefinitely.
+- Each request token must complete that deferral at most once, including when a timeout races a
+  late UI answer.
 
-Pairing is bounded to 90 seconds, and a cancel or timeout completes pending deferrals before
-cancelling the operation. Some devices reject the first ceremony mask but accept DisplayPin, so one
-retry with that ceremony is retained. Unpairing uses the same Association Endpoint id and is a
-separate, destructive action from an audio disconnect.
+Pairing is bounded to 90 seconds, and a cancel or timeout completes only that attempt's pending
+deferrals before cancelling the operation; concurrent attempts cannot cancel one another. Repeating
+an answer for an expired token is harmless. Some devices reject the first ceremony mask but accept
+DisplayPin, so one retry with that ceremony is retained. Unpairing uses the same Association
+Endpoint id and is a separate, destructive action from an audio disconnect.
 
 ## Bluetooth audio
 
@@ -120,6 +125,9 @@ reconnect or disconnect property. The endpoint is not kept open, and the result 
 the next endpoint snapshot rather than from the call's return.
 
 COM interface declarations and PROPVARIANT cleanup stay private to `CoreAudio.cs`.
+Changing the default playback endpoint snapshots all three previous role defaults before the first
+write. A later failure rolls every changed role back in reverse order, attempts every rollback, and
+returns the per-role apply/rollback HRESULTs to callers that request the detailed overload.
 
 ## Panel brightness
 

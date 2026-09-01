@@ -12,7 +12,7 @@ namespace WindowsDeviceControl;
 /// thrown exception. Audio devices appear and disappear underneath you, and a failure here is
 /// usually a device that vanished rather than a bug.
 /// <para>
-/// <see cref="SetDefaultEndpoint"/> goes through <c>IPolicyConfig</c>, which Microsoft has never
+/// <see cref="SetDefaultEndpoint(string)"/> goes through <c>IPolicyConfig</c>, which Microsoft has never
 /// documented and never made public. It is the only way to change the default playback device from
 /// code, and it is used here because there is no alternative — not because it is supported.
 /// </para>
@@ -29,6 +29,19 @@ public static partial class CoreAudio
 
         /// <summary>Recording endpoints — microphones and line inputs.</summary>
         Capture = 1,
+    }
+
+    /// <summary>The three Windows roles that can independently select a default endpoint.</summary>
+    public enum AudioRole
+    {
+        /// <summary>System sounds and applications that ask for the console default.</summary>
+        Console,
+
+        /// <summary>Media playback applications.</summary>
+        Multimedia,
+
+        /// <summary>Voice and communications applications.</summary>
+        Communications,
     }
 
     /// <summary>What a hardware volume key is asking for.</summary>
@@ -74,6 +87,16 @@ public static partial class CoreAudio
     /// <param name="Name">The friendly name shown to the user.</param>
     /// <param name="IsDefault">Whether it is the current console default.</param>
     public readonly record struct AudioEndpoint(string Id, string Name, bool IsDefault);
+
+    /// <summary>The apply and optional rollback result for one default-endpoint role.</summary>
+    /// <param name="Role">The role updated.</param>
+    /// <param name="ApplyHResult">The HRESULT returned while assigning the requested endpoint.</param>
+    /// <param name="RollbackHResult">The HRESULT returned while restoring the previous endpoint;
+    /// <see langword="null"/> when no rollback was needed.</param>
+    public readonly record struct DefaultEndpointRoleResult(
+        AudioRole Role,
+        int ApplyHResult,
+        int? RollbackHResult);
 
     /// <summary>One device container that exposes Core Audio endpoints.</summary>
     /// <param name="Container">The container identifier, which is what ties an audio endpoint back
@@ -130,7 +153,9 @@ public static partial class CoreAudio
                     Release(collection);
                 }
             }
-            return groups.Select(entry => new BluetoothAudioContainer(entry.Key, entry.Value))
+            return groups.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(entry => new BluetoothAudioContainer(entry.Key, entry.Value))
                 .ToArray();
         }
         finally
@@ -527,7 +552,7 @@ public static partial class CoreAudio
             if (result >= 0
                 && enumerator.GetDefaultAudioEndpoint(
                     dataFlow,
-                    Role.Console,
+                    AudioRole.Console,
                     out defaultDevice) >= 0
                 && defaultDevice is not null)
             {
@@ -583,7 +608,7 @@ public static partial class CoreAudio
                     Release(device);
                 }
             }
-            records.Sort((left, right) => right.IsDefault.CompareTo(left.IsDefault));
+            records.Sort(CompareEndpoints);
             return result;
         }
         catch (COMException ex)
@@ -605,6 +630,9 @@ public static partial class CoreAudio
     /// <remarks>
     /// Sets the console, multimedia and communications roles together, which is what a user means
     /// by "make this my speakers"; setting only one leaves applications split across devices.
+    /// The current endpoint for all three roles is captured before any change. If a later role
+    /// fails, every earlier role is restored in reverse order and every rollback is attempted;
+    /// the original update HRESULT remains the return value.
     /// <para>
     /// This is the <c>IPolicyConfig</c> call — undocumented, never public, and the only way to do
     /// this from code. Its interface identifier differs across Windows versions, so a failure here
@@ -612,25 +640,51 @@ public static partial class CoreAudio
     /// </para>
     /// </remarks>
     public static int SetDefaultEndpoint(string endpointId)
+        => SetDefaultEndpoint(endpointId, out _);
+
+    /// <summary>Makes one endpoint the default for every role and reports each role operation.</summary>
+    /// <param name="endpointId">The endpoint identifier from
+    /// <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})"/>.</param>
+    /// <param name="roleResults">The apply result for every attempted role and, when an apply
+    /// fails, the result of restoring each role already changed.</param>
+    /// <returns>Zero on success, otherwise the HRESULT from the failed apply operation. Inspect
+    /// <paramref name="roleResults"/> for any additional rollback failures.</returns>
+    /// <remarks>All previous role defaults are captured before any role is changed. A failure
+    /// restores every role already changed in reverse order, attempting all rollbacks even if one
+    /// of them fails.</remarks>
+    public static int SetDefaultEndpoint(
+        string endpointId,
+        out IReadOnlyList<DefaultEndpointRoleResult> roleResults)
     {
+        roleResults = [];
         if (string.IsNullOrEmpty(endpointId))
         {
             return InvalidArgument;
         }
 
+        IMMDeviceEnumerator? enumerator = null;
         IPolicyConfig? policy = null;
         try
         {
-            policy = (IPolicyConfig)(object)new PolicyConfigClient();
-            var result = policy.SetDefaultEndpoint(endpointId, Role.Console);
-            if (result >= 0)
+            enumerator = CreateEnumerator();
+            var previous = new Dictionary<AudioRole, string>();
+            foreach (var role in DefaultRoles)
             {
-                result = policy.SetDefaultEndpoint(endpointId, Role.Multimedia);
+                var snapshot = ReadDefaultEndpointId(enumerator, role, out var previousId);
+                if (snapshot < 0 || string.IsNullOrEmpty(previousId))
+                {
+                    return snapshot < 0 ? snapshot : Failure;
+                }
+                previous.Add(role, previousId);
             }
-            if (result >= 0)
-            {
-                result = policy.SetDefaultEndpoint(endpointId, Role.Communications);
-            }
+            var activePolicy = (IPolicyConfig)(object)new PolicyConfigClient();
+            policy = activePolicy;
+            var result = ApplyDefaultEndpointTransaction(
+                endpointId,
+                previous,
+                (id, role) => SetDefaultEndpoint(activePolicy, id, role),
+                out var updates);
+            roleResults = updates;
             return result;
         }
         catch (COMException ex)
@@ -640,7 +694,96 @@ public static partial class CoreAudio
         finally
         {
             Release(policy);
+            Release(enumerator);
         }
+    }
+
+    private static readonly AudioRole[] DefaultRoles =
+        [AudioRole.Console, AudioRole.Multimedia, AudioRole.Communications];
+
+    internal static int CompareEndpoints(AudioEndpoint left, AudioEndpoint right)
+    {
+        var comparison = right.IsDefault.CompareTo(left.IsDefault);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+        comparison = StringComparer.OrdinalIgnoreCase.Compare(left.Name, right.Name);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+        comparison = StringComparer.Ordinal.Compare(left.Name, right.Name);
+        return comparison != 0
+            ? comparison
+            : StringComparer.Ordinal.Compare(left.Id, right.Id);
+    }
+
+    private static int ReadDefaultEndpointId(
+        IMMDeviceEnumerator enumerator,
+        AudioRole role,
+        out string? endpointId)
+    {
+        endpointId = null;
+        IMMDevice? device = null;
+        try
+        {
+            var result = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role, out device);
+            return result < 0 || device is null ? result : device.GetId(out endpointId);
+        }
+        finally
+        {
+            Release(device);
+        }
+    }
+
+    private static int SetDefaultEndpoint(
+        IPolicyConfig policy,
+        string endpointId,
+        AudioRole role)
+    {
+        try
+        {
+            return policy.SetDefaultEndpoint(endpointId, role);
+        }
+        catch (COMException ex)
+        {
+            return ex.HResult;
+        }
+    }
+
+    internal static int ApplyDefaultEndpointTransaction(
+        string endpointId,
+        IReadOnlyDictionary<AudioRole, string> previous,
+        Func<string, AudioRole, int> setDefault,
+        out IReadOnlyList<DefaultEndpointRoleResult> updates)
+    {
+        var results = new List<DefaultEndpointRoleResult>(DefaultRoles.Length);
+        var applied = new List<AudioRole>(DefaultRoles.Length);
+        var failure = 0;
+        foreach (var role in DefaultRoles)
+        {
+            var result = setDefault(endpointId, role);
+            results.Add(new DefaultEndpointRoleResult(role, result, null));
+            if (result < 0)
+            {
+                failure = result;
+                break;
+            }
+            applied.Add(role);
+        }
+        if (failure < 0)
+        {
+            for (var index = applied.Count - 1; index >= 0; index--)
+            {
+                var role = applied[index];
+                var rollback = setDefault(previous[role], role);
+                var resultIndex = results.FindIndex(item => item.Role == role);
+                results[resultIndex] = results[resultIndex] with { RollbackHResult = rollback };
+            }
+        }
+        updates = results;
+        return failure;
     }
 
     private static IMMDeviceEnumerator CreateEnumerator()
@@ -656,7 +799,7 @@ public static partial class CoreAudio
         volume = null;
         var result = enumerator.GetDefaultAudioEndpoint(
             direction == AudioDirection.Render ? DataFlow.Render : DataFlow.Capture,
-            Role.Console,
+            AudioRole.Console,
             out device);
         if (result < 0 || device is null)
         {
@@ -718,13 +861,6 @@ public static partial class CoreAudio
         All,
     }
 
-    private enum Role
-    {
-        Console,
-        Multimedia,
-        Communications,
-    }
-
     [StructLayout(LayoutKind.Sequential)]
     private readonly struct PropertyKey(Guid formatId, uint propertyId)
     {
@@ -782,7 +918,7 @@ public static partial class CoreAudio
         [PreserveSig]
         int GetDefaultAudioEndpoint(
             DataFlow dataFlow,
-            Role role,
+            AudioRole role,
             out IMMDevice? endpoint);
 
         [PreserveSig]
@@ -1030,7 +1166,7 @@ public static partial class CoreAudio
         [PreserveSig]
         int SetDefaultEndpoint(
             [MarshalAs(UnmanagedType.LPWStr)] string endpointId,
-            Role role);
+            AudioRole role);
 
         [PreserveSig]
         int SetEndpointVisibility(nint deviceId, int visible);

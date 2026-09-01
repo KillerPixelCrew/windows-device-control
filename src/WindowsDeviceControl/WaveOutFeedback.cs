@@ -24,7 +24,8 @@ public sealed partial class WaveOutFeedback : IDisposable
     /// <summary>Opens and prewarms the default waveOut endpoint.</summary>
     /// <param name="feedback">The opened stream on success; <see langword="null"/> otherwise. The
     /// caller owns it and must dispose it.</param>
-    /// <returns>Zero on success, otherwise the <c>MMRESULT</c> waveOut returned.</returns>
+    /// <returns>Zero on success, otherwise an HRESULT containing the <c>MMRESULT</c> waveOut
+    /// returned.</returns>
     /// <remarks>Opening is separated from playing on purpose: opening a waveOut endpoint takes
     /// long enough to be audible as a delay, so the stream is opened once and kept.</remarks>
     public static int Open(out WaveOutFeedback? feedback)
@@ -42,7 +43,7 @@ public sealed partial class WaveOutFeedback : IDisposable
 
     /// <summary>Plays the cue, unless the previous one is still queued.</summary>
     /// <returns>Zero on success or when the previous cue is still playing, otherwise the
-    /// <c>MMRESULT</c> waveOut returned.</returns>
+    /// HRESULT containing the <c>MMRESULT</c> waveOut returned.</returns>
     /// <remarks>Dropping the cue while one is queued is deliberate: holding a volume key repeats
     /// faster than the sound lasts, and queueing every repeat turns the feedback into a
     /// rattle.</remarks>
@@ -50,12 +51,12 @@ public sealed partial class WaveOutFeedback : IDisposable
     {
         if (_output == 0 || _header == 0)
         {
-            return 1;
+            return HResultFromMultimedia(1);
         }
         var header = Marshal.PtrToStructure<WaveHeader>(_header);
-        if ((header.Flags & HeaderInQueue) != 0)
+        if (TryGetQueuedResult(header.Flags, out var queuedResult))
         {
-            return 1;
+            return queuedResult;
         }
         var result = WaveOutWrite(_output, _header, (uint)Marshal.SizeOf<WaveHeader>());
         return HResultFromMultimedia(result);
@@ -149,6 +150,12 @@ public sealed partial class WaveOutFeedback : IDisposable
 
     private static int HResultFromMultimedia(uint result)
         => result == 0 ? 0 : unchecked((int)(0x80070000 | (result & 0xFFFF)));
+
+    internal static bool TryGetQueuedResult(uint headerFlags, out int result)
+    {
+        result = 0;
+        return (headerFlags & HeaderInQueue) != 0;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WaveFormat

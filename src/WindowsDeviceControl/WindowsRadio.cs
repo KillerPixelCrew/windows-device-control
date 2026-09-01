@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -34,6 +35,7 @@ public static unsafe partial class WindowsRadio
         + " OR System.Devices.Aep.ProtocolId:=\"{bb7bb05e-5972-42b5-94fc-76eaa7084d49}\")";
     private const string AepConnected = "System.Devices.Aep.IsConnected";
     private const string AepContainer = "System.Devices.Aep.ContainerId";
+    private const string DeviceContainer = "System.Devices.ContainerId";
     private const uint ErrorSuccess = 0;
     private const uint ErrorNotFound = 1168;
     private const uint WlanNotificationSourceNone = 0;
@@ -76,15 +78,15 @@ public static unsafe partial class WindowsRadio
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan PairingTimeout = TimeSpan.FromSeconds(90);
     private static readonly object RadioCacheLock = new();
-    private static (DateTime Taken, IReadOnlyList<Radio> Radios)? _radioCache;
+    private static (long Taken, IReadOnlyList<Radio> Radios)? _radioCache;
     private static readonly object BluetoothWatchLock = new();
     private static BluetoothWatch? _bluetoothWatch;
     private static readonly object WifiWatchLock = new();
-    private static nint _wifiWatchHandle;
-    private static WlanNotificationCallback? _wifiWatchCallback;
-    private static Action<WifiWatchEvent>? _wifiEvents;
+    private static WifiWatch? _wifiWatch;
     private static int _nextPairingToken;
+    private static long _nextPairingAttempt;
     private static readonly ConcurrentDictionary<uint, PendingPairing> PendingPairings = new();
+    private static readonly ConcurrentDictionary<long, byte> ActivePairingAttempts = new();
 
     /// <summary>The result of a radio power query.</summary>
     public enum Power
@@ -292,7 +294,7 @@ public static unsafe partial class WindowsRadio
         ScanCompleted,
 
         /// <summary>The adapter connected or disconnected. Call <see cref="GetWifiStatus"/> for
-        /// the new state.</summary>
+        /// the new state. This is also raised when a connection attempt fails.</summary>
         ConnectionChanged,
     }
 
@@ -364,6 +366,8 @@ public static unsafe partial class WindowsRadio
     /// <param name="kind">Which radio family to read.</param>
     /// <returns>The aggregate state; <see cref="Power.Absent"/> when the machine has no such
     /// adapter.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a defined
+    /// <see cref="RadioKind"/> value.</exception>
     public static Power GetPower(RadioKind kind)
     {
         var radios = GetRadios(kind);
@@ -387,8 +391,11 @@ public static unsafe partial class WindowsRadio
     /// refused. A refusal is reported, not thrown.</returns>
     /// <exception cref="InvalidOperationException">The machine has no adapter of this kind, or no
     /// adapter accepted the requested state.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a defined
+    /// <see cref="RadioKind"/> value.</exception>
     public static Access SetPower(RadioKind kind, bool on)
     {
+        ValidateRadioKind(kind);
         var access = RequestAccess();
         if (access != Access.Allowed)
         {
@@ -441,11 +448,12 @@ public static unsafe partial class WindowsRadio
 
     private static IReadOnlyList<Radio> GetRadios(RadioKind kind)
     {
+        ValidateRadioKind(kind);
         IReadOnlyList<Radio> all;
         lock (RadioCacheLock)
         {
             if (_radioCache is { } cached
-                && DateTime.UtcNow - cached.Taken < RadioCacheTtl
+                && Stopwatch.GetElapsedTime(cached.Taken) < RadioCacheTtl
                 && (cached.Radios.Count == 0 || cached.Radios.All(CanReadRadio)))
             {
                 all = cached.Radios;
@@ -453,7 +461,7 @@ public static unsafe partial class WindowsRadio
             else
             {
                 all = Radio.GetRadiosAsync().AsTask().GetAwaiter().GetResult().ToArray();
-                _radioCache = (DateTime.UtcNow, all);
+                _radioCache = (Stopwatch.GetTimestamp(), all);
             }
         }
         // Fully qualified: this type declares its own RadioKind, so the WinRT one needs naming.
@@ -461,6 +469,14 @@ public static unsafe partial class WindowsRadio
             ? Windows.Devices.Radios.RadioKind.WiFi
             : Windows.Devices.Radios.RadioKind.Bluetooth;
         return all.Where(radio => radio.Kind == expected).ToArray();
+    }
+
+    private static void ValidateRadioKind(RadioKind kind)
+    {
+        if (kind is not RadioKind.WiFi and not RadioKind.Bluetooth)
+        {
+            throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown radio kind.");
+        }
     }
 
     private static bool CanReadRadio(Radio radio)
@@ -486,7 +502,7 @@ public static unsafe partial class WindowsRadio
     public static Power AggregatePower(IEnumerable<Power> states)
     {
         var materialized = states.ToArray();
-        foreach (var preferred in new[] { Power.On, Power.Off, Power.Disabled, Power.Unknown })
+        foreach (var preferred in new[] { Power.On, Power.Disabled, Power.Off, Power.Unknown })
         {
             if (materialized.Contains(preferred))
             {
@@ -543,7 +559,8 @@ public static unsafe partial class WindowsRadio
     /// <summary>Lists Bluetooth devices, classic and Low Energy alike.</summary>
     /// <param name="pairedOnly">True to list only already-paired devices; false to include every
     /// device currently visible, which is what a "add a device" screen shows.</param>
-    /// <returns>The devices found. This is a point-in-time snapshot — use
+    /// <returns>The distinct devices found. Classic and Low Energy endpoints that share a device
+    /// container are combined. This is a point-in-time snapshot — use
     /// <see cref="StartBluetoothWatch"/> to follow changes instead of polling this.</returns>
     public static IReadOnlyList<BluetoothDevice> ListBluetoothDevices(bool pairedOnly)
     {
@@ -557,15 +574,45 @@ public static unsafe partial class WindowsRadio
             .AsTask().GetAwaiter().GetResult();
         return found.Select(ReadBluetoothDevice)
             .Where(device => device.Id.Length > 0)
+            .GroupBy(
+                device => device.Container.Length > 0
+                    ? $"container:{device.Container}"
+                    : $"endpoint:{device.Id}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(MergeBluetoothEndpoints)
             .OrderBy(device => device.Name.Length == 0)
             .ThenBy(device => device.Name, StringComparer.Ordinal)
+            .ThenBy(device => device.Id, StringComparer.Ordinal)
             .ToArray();
     }
 
+    private static BluetoothDevice MergeBluetoothEndpoints(
+        IGrouping<string, BluetoothDevice> endpoints)
+    {
+        var preferred = endpoints
+            .OrderByDescending(device => device.Paired)
+            .ThenByDescending(device => device.Connected)
+            .ThenByDescending(device => device.CanPair)
+            .ThenBy(device => device.Id, StringComparer.Ordinal)
+            .First();
+        var name = endpoints.Select(device => device.Name)
+            .Where(value => value.Length > 0)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .FirstOrDefault() ?? string.Empty;
+        return preferred with
+        {
+            Name = name,
+            Paired = endpoints.Any(device => device.Paired),
+            CanPair = endpoints.Any(device => device.CanPair),
+            Connected = endpoints.Any(device => device.Connected),
+        };
+    }
+
     /// <summary>Counts the currently connected Bluetooth devices.</summary>
-    /// <returns>How many classic and Low Energy interfaces PnP reports as connected. Cheaper than
-    /// <see cref="ListBluetoothDevices"/> when all you need is whether anything is connected — for
-    /// a status icon, say.</returns>
+    /// <returns>How many distinct classic or Low Energy devices PnP reports as connected. A device
+    /// exposed through both transports is counted once by its device-container identity. Cheaper
+    /// than <see cref="ListBluetoothDevices"/> when all you need is whether anything is connected
+    /// — for a status icon, say.</returns>
     public static int ConnectedBluetoothCount()
     {
         var selectors = new[]
@@ -574,8 +621,40 @@ public static unsafe partial class WindowsRadio
                 BluetoothConnectionStatus.Connected),
             BluetoothLEDevice.GetDeviceSelectorFromConnectionStatus(BluetoothConnectionStatus.Connected),
         };
-        return selectors.Sum(selector => DeviceInformation.FindAllAsync(selector)
-            .AsTask().GetAwaiter().GetResult().Count);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var selector in selectors)
+        {
+            var devices = DeviceInformation.FindAllAsync(
+                    selector,
+                    new[] { AepContainer, DeviceContainer })
+                .AsTask().GetAwaiter().GetResult();
+            foreach (var device in devices)
+            {
+                identities.Add(BluetoothIdentity(device.Id, device.Properties));
+            }
+        }
+        return identities.Count;
+    }
+
+    internal static string BluetoothIdentity(
+        string id,
+        IReadOnlyDictionary<string, object> properties)
+    {
+        if (properties.TryGetValue(AepContainer, out var value)
+            || properties.TryGetValue(DeviceContainer, out value))
+        {
+            var container = value switch
+            {
+                Guid guid => guid.ToString("D"),
+                string text when Guid.TryParse(text, out var guid) => guid.ToString("D"),
+                _ => null,
+            };
+            if (container is not null)
+            {
+                return $"container:{container}";
+            }
+        }
+        return $"endpoint:{id}";
     }
 
     /// <summary>Starts a live feed of Bluetooth device changes.</summary>
@@ -590,76 +669,35 @@ public static unsafe partial class WindowsRadio
     /// </remarks>
     public static void StartBluetoothWatch(Action<BluetoothChange> onChange)
     {
-        StopBluetoothWatch();
-        var watcher = DeviceInformation.CreateWatcher(
-            BluetoothAqs,
-            new[] { AepConnected, AepContainer },
-            DeviceInformationKind.AssociationEndpoint);
-        var records = new Dictionary<string, DeviceInformation>(StringComparer.Ordinal);
-        TypedEventHandler<DeviceWatcher, DeviceInformation> added = (_, info) =>
+        ArgumentNullException.ThrowIfNull(onChange);
+        lock (BluetoothWatchLock)
         {
-            if (info.Id.Length == 0)
-            {
-                return;
-            }
-            lock (records)
-            {
-                records[info.Id] = info;
-            }
-            onChange(new BluetoothChange(BluetoothChangeKind.Added, ReadBluetoothDevice(info)));
-        };
-        TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> updated = (_, update) =>
-        {
-            DeviceInformation? info;
-            lock (records)
-            {
-                records.TryGetValue(update.Id, out info);
-                info?.Update(update);
-            }
-            if (info is not null)
-            {
-                onChange(new BluetoothChange(BluetoothChangeKind.Updated, ReadBluetoothDevice(info)));
-                return;
-            }
+            StopBluetoothWatchCore();
+            var watcher = DeviceInformation.CreateWatcher(
+                BluetoothAqs,
+                new[] { AepConnected, AepContainer },
+                DeviceInformationKind.AssociationEndpoint);
+            var watch = new BluetoothWatch(watcher, onChange);
+            watch.Added = (_, info) => OnBluetoothAdded(watch, info);
+            watch.Updated = (_, update) => OnBluetoothUpdated(watch, update);
+            watch.Removed = (_, update) => OnBluetoothRemoved(watch, update);
+            watch.Completed = (_, _) => PublishBluetoothChange(
+                watch,
+                new BluetoothChange(BluetoothChangeKind.EnumerationCompleted, default));
+            _bluetoothWatch = watch;
             try
             {
-                var resolved = DeviceInformation.CreateFromIdAsync(
-                        update.Id,
-                        new[] { AepConnected, AepContainer },
-                        DeviceInformationKind.AssociationEndpoint)
-                    .AsTask().GetAwaiter().GetResult();
-                lock (records)
-                {
-                    records[resolved.Id] = resolved;
-                }
-                onChange(new BluetoothChange(
-                    BluetoothChangeKind.Updated,
-                    ReadBluetoothDevice(resolved)));
+                watcher.Added += watch.Added;
+                watcher.Updated += watch.Updated;
+                watcher.Removed += watch.Removed;
+                watcher.EnumerationCompleted += watch.Completed;
+                watcher.Start();
             }
             catch
             {
-                // A disappearing endpoint is followed by Removed; it has no update to publish.
+                StopBluetoothWatchCore();
+                throw;
             }
-        };
-        TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> removed = (_, update) =>
-        {
-            lock (records)
-            {
-                records.Remove(update.Id);
-            }
-            onChange(new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
-                update.Id, string.Empty, false, false, false, string.Empty)));
-        };
-        TypedEventHandler<DeviceWatcher, object> completed = (_, _) =>
-            onChange(new BluetoothChange(BluetoothChangeKind.EnumerationCompleted, default));
-        watcher.Added += added;
-        watcher.Updated += updated;
-        watcher.Removed += removed;
-        watcher.EnumerationCompleted += completed;
-        watcher.Start();
-        lock (BluetoothWatchLock)
-        {
-            _bluetoothWatch = new BluetoothWatch(watcher, added, updated, removed, completed);
         }
     }
 
@@ -669,21 +707,127 @@ public static unsafe partial class WindowsRadio
     /// to tear down whatever state the callback touched.</remarks>
     public static void StopBluetoothWatch()
     {
-        BluetoothWatch? watch;
         lock (BluetoothWatchLock)
         {
-            watch = _bluetoothWatch;
-            _bluetoothWatch = null;
+            StopBluetoothWatchCore();
         }
+    }
+
+    private static void StopBluetoothWatchCore()
+    {
+        var watch = _bluetoothWatch;
+        _bluetoothWatch = null;
         if (watch is null)
         {
             return;
         }
-        watch.Watcher.Added -= watch.Added;
-        watch.Watcher.Updated -= watch.Updated;
-        watch.Watcher.Removed -= watch.Removed;
-        watch.Watcher.EnumerationCompleted -= watch.Completed;
-        watch.Watcher.Stop();
+        if (watch.Added is not null)
+        {
+            watch.Watcher.Added -= watch.Added;
+        }
+        if (watch.Updated is not null)
+        {
+            watch.Watcher.Updated -= watch.Updated;
+        }
+        if (watch.Removed is not null)
+        {
+            watch.Watcher.Removed -= watch.Removed;
+        }
+        if (watch.Completed is not null)
+        {
+            watch.Watcher.EnumerationCompleted -= watch.Completed;
+        }
+        try
+        {
+            watch.Watcher.Stop();
+        }
+        catch (InvalidOperationException)
+        {
+            // A watcher that failed during Start can already be stopped or aborted.
+        }
+    }
+
+    private static void OnBluetoothAdded(BluetoothWatch watch, DeviceInformation info)
+    {
+        lock (BluetoothWatchLock)
+        {
+            if (!ReferenceEquals(_bluetoothWatch, watch) || info.Id.Length == 0)
+            {
+                return;
+            }
+            watch.Records[info.Id] = info;
+            watch.Callback(new BluetoothChange(
+                BluetoothChangeKind.Added,
+                ReadBluetoothDevice(info)));
+        }
+    }
+
+    private static void OnBluetoothUpdated(
+        BluetoothWatch watch,
+        DeviceInformationUpdate update)
+    {
+        lock (BluetoothWatchLock)
+        {
+            if (!ReferenceEquals(_bluetoothWatch, watch))
+            {
+                return;
+            }
+            if (watch.Records.TryGetValue(update.Id, out var info))
+            {
+                info.Update(update);
+                watch.Callback(new BluetoothChange(
+                    BluetoothChangeKind.Updated,
+                    ReadBluetoothDevice(info)));
+                return;
+            }
+            try
+            {
+                var resolved = DeviceInformation.CreateFromIdAsync(
+                        update.Id,
+                        new[] { AepConnected, AepContainer },
+                        DeviceInformationKind.AssociationEndpoint)
+                    .AsTask().GetAwaiter().GetResult();
+                if (!ReferenceEquals(_bluetoothWatch, watch))
+                {
+                    return;
+                }
+                watch.Records[resolved.Id] = resolved;
+                watch.Callback(new BluetoothChange(
+                    BluetoothChangeKind.Updated,
+                    ReadBluetoothDevice(resolved)));
+            }
+            catch
+            {
+                // A disappearing endpoint is followed by Removed; it has no update to publish.
+            }
+        }
+    }
+
+    private static void OnBluetoothRemoved(
+        BluetoothWatch watch,
+        DeviceInformationUpdate update)
+    {
+        lock (BluetoothWatchLock)
+        {
+            if (!ReferenceEquals(_bluetoothWatch, watch))
+            {
+                return;
+            }
+            watch.Records.Remove(update.Id);
+            watch.Callback(new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
+                update.Id, string.Empty, false, false, false, string.Empty)));
+        }
+    }
+
+    private static void PublishBluetoothChange(BluetoothWatch watch, BluetoothChange change)
+    {
+        lock (BluetoothWatchLock)
+        {
+            if (ReferenceEquals(_bluetoothWatch, watch))
+            {
+                watch.Callback(change);
+            }
+        }
     }
 
     /// <summary>Pairs a Bluetooth device, running the ceremony through your own UI.</summary>
@@ -705,8 +849,17 @@ public static unsafe partial class WindowsRadio
         Action<PairingResult?, Exception?> onFinished)
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);
+        ArgumentNullException.ThrowIfNull(onRequest);
+        ArgumentNullException.ThrowIfNull(onFinished);
+        var attempt = Interlocked.Increment(ref _nextPairingAttempt);
         _ = Task.Run(() =>
         {
+            ActivePairingAttempts.TryAdd(attempt, 0);
+            PairingResult? completed = null;
+            Exception? failure = null;
+            DeviceInformationCustomPairing? custom = null;
+            TypedEventHandler<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>?
+                requested = null;
             try
             {
                 var info = DeviceInformation.CreateFromIdAsync(
@@ -714,13 +867,24 @@ public static unsafe partial class WindowsRadio
                         new[] { AepConnected, AepContainer },
                         DeviceInformationKind.AssociationEndpoint)
                     .AsTask().GetAwaiter().GetResult();
-                var custom = info.Pairing.Custom;
-                TypedEventHandler<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>
-                    requested = (_, args) =>
+                custom = info.Pairing.Custom;
+                requested = (_, args) =>
                     {
                         var deferral = args.GetDeferral();
-                        var token = unchecked((uint)Interlocked.Increment(ref _nextPairingToken));
-                        PendingPairings[token] = new PendingPairing(args, deferral);
+                        var pending = new PendingPairing(attempt, args, deferral);
+                        if (!ActivePairingAttempts.ContainsKey(attempt))
+                        {
+                            deferral.Complete();
+                            return;
+                        }
+                        var token = AddPendingPairing(pending);
+                        if (!ActivePairingAttempts.ContainsKey(attempt)
+                            && PendingPairings.TryRemove(
+                                new KeyValuePair<uint, PendingPairing>(token, pending)))
+                        {
+                            deferral.Complete();
+                            return;
+                        }
                         onRequest(new PairingRequest(
                             token,
                             MapPairingKind(args.PairingKind),
@@ -728,39 +892,43 @@ public static unsafe partial class WindowsRadio
                             info.Name ?? string.Empty));
                     };
                 custom.PairingRequested += requested;
-                try
+                var result = Pair(
+                    custom,
+                    DevicePairingKinds.ConfirmOnly
+                        | DevicePairingKinds.ProvidePin
+                        | DevicePairingKinds.ConfirmPinMatch,
+                    attempt);
+                if (result.Status == DevicePairingResultStatus.RequiredHandlerNotRegistered)
                 {
-                    var result = Pair(
-                        custom,
-                        DevicePairingKinds.ConfirmOnly
-                            | DevicePairingKinds.ProvidePin
-                            | DevicePairingKinds.ConfirmPinMatch);
-                    if (result.Status == DevicePairingResultStatus.RequiredHandlerNotRegistered)
-                    {
-                        result = Pair(custom, DevicePairingKinds.DisplayPin);
-                    }
-                    onFinished(new PairingResult(
-                        MapPairingOutcome(result.Status),
-                        (int)result.Status), null);
+                    result = Pair(custom, DevicePairingKinds.DisplayPin, attempt);
                 }
-                finally
-                {
-                    custom.PairingRequested -= requested;
-                }
+                completed = new PairingResult(
+                    MapPairingOutcome(result.Status),
+                    (int)result.Status);
             }
             catch (Exception ex)
             {
-                Exception failure = ex;
+                failure = ex;
+            }
+            finally
+            {
+                ActivePairingAttempts.TryRemove(attempt, out _);
+                if (custom is not null && requested is not null)
+                {
+                    custom.PairingRequested -= requested;
+                }
                 try
                 {
-                    CompletePendingPairings();
+                    CompletePendingPairings(attempt);
                 }
                 catch (Exception cleanupFailure)
                 {
-                    failure = new AggregateException(ex, cleanupFailure);
+                    failure = failure is null
+                        ? cleanupFailure
+                        : new AggregateException(failure, cleanupFailure);
                 }
-                onFinished(null, failure);
             }
+            onFinished(failure is null ? completed : null, failure);
         });
     }
 
@@ -776,7 +944,7 @@ public static unsafe partial class WindowsRadio
     {
         if (!PendingPairings.TryRemove(token, out var pending))
         {
-            throw new InvalidOperationException($"Pairing request {token} is no longer pending.");
+            return;
         }
         try
         {
@@ -794,8 +962,6 @@ public static unsafe partial class WindowsRadio
         }
         finally
         {
-            // This method is always called by RadioManager's Task.Run worker. Completing a
-            // pairing deferral on Avalonia's STA thread can wedge Device Association service.
             pending.Deferral.Complete();
         }
     }
@@ -818,7 +984,8 @@ public static unsafe partial class WindowsRadio
 
     private static DevicePairingResult Pair(
         DeviceInformationCustomPairing pairing,
-        DevicePairingKinds kinds)
+        DevicePairingKinds kinds,
+        long attempt)
     {
         using var timeout = new CancellationTokenSource(PairingTimeout);
         try
@@ -828,21 +995,35 @@ public static unsafe partial class WindowsRadio
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
-            CompletePendingPairings();
+            CompletePendingPairings(attempt);
             throw new TimeoutException("Bluetooth pairing timed out.");
         }
     }
 
-    private static void CompletePendingPairings()
+    private static uint AddPendingPairing(PendingPairing pending)
+    {
+        while (true)
+        {
+            var token = unchecked((uint)Interlocked.Increment(ref _nextPairingToken));
+            if (PendingPairings.TryAdd(token, pending))
+            {
+                return token;
+            }
+        }
+    }
+
+    private static void CompletePendingPairings(long attempt)
     {
         List<Exception>? failures = null;
-        foreach (var token in PendingPairings.Keys)
+        foreach (var entry in PendingPairings)
         {
-            if (PendingPairings.TryRemove(token, out var request))
+            if (entry.Value.Attempt == attempt
+                && PendingPairings.TryRemove(
+                    new KeyValuePair<uint, PendingPairing>(entry.Key, entry.Value)))
             {
                 try
                 {
-                    request.Deferral.Complete();
+                    entry.Value.Deferral.Complete();
                 }
                 catch (Exception ex)
                 {
@@ -906,12 +1087,19 @@ public static unsafe partial class WindowsRadio
         _ => PairingOutcome.Unknown,
     };
 
-    private sealed record BluetoothWatch(
-        DeviceWatcher Watcher,
-        TypedEventHandler<DeviceWatcher, DeviceInformation> Added,
-        TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> Updated,
-        TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> Removed,
-        TypedEventHandler<DeviceWatcher, object> Completed);
+    private sealed class BluetoothWatch(
+        DeviceWatcher watcher,
+        Action<BluetoothChange> callback)
+    {
+        internal DeviceWatcher Watcher { get; } = watcher;
+        internal Action<BluetoothChange> Callback { get; } = callback;
+        internal Dictionary<string, DeviceInformation> Records { get; } =
+            new(StringComparer.Ordinal);
+        internal TypedEventHandler<DeviceWatcher, DeviceInformation>? Added { get; set; }
+        internal TypedEventHandler<DeviceWatcher, DeviceInformationUpdate>? Updated { get; set; }
+        internal TypedEventHandler<DeviceWatcher, DeviceInformationUpdate>? Removed { get; set; }
+        internal TypedEventHandler<DeviceWatcher, object>? Completed { get; set; }
+    }
 
     /// <summary>Reads the Wi-Fi adapter's current state and joined network.</summary>
     /// <returns>The state, signal and network name. On a machine with several adapters this
@@ -990,9 +1178,9 @@ public static unsafe partial class WindowsRadio
             .Select(network => new WifiNetwork(
                 network.Ssid,
                 network.Signal,
-                network.Security,
+                network.Ambiguous ? WifiSecurity.Unsupported : network.Security,
                 network.Saved,
-                network.Connectable,
+                network.Connectable && !network.Ambiguous,
                 network.Connected))
             .ToArray();
     }
@@ -1008,8 +1196,9 @@ public static unsafe partial class WindowsRadio
     /// <exception cref="ArgumentException"><paramref name="ssid"/> is null or empty.</exception>
     /// <remarks>
     /// Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
-    /// a stored profile before joining a protected network, so one is written first when needed —
-    /// which is why a wrong passphrase leaves a profile behind that a later call will reuse.
+    /// a stored profile before joining a protected network, so one is written first when needed.
+    /// If an existing profile must be overwritten, its exact XML is restored when the connection
+    /// fails; a failed key or security negotiation also removes a newly-created profile.
     /// </remarks>
     public static uint ConnectWifi(string ssid, string? passphrase)
     {
@@ -1030,16 +1219,20 @@ public static unsafe partial class WindowsRadio
             throw new InvalidOperationException(
                 "More than one network advertises this display name; it cannot be identified safely.");
         }
+        if (passphrase is not null && facts.Security != WifiSecurity.PersonalPsk)
+        {
+            throw new InvalidOperationException(
+                "This network does not advertise a supported personal-key authentication method.");
+        }
 
         var targetSsid = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
         var profiles = ReadProfileSsids(client.Handle, choice.Adapter.Id, failOnListError: true);
         var profileName = facts.ProfileName;
-        string? authored = null;
-        var authoredOverExisting = false;
+        ProfileMutation? mutation = null;
 
         if (passphrase is not null)
         {
-            (authored, authoredOverExisting) = FindFreeProfileName(profiles, ssid, targetSsid);
+            mutation = FindFreeProfileName(profiles, ssid, targetSsid);
             var flavors = facts.Authentication == Dot11AuthWpaPsk
                 ? new[] { WifiProfile.PskFlavor.WpaTkip, WifiProfile.PskFlavor.Wpa2Aes,
                     WifiProfile.PskFlavor.Wpa3Transition }
@@ -1050,7 +1243,7 @@ public static unsafe partial class WindowsRadio
                 try
                 {
                     SetProfile(client.Handle, choice.Adapter.Id, WifiProfile.CreatePsk(
-                        authored, ssid, facts.RawSsid, passphrase, flavor));
+                        mutation.Value.Name, ssid, facts.RawSsid, passphrase, flavor));
                     last = null;
                     break;
                 }
@@ -1061,14 +1254,16 @@ public static unsafe partial class WindowsRadio
             }
             if (last is not null)
             {
+                var cleanup = TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation);
                 if (last is WlanReasonException reason
-                    && GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
+                    && GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown
+                    && cleanup is null)
                 {
                     return reason.ReasonCode;
                 }
-                throw last;
+                throw CombineFailure(last, cleanup);
             }
-            profileName = authored;
+            profileName = mutation.Value.Name;
         }
         else if (profileName is null)
         {
@@ -1076,14 +1271,14 @@ public static unsafe partial class WindowsRadio
             {
                 throw new InvalidOperationException(
                     facts.Security == WifiSecurity.Unsupported
-                        ? "This network's WEP security is not supported."
+                        ? "This network's authentication method is not supported."
                         : "This network needs a password and has no saved profile.");
             }
-            (authored, authoredOverExisting) = FindFreeProfileName(profiles, ssid, targetSsid);
+            mutation = FindFreeProfileName(profiles, ssid, targetSsid);
             try
             {
                 SetProfile(client.Handle, choice.Adapter.Id, WifiProfile.CreateOpen(
-                    authored,
+                    mutation.Value.Name,
                     ssid,
                     facts.RawSsid,
                     facts.Security == WifiSecurity.EnhancedOpen));
@@ -1091,69 +1286,126 @@ public static unsafe partial class WindowsRadio
             catch (WlanReasonException reason)
                 when (GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
             {
-                return reason.ReasonCode;
+                var cleanup = TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation);
+                if (cleanup is null)
+                {
+                    return reason.ReasonCode;
+                }
+                throw CombineFailure(reason, cleanup);
             }
-            profileName = authored;
+            catch (Exception ex)
+            {
+                throw CombineFailure(
+                    ex,
+                    TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+            }
+            profileName = mutation.Value.Name;
         }
 
         profileName ??= ssid;
-        using var verdict = ConnectionVerdict.TryStart(
-            choice.Adapter.Id,
-            profileName,
-            out var verdictRegistrationStatus);
-        var parameters = new WlanConnectionParameters
-        {
-            Mode = WlanConnectionModeProfile,
-            Profile = Marshal.StringToCoTaskMemUni(profileName),
-            BssType = Dot11BssTypeInfrastructure,
-        };
+        ConnectionVerdict? verdict;
+        uint verdictRegistrationStatus;
         try
         {
-            var adapterId = choice.Adapter.Id;
-            var accepted = WlanConnect(client.Handle, in adapterId, in parameters, 0);
-            if (accepted != ErrorSuccess)
+            verdict = ConnectionVerdict.TryStart(
+                choice.Adapter.Id,
+                profileName,
+                out verdictRegistrationStatus);
+        }
+        catch (Exception ex)
+        {
+            throw CombineFailure(
+                ex,
+                TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+        }
+        using (verdict)
+        {
+            nint profilePointer;
+            try
             {
-                RollBackProfile(client.Handle, choice.Adapter.Id, authored, authoredOverExisting);
-                throw WlanFailure("WlanConnect", accepted);
+                profilePointer = Marshal.StringToCoTaskMemUni(profileName);
             }
-            if (verdict is null)
+            catch (Exception ex)
             {
-                if (PollForConnection(client.Handle, choice.Adapter.Id, ssid, ConnectTimeout))
+                throw CombineFailure(
+                    ex,
+                    TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+            }
+            var parameters = new WlanConnectionParameters
+            {
+                Mode = WlanConnectionModeProfile,
+                Profile = profilePointer,
+                BssType = Dot11BssTypeInfrastructure,
+            };
+            try
+            {
+                var adapterId = choice.Adapter.Id;
+                var accepted = WlanConnect(client.Handle, in adapterId, in parameters, 0);
+                if (accepted != ErrorSuccess)
+                {
+                    var failure = WlanFailure("WlanConnect", accepted);
+                    throw CombineFailure(
+                        failure,
+                        TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+                }
+                if (verdict is null)
+                {
+                    if (PollForConnection(
+                        client.Handle,
+                        choice.Adapter.Id,
+                        targetSsid,
+                        ConnectTimeout))
+                    {
+                        return 0;
+                    }
+                    var failure = new TimeoutException(
+                        "The Wi-Fi connection attempt did not complete; "
+                        + $"WLAN notification registration failed (Win32 {verdictRegistrationStatus}).");
+                    throw CombineFailure(
+                        failure,
+                        TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+                }
+
+                var outcome = verdict.Wait(ConnectTimeout);
+                if (outcome is { Succeeded: true })
                 {
                     return 0;
                 }
-                RollBackProfile(client.Handle, choice.Adapter.Id, authored, authoredOverExisting);
-                throw new TimeoutException(
-                    "The Wi-Fi connection attempt did not complete; "
-                    + $"WLAN notification registration failed (Win32 {verdictRegistrationStatus}).");
-            }
-
-            var outcome = verdict.Wait(ConnectTimeout);
-            if (outcome is { Succeeded: true })
-            {
-                return 0;
-            }
-            if (outcome is { } failed)
-            {
-                // A key or profile the access point rejected leaves behind a profile that would
-                // keep failing on every automatic reconnect, so it is rolled back. An unreachable
-                // network's profile is kept: it is probably correct and simply out of range.
-                if (GetReasonVerdict(failed.Reason)
-                    is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch)
+                if (outcome is { } failed)
                 {
-                    RollBackProfile(client.Handle, choice.Adapter.Id, authored, authoredOverExisting);
+                    if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
+                    {
+                        return 0;
+                    }
+                    var reason = failed.Reason == 0 ? ErrorNotFound : failed.Reason;
+                    var kind = GetReasonVerdict(reason);
+                    var mustRestore = mutation?.Existed == true
+                        || kind is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch;
+                    var cleanup = mustRestore
+                        ? TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation)
+                        : null;
+                    if (cleanup is not null)
+                    {
+                        throw CombineFailure(
+                            new WlanReasonException(reason, ReasonText(reason)),
+                            cleanup);
+                    }
+                    return reason;
                 }
-                return failed.Reason == 0 ? ErrorNotFound : failed.Reason;
+                if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
+                {
+                    return 0;
+                }
+                var timeout = new TimeoutException(
+                    "The Wi-Fi connection attempt did not complete.");
+                throw CombineFailure(
+                    timeout,
+                    TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
             }
-            if (TryCurrentConnection(client.Handle, choice.Adapter.Id)?.Ssid != ssid)
+            finally
             {
-                RollBackProfile(client.Handle, choice.Adapter.Id, authored, authoredOverExisting);
+                Marshal.FreeCoTaskMem(parameters.Profile);
             }
-            throw new TimeoutException("The Wi-Fi connection attempt did not complete.");
-        }
-        finally
-        {
-            Marshal.FreeCoTaskMem(parameters.Profile);
         }
     }
 
@@ -1205,7 +1457,8 @@ public static unsafe partial class WindowsRadio
                 }
                 var target = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
                 var names = ReadProfileSsids(client.Handle, adapter.Id, failOnListError: true)
-                    .Where(profile => profile.Ssid.AsSpan().SequenceEqual(target))
+                    .Where(profile => profile.Ssid is { } profileSsid
+                        && profileSsid.AsSpan().SequenceEqual(target))
                     .Select(profile => profile.Name)
                     .Where(name => name is not null)
                     .Select(name => name!)
@@ -1269,13 +1522,13 @@ public static unsafe partial class WindowsRadio
     private static bool PollForConnection(
         nint client,
         Guid adapter,
-        string ssid,
+        byte[] targetSsid,
         TimeSpan timeout)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        var started = Stopwatch.GetTimestamp();
+        while (Stopwatch.GetElapsedTime(started) < timeout)
         {
-            if (TryCurrentConnection(client, adapter)?.Ssid == ssid)
+            if (IsConnectedTo(client, adapter, targetSsid))
             {
                 return true;
             }
@@ -1283,6 +1536,10 @@ public static unsafe partial class WindowsRadio
         }
         return false;
     }
+
+    private static bool IsConnectedTo(nint client, Guid adapter, byte[] targetSsid)
+        => TryCurrentConnection(client, adapter) is { } current
+            && current.RawSsid.AsSpan().SequenceEqual(targetSsid);
 
     /// <summary>Looks up Windows' own description of a WLAN reason code.</summary>
     /// <param name="code">The reason code to describe.</param>
@@ -1316,29 +1573,40 @@ public static unsafe partial class WindowsRadio
     /// rather than adding a second one. Pair it with <see cref="StopWifiWatch"/>.</remarks>
     public static void StartWifiWatch(Action<WifiWatchEvent> onEvent)
     {
-        StopWifiWatch();
-        var status = WlanOpenHandle(2, 0, out _, out var handle);
-        ThrowIfWlanFailed("WlanOpenHandle", status);
-        _wifiWatchCallback = OnWifiNotification;
-        _wifiEvents = onEvent;
-        var callback = Marshal.GetFunctionPointerForDelegate(_wifiWatchCallback);
-        var sources = WlanNotificationSourceAcm | WlanNotificationSourceMsm;
-        status = WlanRegisterNotification(handle, sources, 1, callback, 0, 0, 0);
-        if (status != ErrorSuccess)
-        {
-            status = WlanRegisterNotification(
-                handle, WlanNotificationSourceAcm, 1, callback, 0, 0, 0);
-        }
-        if (status != ErrorSuccess)
-        {
-            WlanCloseHandle(handle, 0);
-            _wifiEvents = null;
-            _wifiWatchCallback = null;
-            throw WlanFailure("WlanRegisterNotification", status);
-        }
+        ArgumentNullException.ThrowIfNull(onEvent);
         lock (WifiWatchLock)
         {
-            _wifiWatchHandle = handle;
+            StopWifiWatchCore();
+            var status = WlanOpenHandle(2, 0, out _, out var handle);
+            ThrowIfWlanFailed("WlanOpenHandle", status);
+            WifiWatch watch;
+            nint callback;
+            try
+            {
+                watch = new WifiWatch(handle, onEvent);
+                watch.Callback = (data, context) => OnWifiNotification(watch, data, context);
+                callback = Marshal.GetFunctionPointerForDelegate(watch.Callback);
+            }
+            catch
+            {
+                WlanCloseHandle(handle, 0);
+                throw;
+            }
+            _wifiWatch = watch;
+            var sources = WlanNotificationSourceAcm | WlanNotificationSourceMsm;
+            status = WlanRegisterNotification(handle, sources, 1, callback, 0, 0, 0);
+            if (status != ErrorSuccess)
+            {
+                status = WlanRegisterNotification(
+                    handle, WlanNotificationSourceAcm, 1, callback, 0, 0, 0);
+            }
+            if (status != ErrorSuccess)
+            {
+                _wifiWatch = null;
+                WlanCloseHandle(handle, 0);
+                GC.KeepAlive(watch.Callback);
+                throw WlanFailure("WlanRegisterNotification", status);
+            }
         }
     }
 
@@ -1348,43 +1616,58 @@ public static unsafe partial class WindowsRadio
     /// delegate.</remarks>
     public static void StopWifiWatch()
     {
-        nint handle;
         lock (WifiWatchLock)
         {
-            handle = _wifiWatchHandle;
-            _wifiWatchHandle = 0;
+            StopWifiWatchCore();
         }
-        if (handle != 0)
-        {
-            WlanRegisterNotification(handle, WlanNotificationSourceNone, 0, 0, 0, 0, 0);
-            WlanCloseHandle(handle, 0);
-        }
-        _wifiEvents = null;
-        _wifiWatchCallback = null;
     }
 
-    private static void OnWifiNotification(nint data, nint context)
+    private static void StopWifiWatchCore()
+    {
+        var watch = _wifiWatch;
+        _wifiWatch = null;
+        if (watch is null)
+        {
+            return;
+        }
+        WlanRegisterNotification(
+            watch.Handle,
+            WlanNotificationSourceNone,
+            0,
+            0,
+            0,
+            0,
+            0);
+        WlanCloseHandle(watch.Handle, 0);
+        GC.KeepAlive(watch.Callback);
+    }
+
+    private static void OnWifiNotification(WifiWatch watch, nint data, nint context)
     {
         try
         {
-            if (data == 0)
+            lock (WifiWatchLock)
             {
-                return;
-            }
-            var notification = Marshal.PtrToStructure<WlanNotificationData>(data);
-            if (notification.Source != WlanNotificationSourceAcm)
-            {
-                return;
-            }
-            WifiWatchEvent? change = notification.Code switch
-            {
-                AcmScanComplete or AcmScanListRefresh => WifiWatchEvent.ScanCompleted,
-                AcmConnectionComplete or AcmDisconnected => WifiWatchEvent.ConnectionChanged,
-                _ => null,
-            };
-            if (change is { } raised)
-            {
-                _wifiEvents?.Invoke(raised);
+                if (!ReferenceEquals(_wifiWatch, watch) || data == 0)
+                {
+                    return;
+                }
+                var notification = Marshal.PtrToStructure<WlanNotificationData>(data);
+                if (notification.Source != WlanNotificationSourceAcm)
+                {
+                    return;
+                }
+                WifiWatchEvent? change = notification.Code switch
+                {
+                    AcmScanComplete or AcmScanListRefresh => WifiWatchEvent.ScanCompleted,
+                    AcmConnectionComplete or AcmConnectionAttemptFail or AcmDisconnected =>
+                        WifiWatchEvent.ConnectionChanged,
+                    _ => null,
+                };
+                if (change is { } raised)
+                {
+                    watch.Events(raised);
+                }
             }
         }
         catch
@@ -1432,8 +1715,10 @@ public static unsafe partial class WindowsRadio
             {
                 return null;
             }
+            var rawSsid = ReadSsidBytes(current.Association.Ssid);
             return new CurrentConnection(
-                DecodeSsid(current.Association.Ssid),
+                Encoding.UTF8.GetString(rawSsid),
+                rawSsid,
                 (int)current.Association.SignalQuality);
         }
         finally
@@ -1461,7 +1746,7 @@ public static unsafe partial class WindowsRadio
                 throw new InvalidOperationException($"WLANAPI reported an invalid network count ({count}).");
             }
             var profiles = ReadProfileSsids(client, adapter, failOnListError: false);
-            var connected = TryCurrentConnection(client, adapter)?.Ssid;
+            var connected = TryCurrentConnection(client, adapter)?.RawSsid;
             var start = list + 8;
             var stride = Marshal.SizeOf<WlanAvailableNetwork>();
             for (var index = 0u; index < count; index++)
@@ -1476,7 +1761,9 @@ public static unsafe partial class WindowsRadio
                 }
                 var key = Convert.ToHexString(raw);
                 var saved = item.ProfileName[0] != '\0'
-                    || profiles.Any(profile => profile.Ssid.AsSpan().SequenceEqual(raw));
+                    || profiles.Any(profile => profile.Ssid is { } profileSsid
+                        && profileSsid.AsSpan().SequenceEqual(raw));
+                var profileName = ReadFixed(item.ProfileName, 256);
                 var facts = new WifiNetworkFacts(
                     ssid,
                     raw,
@@ -1485,18 +1772,12 @@ public static unsafe partial class WindowsRadio
                     item.DefaultAuthAlgorithm,
                     saved,
                     item.Connectable != 0,
-                    string.Equals(connected, ssid, StringComparison.Ordinal),
-                    ReadFixed(item.ProfileName, 256),
+                    connected is not null && connected.AsSpan().SequenceEqual(raw),
+                    profileName.Length == 0 ? null : profileName,
                     false);
                 if (merged.TryGetValue(key, out var existing))
                 {
-                    merged[key] = existing with
-                    {
-                        Signal = Math.Max(existing.Signal, facts.Signal),
-                        Saved = existing.Saved || facts.Saved,
-                        Connectable = existing.Connectable || facts.Connectable,
-                        Connected = existing.Connected || facts.Connected,
-                    };
+                    merged[key] = MergeNetworkFacts(existing, facts);
                 }
                 else
                 {
@@ -1518,9 +1799,11 @@ public static unsafe partial class WindowsRadio
     {
         InterfaceChoice? best = null;
         var bestRank = -1;
+        var observations = new List<WifiNetworkFacts>(interfaces.Count);
         foreach (var adapter in interfaces)
         {
             var facts = ReadScanFacts(client, adapter.Id, ssid);
+            observations.Add(facts);
             var visible = facts.RawSsid.Length > 0;
             var saved = facts.ProfileName is not null;
             var rank = (visible, saved, needsSavedProfile) switch
@@ -1537,7 +1820,30 @@ public static unsafe partial class WindowsRadio
                 best = new InterfaceChoice(adapter, facts);
             }
         }
-        return best ?? new InterfaceChoice(interfaces[0], WifiNetworkFacts.Empty(ssid));
+        var selected = best ?? new InterfaceChoice(interfaces[0], WifiNetworkFacts.Empty(ssid));
+        var visibleObservations = observations.Where(item => item.RawSsid.Length > 0).ToArray();
+        if (visibleObservations.Any(item => item.Ambiguous)
+            || visibleObservations.Skip(1).Any(item =>
+                !item.RawSsid.AsSpan().SequenceEqual(visibleObservations[0].RawSsid)
+                || item.Security != visibleObservations[0].Security
+                || item.Authentication != visibleObservations[0].Authentication
+                || visibleObservations[0].ProfileName is { Length: > 0 } firstProfile
+                    && item.ProfileName is { Length: > 0 } itemProfile
+                    && !string.Equals(firstProfile, itemProfile, StringComparison.Ordinal)))
+        {
+            selected = selected with
+            {
+                Facts = selected.Facts with
+                {
+                    Ambiguous = true,
+                    Security = WifiSecurity.Unsupported,
+                    Authentication = 0,
+                    Connectable = false,
+                    ProfileName = null,
+                },
+            };
+        }
+        return selected;
     }
 
     private static WifiNetworkFacts ReadScanFacts(nint client, Guid adapter, string ssid)
@@ -1560,15 +1866,30 @@ public static unsafe partial class WindowsRadio
                     {
                         continue;
                     }
+                    var security = ClassifySecurity(
+                        item.SecurityEnabled != 0,
+                        item.DefaultAuthAlgorithm);
+                    var readProfile = ReadFixed(item.ProfileName, 256);
+                    var profileName = readProfile.Length == 0 ? null : readProfile;
+                    var sameRaw = facts.RawSsid.Length == 0
+                        || facts.RawSsid.AsSpan().SequenceEqual(raw);
+                    var conflictingIdentity = facts.RawSsid.Length > 0
+                        && (!sameRaw
+                            || facts.Security != security
+                            || facts.Authentication != item.DefaultAuthAlgorithm
+                            || facts.ProfileName is { Length: > 0 } existingProfile
+                                && profileName is { Length: > 0 }
+                                && !string.Equals(
+                                    existingProfile,
+                                    profileName,
+                                    StringComparison.Ordinal));
                     facts = facts with
                     {
                         RawSsid = facts.RawSsid.Length == 0 ? raw : facts.RawSsid,
-                        Ambiguous = facts.RawSsid.Length > 0 && !facts.RawSsid.AsSpan().SequenceEqual(raw),
-                        Security = ClassifySecurity(item.SecurityEnabled != 0, item.DefaultAuthAlgorithm),
-                        Authentication = item.DefaultAuthAlgorithm,
-                        ProfileName = ReadFixed(item.ProfileName, 256) is { Length: > 0 } name
-                            ? name
-                            : facts.ProfileName,
+                        Ambiguous = facts.Ambiguous || conflictingIdentity,
+                        Security = conflictingIdentity ? WifiSecurity.Unsupported : security,
+                        Authentication = conflictingIdentity ? 0 : item.DefaultAuthAlgorithm,
+                        ProfileName = conflictingIdentity ? null : profileName ?? facts.ProfileName,
                     };
                 }
             }
@@ -1583,7 +1904,8 @@ public static unsafe partial class WindowsRadio
             facts = facts with
             {
                 ProfileName = ReadProfileSsids(client, adapter, failOnListError: false)
-                    .FirstOrDefault(profile => profile.Ssid.AsSpan().SequenceEqual(target)).Name,
+                    .FirstOrDefault(profile => profile.Ssid is { } profileSsid
+                        && profileSsid.AsSpan().SequenceEqual(target)).Name,
             };
         }
         return facts;
@@ -1622,10 +1944,9 @@ public static unsafe partial class WindowsRadio
                 {
                     continue;
                 }
-                var rawSsid = TryReadProfileXml(client, adapter, name) is { } xml
-                    ? WifiProfile.TryReadSsid(xml)
-                    : null;
-                profiles.Add(new SavedProfile(name, rawSsid ?? Encoding.UTF8.GetBytes(name)));
+                var xml = TryReadProfileXml(client, adapter, name);
+                var rawSsid = xml is null ? null : WifiProfile.TryReadSsid(xml);
+                profiles.Add(new SavedProfile(name, rawSsid, xml));
             }
             return profiles;
         }
@@ -1652,34 +1973,31 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    private static (string Name, bool Existed) FindFreeProfileName(
+    internal static ProfileMutation FindFreeProfileName(
         IReadOnlyList<SavedProfile> profiles,
         string ssid,
         byte[] target)
     {
-        var exact = profiles.FirstOrDefault(profile => profile.Name == ssid);
-        if (exact.Name is null)
+        for (var suffix = 1; suffix <= 64; suffix++)
         {
-            return (ssid, false);
-        }
-        if (exact.Ssid.AsSpan().SequenceEqual(target))
-        {
-            return (ssid, true);
-        }
-        for (var suffix = 2; suffix <= 64; suffix++)
-        {
-            var candidate = $"{ssid} {suffix}";
+            var candidate = suffix == 1 ? ssid : $"{ssid} {suffix}";
             var owner = profiles.FirstOrDefault(profile => profile.Name == candidate);
-            if (owner.Name is null)
+            if (owner == default)
             {
-                return (candidate, false);
+                return new ProfileMutation(candidate, false, null);
             }
-            if (owner.Ssid.AsSpan().SequenceEqual(target))
+            if (owner.Ssid is { } ownerSsid && ownerSsid.AsSpan().SequenceEqual(target))
             {
-                return (candidate, true);
+                if (owner.Xml is null)
+                {
+                    throw new InvalidOperationException(
+                        $"The existing Wi-Fi profile '{candidate}' could not be read, so it cannot be overwritten safely.");
+                }
+                return new ProfileMutation(candidate, true, owner.Xml);
             }
         }
-        return (ssid, true);
+        throw new InvalidOperationException(
+            "No collision-free Wi-Fi profile name is available for this network.");
     }
 
     private static void SetProfile(nint client, Guid adapter, string xml)
@@ -1697,16 +2015,76 @@ public static unsafe partial class WindowsRadio
     private static void RollBackProfile(
         nint client,
         Guid adapter,
-        string? authored,
-        bool existed)
+        ProfileMutation? mutation)
     {
-        if (authored is not null && !existed)
+        if (mutation is not { } authored)
         {
-            WlanDeleteProfile(client, in adapter, authored, 0);
+            return;
+        }
+        if (authored.Existed)
+        {
+            if (authored.PreviousXml is null)
+            {
+                throw new InvalidOperationException(
+                    $"The previous Wi-Fi profile '{authored.Name}' was not available for rollback.");
+            }
+            SetProfile(client, adapter, authored.PreviousXml);
+            return;
+        }
+        var status = WlanDeleteProfile(client, in adapter, authored.Name, 0);
+        if (status is not ErrorSuccess and not ErrorNotFound)
+        {
+            throw WlanFailure("WlanDeleteProfile", status);
         }
     }
 
-    private static WifiSecurity ClassifySecurity(bool secured, int auth)
+    internal static WifiNetworkFacts MergeNetworkFacts(
+        WifiNetworkFacts existing,
+        WifiNetworkFacts observed)
+    {
+        var conflictingIdentity = existing.Ambiguous
+            || observed.Ambiguous
+            || existing.Security != observed.Security
+            || existing.Authentication != observed.Authentication
+            || existing.ProfileName is { Length: > 0 } existingProfile
+                && observed.ProfileName is { Length: > 0 } observedProfile
+                && !string.Equals(existingProfile, observedProfile, StringComparison.Ordinal);
+        var observedIsPrimary = observed.Signal > existing.Signal;
+        var primary = observedIsPrimary ? observed : existing;
+        var secondary = observedIsPrimary ? existing : observed;
+        return primary with
+        {
+            Signal = Math.Max(existing.Signal, observed.Signal),
+            Security = conflictingIdentity ? WifiSecurity.Unsupported : primary.Security,
+            Authentication = conflictingIdentity ? 0 : primary.Authentication,
+            Saved = existing.Saved || observed.Saved,
+            Connectable = !conflictingIdentity && (existing.Connectable || observed.Connectable),
+            Connected = existing.Connected || observed.Connected,
+            ProfileName = conflictingIdentity ? null : primary.ProfileName ?? secondary.ProfileName,
+            Ambiguous = conflictingIdentity,
+        };
+    }
+
+    private static Exception? TryRollBackProfile(
+        nint client,
+        Guid adapter,
+        ProfileMutation? mutation)
+    {
+        try
+        {
+            RollBackProfile(client, adapter, mutation);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex;
+        }
+    }
+
+    private static Exception CombineFailure(Exception failure, Exception? cleanupFailure)
+        => cleanupFailure is null ? failure : new AggregateException(failure, cleanupFailure);
+
+    internal static WifiSecurity ClassifySecurity(bool secured, int auth)
     {
         if (!secured)
         {
@@ -1721,7 +2099,7 @@ public static unsafe partial class WindowsRadio
             Dot11AuthWpa or Dot11AuthRsna or Dot11AuthWpa3
                 or Dot11AuthWpa3Enterprise or Dot11AuthWpa3Enterprise192
                 => WifiSecurity.Enterprise,
-            _ => WifiSecurity.PersonalPsk,
+            _ => WifiSecurity.Unsupported,
         };
     }
 
@@ -1733,8 +2111,6 @@ public static unsafe partial class WindowsRadio
         Marshal.Copy((nint)source, bytes, 0, length);
         return bytes;
     }
-
-    private static string DecodeSsid(Dot11Ssid ssid) => Encoding.UTF8.GetString(ReadSsidBytes(ssid));
 
     private static string ReadFixed(char* value, int length)
     {
@@ -1832,20 +2208,28 @@ public static unsafe partial class WindowsRadio
                 return null;
             }
             var verdict = new ConnectionVerdict(handle, adapter, profile);
-            status = WlanRegisterNotification(
-                handle,
-                WlanNotificationSourceAcm,
-                1,
-                Marshal.GetFunctionPointerForDelegate(verdict._callback),
-                0,
-                0,
-                0);
-            if (status != ErrorSuccess)
+            try
             {
-                WlanCloseHandle(handle, 0);
-                return null;
+                status = WlanRegisterNotification(
+                    handle,
+                    WlanNotificationSourceAcm,
+                    1,
+                    Marshal.GetFunctionPointerForDelegate(verdict._callback),
+                    0,
+                    0,
+                    0);
+                if (status != ErrorSuccess)
+                {
+                    verdict.Dispose();
+                    return null;
+                }
+                return verdict;
             }
-            return verdict;
+            catch
+            {
+                verdict.Dispose();
+                throw;
+            }
         }
 
         internal ConnectionOutcome? Wait(TimeSpan timeout)
@@ -1896,10 +2280,17 @@ public static unsafe partial class WindowsRadio
         }
     }
 
+    private sealed class WifiWatch(nint handle, Action<WifiWatchEvent> events)
+    {
+        internal nint Handle { get; } = handle;
+        internal Action<WifiWatchEvent> Events { get; } = events;
+        internal WlanNotificationCallback Callback { get; set; } = null!;
+    }
 
-    private readonly record struct CurrentConnection(string Ssid, int Signal);
+    private readonly record struct CurrentConnection(string Ssid, byte[] RawSsid, int Signal);
     private readonly record struct ConnectionOutcome(bool Succeeded, uint Reason);
-    private readonly record struct SavedProfile(string? Name, byte[] Ssid);
+    internal readonly record struct SavedProfile(string Name, byte[]? Ssid, string? Xml);
+    internal readonly record struct ProfileMutation(string Name, bool Existed, string? PreviousXml);
     private readonly record struct InterfaceChoice(WlanInterfaceInfo Adapter, WifiNetworkFacts Facts);
     private sealed class WlanReasonException(uint reasonCode, string message)
         : Win32Exception((int)reasonCode, message)
@@ -1907,7 +2298,7 @@ public static unsafe partial class WindowsRadio
         internal uint ReasonCode { get; } = reasonCode;
     }
 
-    private readonly record struct WifiNetworkFacts(
+    internal readonly record struct WifiNetworkFacts(
         string Ssid,
         byte[] RawSsid,
         int Signal,
@@ -1920,7 +2311,7 @@ public static unsafe partial class WindowsRadio
         bool Ambiguous)
     {
         public static WifiNetworkFacts Empty(string ssid)
-            => new(ssid, [], 0, WifiSecurity.PersonalPsk, 0, false, false, false, null, false);
+            => new(ssid, [], 0, WifiSecurity.Unsupported, 0, false, false, false, null, false);
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -2117,5 +2508,8 @@ public static unsafe partial class WindowsRadio
     private static partial uint WlanReasonCodeToString(
         uint reasonCode, uint bufferSize, char* buffer, nint reserved);
 
-    private sealed record PendingPairing(DevicePairingRequestedEventArgs Args, Deferral Deferral);
+    private sealed record PendingPairing(
+        long Attempt,
+        DevicePairingRequestedEventArgs Args,
+        Deferral Deferral);
 }
