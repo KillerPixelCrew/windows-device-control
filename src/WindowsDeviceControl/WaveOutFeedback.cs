@@ -175,7 +175,7 @@ public sealed partial class WaveOutFeedback : IDisposable
         internal nint Reserved;
     }
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutOpen")]
     private static partial uint WaveOutOpen(
         out nint output,
         uint deviceId,
@@ -184,18 +184,18 @@ public sealed partial class WaveOutFeedback : IDisposable
         nint instance,
         uint flags);
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutPrepareHeader")]
     private static partial uint WaveOutPrepareHeader(nint output, nint header, uint headerSize);
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutUnprepareHeader")]
     private static partial uint WaveOutUnprepareHeader(nint output, nint header, uint headerSize);
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutWrite")]
     private static partial uint WaveOutWrite(nint output, nint header, uint headerSize);
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutReset")]
     private static partial uint WaveOutReset(nint output);
 
-    [LibraryImport("winmm.dll")]
+    [LibraryImport("winmm.dll", EntryPoint = "waveOutClose")]
     private static partial uint WaveOutClose(nint output);
 }
