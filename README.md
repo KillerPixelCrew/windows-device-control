@@ -1,38 +1,36 @@
 # WindowsDeviceControl
 
 Wi-Fi, Bluetooth, audio and display-brightness control for .NET on Windows — the parts that are
-awkward or undocumented, in one library, from an ordinary unpackaged process.
+awkward or undocumented, in one library, callable from an ordinary unpackaged process.
 
 ```
 dotnet add package WindowsDeviceControl
 ```
 
-`net8.0-windows10.0.19041.0` and `net10.0-windows10.0.19041.0`. No COM registration, no packaged
-identity, no admin rights except where Windows itself demands them.
+Targets `net8.0-windows10.0.19041.0` and `net10.0-windows10.0.19041.0`. No COM registration, no
+packaged identity, no native component, and no admin rights except where Windows itself demands
+them. The code was extracted from a shipping Windows shell application, where all of it runs on real
+hardware every session.
 
 ## Why this exists
 
-Each of these is individually solvable and collectively a bad week:
+Each of these is individually solvable and collectively a bad week.
 
-- **Wi-Fi from an unpackaged process.** WinRT's `WiFiAdapter` needs the `wiFiControl` capability,
-  which an unpackaged desktop, service or kiosk application cannot declare — so the WinRT Wi-Fi
-  surface is simply unavailable to you. That leaves the native WLAN API and hand-written profile
-  XML, including the part nobody enjoys: a saved profile has to exist before you can join a
-  protected network, and the SSID may not be valid UTF-8.
-- **Default audio endpoint switching.** There is no public API. Switching the default playback
-  device is done through `IPolicyConfig`, a COM interface Microsoft never documented and whose
-  vtable ordering differs across Windows versions.
-- **Panel brightness.** The documented route is WMI `WmiMonitorBrightnessMethods`, which requires
-  elevation and silently does nothing on a good number of laptop and handheld panels. The ACPI
-  backlight device answers the same request **unelevated**.
-- **Bluetooth pairing that shows a PIN.** Enumerating and connecting is easy. Running the pairing
+- Wi-Fi from an unpackaged process. WinRT's `WiFiAdapter` needs the `wiFiControl` capability,
+  which an unpackaged desktop, service or kiosk application cannot declare. That leaves the native
+  WLAN API and hand-written profile XML, including the part nobody enjoys: a saved profile has to
+  exist before you can join a protected network, and the SSID may not be valid UTF-8.
+- Default audio endpoint switching. There is no public API. It is done through `IPolicyConfig`, a
+  COM interface Microsoft never documented and whose vtable ordering differs across Windows
+  versions.
+- Panel brightness. The documented route is WMI `WmiMonitorBrightnessMethods`, which requires
+  elevation and silently does nothing on many laptop and handheld panels. The ACPI backlight device
+  answers the same request unelevated.
+- Bluetooth pairing that shows a PIN. Enumerating and connecting is easy. Running the pairing
   ceremony — accepting a deferral, surfacing the PIN to your own UI, answering it — is where the
   examples run out.
 
-This code was extracted from a shipping Windows shell application, where all of it runs on real
-hardware every session.
-
-## What it does
+## Usage
 
 ```csharp
 using WindowsDeviceControl;
@@ -76,48 +74,51 @@ if (Backlight.TryReadBrightness(out int percent))
     Backlight.TrySetBrightness(Math.Min(100, percent + 10));
 ```
 
-`WifiProfile` builds the profile XML (`CreateOpen`, `CreatePsk` with WPA3-transition / WPA2-AES /
-WPA-TKIP shapes) and survives a non-UTF-8 SSID. `WaveOutFeedback` plays the short click Windows
-itself uses for volume feedback. `WindowsRadio.StartWifiWatch` / `StartBluetoothWatch` deliver
-change notifications without polling.
+| Type | Role |
+| --- | --- |
+| `WindowsRadio` | Radio power, Wi-Fi scan/list/connect/forget, Bluetooth discovery and pairing, change watches (`StartWifiWatch`, `StartBluetoothWatch`) |
+| `WifiProfile` | Builds profile XML: `CreateOpen`, `CreatePsk` in WPA3-transition / WPA2-AES / WPA-TKIP shapes; survives a non-UTF-8 SSID |
+| `CoreAudio` | Endpoints, default-endpoint switching, volume and mute per direction, Bluetooth audio connect/disconnect |
+| `Backlight` | Internal panel brightness over the ACPI backlight device |
+| `WaveOutFeedback` | The short click Windows itself plays for volume feedback |
+
+Every public member is documented and the build fails on one that is not, so IntelliSense is the
+reference — including which callbacks arrive on a Windows service thread and which calls return
+before the work they started has finished.
+
+Two integer contracts are kept on purpose, because renaming them would hide what they are:
+`ConnectWifi` returns Windows' raw WLAN reason code (pass it to `ReasonText` or
+`GetReasonVerdict`), and the `CoreAudio` methods return HRESULTs. Everything else — radio kind,
+audio direction, network security, connection state, pairing kind and outcome, watch events,
+volume-key commands, Wi-Fi failure classification — is a named enum.
 
 ## What Windows will still refuse you
 
-Documented rather than discovered at deployment time:
+Documented here rather than discovered at deployment time.
 
-- **Radio power needs consent.** `RequestAccess()` returns `DeniedByUser` when the user has denied
+- Radio power needs consent. `RequestAccess()` returns `DeniedByUser` when the user has denied
   radio control to your application, and `DeniedBySystem` on a policy-managed or kiosk-provisioned
-  machine. Neither is retryable — check before offering a toggle.
-- **Wi-Fi enumeration can require location consent.** `GetConsent(capability)` reports what the
-  privacy store records, which is a diagnostic: the owning API remains the authority on what is
-  permitted. This one ambushes kiosk deployments in particular, because the machine is often
-  provisioned with location off.
-- **Not every panel has an ACPI backlight.** `TryReadBrightness` returns `false` rather than
-  throwing; treat it as "this machine has no controllable internal panel", which is the normal
-  answer on a desktop.
+  machine. Neither is retryable; check before offering a toggle.
+- Wi-Fi enumeration can require location consent. `GetConsent(capability)` reports what the privacy
+  store records, as a diagnostic only: the owning API remains the authority on what is permitted.
+  This ambushes kiosk deployments in particular, because the machine is often provisioned with
+  location off.
+- Not every panel has an ACPI backlight. `TryReadBrightness` returns `false` rather than throwing.
+  Treat it as "this machine has no controllable internal panel", the normal answer on a desktop.
+
+## Platform findings
+
+`docs/radios.md` records the platform constraints behind all of this, including the approaches that
+were tried and disproven. Read it before changing how a Windows API is called.
 
 ## Status
 
-**Pre-1.0. The surface can still move before it is frozen** — pin an exact version if that matters
-to you.
+Pre-1.0. The surface can still move before it is frozen; pin an exact version if that matters to
+you.
 
-The integers the first extraction inherited are gone: radio kind, audio direction, network security,
-connection state, pairing kind and outcome, watch events, volume-key commands and Wi-Fi failure
-classification are all named enums. Every public member is documented, and the build fails on one
-that is not, so IntelliSense is the reference — including the parts that are easy to get wrong, such
-as which callbacks arrive on a Windows service thread and which calls return before the work they
-started has finished.
-
-Two integer contracts are kept deliberately, because renaming them would hide what they are:
-`ConnectWifi` returns Windows' raw WLAN reason code (pass it to `ReasonText` or `GetReasonVerdict`),
-and the `CoreAudio` methods return HRESULTs.
-
-Issues and pull requests welcome, especially hardware reports: the behaviour of Wi-Fi drivers,
+Issues and pull requests are welcome, especially hardware reports: the behaviour of Wi-Fi drivers,
 Bluetooth stacks and backlight interfaces varies more across machines than any of the underlying
 documentation admits.
-
-`docs/radios.md` records the platform constraints behind all of this, including the approaches that
-were tried and disproven.
 
 ## Licence
 
