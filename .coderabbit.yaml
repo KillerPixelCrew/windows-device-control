@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+early_access: false
+tone_instructions: >-
+  Be direct, technical, and concise. Report only actionable defects introduced
+  by the pull request, and distinguish deterministic evidence from
+  hardware-specific claims.
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  sequence_diagrams: false
+  changed_files_summary: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/bin/**"
+    - "!**/obj/**"
+  path_instructions:
+    - path: "src/WindowsDeviceControl/WindowsRadio.cs"
+      instructions: |
+        - Preserve access-before-mutation, every-adapter application, and state
+          priority On, Disabled, Off, Unknown, Absent.
+        - Keep all-interface WLAN, raw-SSID identity, XML profile matching,
+          collision-free all-user profiles, rollback, and callback-before-
+          connect.
+        - Bluetooth snapshots combine classic/LE and merge containers; the live
+          watcher keys endpoint ids and emits events immediately.
+        - Preserve handler revocation, exact-once pairing tokens under races,
+          attempt-local cancellation, and bounded ceremonies.
+        - Keep destructive unpairing separate from soft audio connection.
+    - path: "src/WindowsDeviceControl/WifiProfile.cs"
+      instructions: |
+        Preserve XML escaping, exact SSID `<hex>`, PSK validation, and distinct
+        WPA3 transition, WPA2-AES, legacy WPA-TKIP, and OWE forms. Enterprise
+        and WEP stay explicitly unsupported; flag invented flows for them.
+    - path: "src/WindowsDeviceControl/CoreAudio.cs"
+      instructions: |
+        - Int-returning methods expose HRESULTs; flag lossy booleans or enums.
+        - Preserve COM declarations/releases, PROPVARIANT cleanup, container
+          identity, one-shot IKsControl requests, and later confirmation.
+        - Default changes transact across all three roles: snapshot first, roll
+          changed roles back in reverse, try every rollback, and retain results.
+    - path: "src/WindowsDeviceControl/Backlight.cs"
+      instructions: |
+        Preserve the `\\.\LCD` ACPI contract, native layouts/bounds, and paired
+        AC/DC writes. Missing internal-panel control remains a truthful Try
+        result, not success or a WMI/DDC-CI substitution.
+    - path: "src/WindowsDeviceControl/WaveOutFeedback.cs"
+      instructions: |
+        Preserve the reusable open endpoint, drop a cue while one is queued
+        instead of accumulating repeats, and release every native resource on
+        disposal and failure paths.
+    - path: "src/WindowsDeviceControl/WindowsDeviceControl.csproj"
+      instructions: |
+        Preserve both net8.0/net10.0 Windows 10.0.19041.0 targets, that platform
+        floor, package metadata, and warnings-as-errors including CS1591/CS1573
+        unless an intentional public-contract change documents otherwise.
+    - path: "tests/WindowsDeviceControl.Tests/**"
+      instructions: |
+        Keep tests deterministic and hardware-independent. Cover changed
+        aggregation, identity, profile rollback, callback/token idempotence,
+        role rollback, native boundaries, and lifetime decisions. Fixtures do
+        not prove driver or device compatibility.
+    - path: "docs/**"
+      instructions: |
+        Treat live findings and rejected API routes as evidence. Keep behavior,
+        callback timing, failures, and hardware/Windows-build qualifications in
+        sync with implementation and public XML docs.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
