@@ -90,12 +90,12 @@ targeting discarded state.
 
 ## Bluetooth discovery and pairing
 
-Discovery watches both classic and LE Association Endpoints, and the two selectors stay separate:
-relying on one silently loses devices from the other transport. Device rows retain the Windows AEP
-id, container id, display name, paired/can-pair flags and connectivity state. The watcher publishes
-additions and updates immediately and removes rows absent at the end of a completed sweep. Stop
-revokes every event handler before returning, because `DeviceWatcher.Stop()` is asynchronous and can
-otherwise deliver an event into an object that has already been disposed.
+Discovery queries classic and LE Association Endpoints through one combined selector. A point-in-time
+snapshot groups duplicate endpoints by container identity, while the live watcher keys records by
+Windows AEP id and publishes Added, Updated, and Removed changes as Windows emits them. Device rows
+retain the endpoint id, container id, display name, paired/can-pair flags, and connectivity state.
+Stop revokes every event handler before returning, because `DeviceWatcher.Stop()` is asynchronous
+and can otherwise deliver an event into an object that has already been disposed.
 
 ### The legacy Win32 Bluetooth API cannot discover LE devices
 

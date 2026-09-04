@@ -88,7 +88,7 @@ before the work they started has finished.
 
 Two integer contracts are kept on purpose, because renaming them would hide what they are:
 `ConnectWifi` returns Windows' raw WLAN reason code (pass it to `ReasonText` or
-`GetReasonVerdict`), and the `CoreAudio` methods return HRESULTs. Everything else — radio kind,
+`GetReasonVerdict`), and the `CoreAudio` methods returning `int` return HRESULTs. Everything else — radio kind,
 audio direction, network security, connection state, pairing kind and outcome, watch events,
 volume-key commands, Wi-Fi failure classification — is a named enum.
 
