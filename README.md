@@ -72,6 +72,12 @@ CoreAudio.SetMuted(true);
 // Brightness, no elevation
 if (Backlight.TryReadBrightness(out int percent))
     Backlight.TrySetBrightness(Math.Min(100, percent + 10));
+
+// Active CCD topology and a hotplug-safe wait. Persist DevicePath and EDID IDs,
+// then discard saved adapter/target coordinates after every topology change.
+DisplayTopologySnapshot topology = DisplayTopology.CaptureActive();
+DisplayTargetIdentity television = topology.Paths[0].Target;
+var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSeconds(15), cancellationToken);
 ```
 
 | Type | Role |
@@ -81,6 +87,7 @@ if (Backlight.TryReadBrightness(out int percent))
 | `CoreAudio` | Endpoints, default-endpoint switching, volume and mute per direction, Bluetooth audio connect/disconnect |
 | `Backlight` | Internal panel brightness over the ACPI backlight device |
 | `WaveOutFeedback` | The short click Windows itself plays for volume feedback |
+| `DisplayTopology` | Active CCD paths, rematchable monitor identities, and cancellable display-appearance waits |
 
 Every public member is documented and the build fails on one that is not, so IntelliSense is the
 reference — including which callbacks arrive on a Windows service thread and which calls return
@@ -91,6 +98,13 @@ Two integer contracts are kept on purpose, because renaming them would hide what
 `GetReasonVerdict`), and the `CoreAudio` methods returning `int` return HRESULTs. Everything else — radio kind,
 audio direction, network security, connection state, pairing kind and outcome, watch events,
 volume-key commands, Wi-Fi failure classification — is a named enum.
+
+Display identity uses the monitor device-interface path as its primary rematching key. EDID
+manufacturer/product IDs are a fallback only when neither observation has a device path. Friendly
+names and `DISPLAY1` numbering are presentation data. Adapter LUID and target ID describe the current
+route and must be refreshed after hotplug. Enumeration retries the documented sizing race and remains
+read-only. `WaitForPresentAsync` polls fresh complete CCD snapshots; timeout and cancellation never
+change display state.
 
 ## What Windows will still refuse you
 

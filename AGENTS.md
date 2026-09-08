@@ -20,6 +20,7 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `CoreAudio.cs`: endpoint enumeration, default-role transactions, volume/mute, and Bluetooth audio
   connection.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
+- `DisplayTopology.cs`: supported CCD enumeration, stable monitor matching and appearance waits.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
 - `WindowsPower*.cs`: power-scheme enumeration, policy values and power-mode operations. Callers
   own policy ordering, readback confirmation and UI; the library preserves native error codes.
