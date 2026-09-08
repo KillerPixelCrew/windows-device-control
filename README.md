@@ -123,3 +123,22 @@ documentation admits.
 ## Licence
 
 MIT. See `LICENSE`.
+
+## Windows power policy
+
+`WindowsPower` exposes scheme enumeration and localized names, active scheme read/write, AC/DC
+policy values and effective power-mode overlays. These synchronous calls belong off UI threads.
+Native failures throw `Win32Exception` with the Windows error code. Writes are issued once;
+consumers own transaction ordering and confirmation through readback.
+
+```csharp
+Guid scheme = WindowsPower.GetActiveScheme();
+string name = WindowsPower.ReadSchemeName(scheme);
+Guid mode = WindowsPower.GetEffectiveMode();
+// Explicit user action:
+WindowsPower.SetActiveScheme(scheme);
+```
+
+`WriteSetting` updates a scheme's stored AC/DC value without activating it. Call `SetActiveScheme`
+when the caller's policy requires immediate application. A successful request is not a guarantee
+that another Windows policy writer will leave the value unchanged.

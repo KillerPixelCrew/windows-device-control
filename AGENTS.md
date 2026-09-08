@@ -21,6 +21,8 @@ including callback threading, completion timing, consent, error meanings, and ow
   connection.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
+- `WindowsPower*.cs`: power-scheme enumeration, policy values and power-mode operations. Callers
+  own policy ordering, readback confirmation and UI; the library preserves native error codes.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
 
