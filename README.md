@@ -1,6 +1,6 @@
 # WindowsDeviceControl
 
-Wi-Fi, Bluetooth, audio and display-brightness control for .NET on Windows — the parts that are
+Wi-Fi, Bluetooth, audio, display-brightness and power control for .NET on Windows. The parts that are
 awkward or undocumented, in one library, callable from an ordinary unpackaged process.
 
 ```
@@ -142,3 +142,20 @@ WindowsPower.SetActiveScheme(scheme);
 `WriteSetting` updates a scheme's stored AC/DC value without activating it. Call `SetActiveScheme`
 when the caller's policy requires immediate application. A successful request is not a guarantee
 that another Windows policy writer will leave the value unchanged.
+
+`SuspendAsync` requests standby or hibernation off-thread and usually completes after resume.
+`RequestActionAsync` supports shutdown, restart and sign-out using the absolute system tool path;
+completion means the tool accepted the request. Cancellation cannot undo a dispatched operation.
+`TryGetStatus` reports source and battery values with Windows' unknown sentinels intact.
+Window owners can register power-setting notifications and must unregister their returned handles.
+
+`WindowsPowerRequest` owns a display/system wake request and its reason string. Acquire/Release
+are idempotent; failures throw with native error codes, and a failed release remains held until
+explicit retry or disposal. Disposal closes the kernel handle without repeating a failed clear.
+`PowerRequestList.Query` returns null entries and a diagnostic when the undocumented Windows layout
+cannot be read safely. Request-list reads may need elevation.
+
+`WindowsWakeSecurity.Capture` returns wake-policy recovery values, including absent values. Persist
+that snapshot before `DisableSignIn`, and retain it until `Restore` succeeds. Registry writes need
+elevation; this library never elevates or stores application configuration. Windows editions may
+ignore personalization policy even after accepting its registry value.

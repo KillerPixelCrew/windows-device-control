@@ -23,6 +23,10 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
 - `WindowsPower*.cs`: power-scheme enumeration, policy values and power-mode operations. Callers
   own policy ordering, readback confirmation and UI; the library preserves native error codes.
+- `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
+- `PowerRequestList.cs`: bounded system-wide wake-request decoding; an unreadable layout is unknown.
+- `WindowsWakeSecurity.cs`: wake sign-in capture/apply/restore primitives. Callers persist recovery
+  snapshots before mutation and retain them until restoration succeeds.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
 
