@@ -106,6 +106,14 @@ route and must be refreshed after hotplug. Enumeration retries the documented si
 read-only. `WaitForPresentAsync` polls fresh complete CCD snapshots; timeout and cancellation never
 change display state.
 
+`CaptureProfile` serializes the active CCD paths and modes alongside those identities. Before
+application, `ValidateProfile` rematches every saved target against the current topology and asks
+Windows to validate the supplied configuration without applying it. `ApplyProfile` repeats that
+validation, captures the current active topology for rollback, applies once, and verifies the saved
+targets are active. A failed or unconfirmed application attempts one rollback and reports both the
+original Windows status and rollback result. A successful native return is not reported as a
+confirmed profile until the readback succeeds.
+
 ## What Windows will still refuse you
 
 Documented here rather than discovered at deployment time.

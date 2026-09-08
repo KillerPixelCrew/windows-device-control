@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,6 +46,23 @@ public sealed record ActiveDisplayPath(DisplayTargetIdentity Target, string Sour
 /// <param name="CapturedAt">Time after the native query and target-name reads completed.</param>
 public sealed record DisplayTopologySnapshot(IReadOnlyList<ActiveDisplayPath> Paths, DateTimeOffset CapturedAt);
 
+/// <summary>Serializable Windows display profile captured from supported CCD APIs.</summary>
+/// <param name="FormatVersion">Profile schema version.</param>
+/// <param name="Targets">Stable target identities in path order.</param>
+/// <param name="PathData">Blittable DISPLAYCONFIG_PATH_INFO records without process pointers.</param>
+/// <param name="ModeData">Blittable DISPLAYCONFIG_MODE_INFO records without process pointers.</param>
+public sealed record DisplayProfile(int FormatVersion, IReadOnlyList<DisplayTargetIdentity> Targets,
+    IReadOnlyList<byte[]> PathData, IReadOnlyList<byte[]> ModeData);
+
+/// <summary>Result of validating or applying a display profile.</summary>
+/// <param name="Applied">Whether the requested profile was applied and confirmed active.</param>
+/// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
+/// <param name="RollbackAttempted">Whether failure triggered restoration of the captured topology.</param>
+/// <param name="RollbackSucceeded">Whether rollback returned success.</param>
+/// <param name="Detail">Bounded diagnostic suitable for a log or UI.</param>
+public sealed record DisplayProfileResult(bool Applied, int NativeStatus, bool RollbackAttempted,
+    bool RollbackSucceeded, string Detail);
+
 /// <summary>Result of waiting for a saved display identity.</summary>
 public enum DisplayWaitOutcome
 {
@@ -58,9 +76,15 @@ public enum DisplayWaitOutcome
 public static partial class DisplayTopology
 {
     private const uint OnlyActivePaths = 0x2;
+    private const uint AllPaths = 0x1;
     private const int GetSourceName = 1;
     private const int GetTargetName = 2;
     private const int ErrorInsufficientBuffer = 122;
+    private const uint UseSupplied = 0x20;
+    private const uint Validate = 0x40;
+    private const uint Apply = 0x80;
+    private const uint SaveToDatabase = 0x200;
+    private const uint AllowChanges = 0x400;
 
     /// <summary>Captures active display paths and monitor identities without changing display state.</summary>
     /// <returns>A detached snapshot in Windows path-priority order.</returns>
@@ -106,6 +130,68 @@ public static partial class DisplayTopology
         throw new Win32Exception(ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
     }
 
+    /// <summary>Captures the complete active topology in a serializable profile.</summary>
+    /// <returns>A versioned profile containing monitor identities and native CCD records.</returns>
+    /// <remarks>The records contain no process pointers. Validate immediately before application.</remarks>
+    public static unsafe DisplayProfile CaptureProfile()
+    {
+        NativeSnapshot native = Query(OnlyActivePaths);
+        var targets = native.Paths.Select(ReadTarget).ToArray();
+        return new(1, targets, Encode(native.Paths), Encode(native.Modes));
+    }
+
+    /// <summary>Validates a stored profile against current monitor identities and Windows CCD.</summary>
+    /// <param name="profile">Previously captured profile.</param>
+    /// <returns>A result without changing display state.</returns>
+    public static DisplayProfileResult ValidateProfile(DisplayProfile profile)
+    {
+        try
+        {
+            NativeSnapshot requested = Rematch(profile);
+            int status = SetDisplayConfig((uint)requested.Paths.Length, requested.Paths, (uint)requested.Modes.Length,
+                requested.Modes, UseSupplied | Validate | AllowChanges);
+            return status == 0
+                ? new(true, 0, false, false, "Profile is valid for the current topology.")
+                : new(false, status, false, false, "Windows rejected the profile during validation.");
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
+        { return Failure(ex); }
+    }
+
+    /// <summary>Validates, applies and confirms a stored profile, rolling back after an unconfirmed application.</summary>
+    /// <param name="profile">Previously captured profile.</param>
+    /// <returns>Detailed application and rollback evidence.</returns>
+    /// <remarks>This can rearrange or blank displays. It captures rollback state before mutation and never retries automatically.</remarks>
+    public static DisplayProfileResult ApplyProfile(DisplayProfile profile)
+    {
+        NativeSnapshot requested;
+        try { requested = Rematch(profile); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception) { return Failure(ex); }
+        int status = SetDisplayConfig((uint)requested.Paths.Length, requested.Paths, (uint)requested.Modes.Length,
+            requested.Modes, UseSupplied | Validate | AllowChanges);
+        if (status != 0) { return new(false, status, false, false, "Windows rejected the profile during validation."); }
+        NativeSnapshot rollback;
+        try { rollback = Query(OnlyActivePaths); }
+        catch (Win32Exception ex) { return new(false, ex.NativeErrorCode, false, false, "Could not capture rollback topology; nothing was applied."); }
+        status = SetDisplayConfig((uint)requested.Paths.Length, requested.Paths, (uint)requested.Modes.Length,
+            requested.Modes, UseSupplied | Apply | SaveToDatabase | AllowChanges);
+        if (status == 0)
+        {
+            try
+            {
+                var observed = CaptureActive();
+                if (profile.Targets.All(target => observed.Paths.Exists(path => target.Matches(path.Target))))
+                { return new(true, 0, false, false, "Profile applied and target presence was confirmed."); }
+            }
+            catch (Win32Exception) { }
+        }
+        int rollbackStatus = SetDisplayConfig((uint)rollback.Paths.Length, rollback.Paths, (uint)rollback.Modes.Length,
+            rollback.Modes, UseSupplied | Apply | AllowChanges);
+        return new(false, status, true, rollbackStatus == 0,
+            rollbackStatus == 0 ? "Profile application was not confirmed; the captured topology was restored."
+                : $"Profile application was not confirmed and rollback failed with status {rollbackStatus}.");
+    }
+
     /// <summary>Waits until a matching monitor is active, using fresh CCD snapshots.</summary>
     /// <param name="identity">Previously captured monitor identity.</param>
     /// <param name="timeout">Maximum elapsed time. Must be positive and no more than ten minutes.</param>
@@ -130,6 +216,105 @@ public static partial class DisplayTopology
         } while (true);
     }
 
+    private static unsafe NativeSnapshot Query(uint flags)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            int status = GetDisplayConfigBufferSizes(flags, out uint pathCount, out uint modeCount);
+            if (status != 0) { throw new Win32Exception(status, "Display topology buffer sizing failed."); }
+            if (pathCount > 256 || modeCount > 1024) { throw new InvalidOperationException("Display topology exceeds supported bounds."); }
+            PathInfo[] paths = new PathInfo[pathCount];
+            ModeInfo[] modes = new ModeInfo[modeCount];
+            status = QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);
+            if (status == ErrorInsufficientBuffer) { continue; }
+            if (status != 0) { throw new Win32Exception(status, "Display topology query failed."); }
+            if (pathCount != paths.Length) { Array.Resize(ref paths, checked((int)pathCount)); }
+            if (modeCount != modes.Length) { Array.Resize(ref modes, checked((int)modeCount)); }
+            return new(paths, modes);
+        }
+        throw new Win32Exception(ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
+    }
+
+    private static unsafe DisplayTargetIdentity ReadTarget(PathInfo path)
+    {
+        TargetDeviceName target = new()
+        {
+            Header = new() { Type = GetTargetName, Size = (uint)Marshal.SizeOf<TargetDeviceName>(), AdapterId = path.TargetInfo.AdapterId, Id = path.TargetInfo.Id }
+        };
+        int status = DisplayConfigGetDeviceInfo(ref target);
+        if (status != 0) { throw new Win32Exception(status, "Display target identity query failed."); }
+        bool edidValid = (target.Flags & 0x2) != 0;
+        return new(Read(target.MonitorDevicePath, 128), edidValid ? target.EdidManufacturerId : null,
+            edidValid ? target.EdidProductCodeId : null, Read(target.MonitorFriendlyDeviceName, 64),
+            path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
+    }
+
+    private static unsafe NativeSnapshot Rematch(DisplayProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (profile.FormatVersion != 1 || profile.Targets is null || profile.PathData is null || profile.ModeData is null
+            || profile.Targets.Count is 0 or > 256 || profile.Targets.Count != profile.PathData.Count || profile.ModeData.Count > 1024)
+        { throw new ArgumentException("Display profile has an unsupported shape.", nameof(profile)); }
+        PathInfo[] paths = Decode<PathInfo>(profile.PathData);
+        ModeInfo[] modes = Decode<ModeInfo>(profile.ModeData);
+        NativeSnapshot current = Query(AllPaths);
+        var currentTargets = current.Paths.Select(path => (Path: path, Target: ReadTarget(path))).ToArray();
+        Dictionary<RouteKey, RouteKey> replacements = [];
+        for (int index = 0; index < paths.Length; index++)
+        {
+            var match = currentTargets.FirstOrDefault(candidate => profile.Targets[index].Matches(candidate.Target));
+            if (match.Target is null) { throw new InvalidOperationException("A saved display is not present in the current topology."); }
+            PathInfo saved = paths[index];
+            replacements[new(saved.TargetInfo.AdapterId, saved.TargetInfo.Id)] = new(match.Path.TargetInfo.AdapterId, match.Path.TargetInfo.Id);
+            replacements[new(saved.SourceInfo.AdapterId, saved.SourceInfo.Id)] = new(match.Path.SourceInfo.AdapterId, match.Path.SourceInfo.Id);
+            paths[index].TargetInfo.AdapterId = match.Path.TargetInfo.AdapterId;
+            paths[index].TargetInfo.Id = match.Path.TargetInfo.Id;
+            paths[index].SourceInfo.AdapterId = match.Path.SourceInfo.AdapterId;
+            paths[index].SourceInfo.Id = match.Path.SourceInfo.Id;
+        }
+        for (int index = 0; index < modes.Length; index++)
+        {
+            var key = new RouteKey(modes[index].AdapterId, modes[index].Id);
+            if (replacements.TryGetValue(key, out RouteKey replacement))
+            {
+                modes[index].AdapterId = replacement.Adapter;
+                modes[index].Id = replacement.Id;
+            }
+        }
+        return new(paths, modes);
+    }
+
+    private static unsafe IReadOnlyList<byte[]> Encode<T>(T[] values) where T : unmanaged
+    {
+        int size = sizeof(T);
+        var encoded = new byte[values.Length][];
+        for (int index = 0; index < values.Length; index++)
+        {
+            encoded[index] = new byte[size];
+            fixed (T* source = &values[index])
+            fixed (byte* destination = encoded[index]) { Buffer.MemoryCopy(source, destination, size, size); }
+        }
+        return encoded;
+    }
+
+    private static unsafe T[] Decode<T>(IReadOnlyList<byte[]> values) where T : unmanaged
+    {
+        int size = sizeof(T);
+        T[] decoded = new T[values.Count];
+        for (int index = 0; index < values.Count; index++)
+        {
+            if (values[index] is not { Length: var length } data || length != size)
+            { throw new ArgumentException("Display profile contains an invalid native record."); }
+            fixed (byte* source = data) { decoded[index] = *(T*)source; }
+        }
+        return decoded;
+    }
+
+    private static DisplayProfileResult Failure(Exception exception) => new(false,
+        exception is Win32Exception native ? native.NativeErrorCode : 0, false, false, Bound(exception.Message));
+
+    private static string Bound(string value) => value.Length <= 512 ? value : value[..512];
+
     private static bool Exists<T>(this IReadOnlyList<T> values, Predicate<T> predicate)
     {
         for (int index = 0; index < values.Count; index++) { if (predicate(values[index])) { return true; } }
@@ -144,6 +329,8 @@ public static partial class DisplayTopology
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct Luid { public uint LowPart; public int HighPart; }
+    private readonly record struct RouteKey(Luid Adapter, uint Id);
+    private sealed record NativeSnapshot(PathInfo[] Paths, ModeInfo[] Modes);
     [StructLayout(LayoutKind.Sequential)] private struct Rational { public uint Numerator; public uint Denominator; }
     [StructLayout(LayoutKind.Sequential)] private struct DeviceInfoHeader { public int Type; public uint Size; public Luid AdapterId; public uint Id; }
     [StructLayout(LayoutKind.Sequential)] private struct PathSourceInfo { public Luid AdapterId; public uint Id; public uint ModeInfoIdx; public uint StatusFlags; }
@@ -168,6 +355,9 @@ public static partial class DisplayTopology
     [LibraryImport("user32.dll")]
     private static partial int QueryDisplayConfig(uint flags, ref uint pathCount,
         [In, Out] PathInfo[] paths, ref uint modeCount, [In, Out] ModeInfo[] modes, nint topologyId);
+    [LibraryImport("user32.dll")]
+    private static partial int SetDisplayConfig(uint pathCount, [In] PathInfo[] paths,
+        uint modeCount, [In] ModeInfo[] modes, uint flags);
     [LibraryImport("user32.dll")] private static partial int DisplayConfigGetDeviceInfo(ref SourceDeviceName packet);
     [LibraryImport("user32.dll")] private static partial int DisplayConfigGetDeviceInfo(ref TargetDeviceName packet);
 }
