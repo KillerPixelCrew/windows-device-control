@@ -181,3 +181,13 @@ cannot be read safely. Request-list reads may need elevation.
 that snapshot before `DisableSignIn`, and retain it until `Restore` succeeds. Registry writes need
 elevation; this library never elevates or stores application configuration. Windows editions may
 ignore personalization policy even after accepting its registry value.
+
+### Supported display modes
+
+DisplayModes.Read(target) returns fresh current and driver-validated modes for an active CCD target.
+DisplayModes.Apply(snapshot, mode) rechecks the exact route and advertised mode, applies without
+persisting registry settings, confirms readback, and attempts one rollback after an unconfirmed write.
+Run these blocking driver operations on a worker thread. Clone sources are refused because changing
+one source affects multiple targets. Physical visibility still needs application-level confirmation.
+
+Native API reference: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw

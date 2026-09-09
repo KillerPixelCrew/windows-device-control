@@ -158,3 +158,6 @@ lists as errors. Do not suppress CS1591 or CS1573 in the library to make a chang
 
 Do not commit `bin/`, `obj/`, or generated package output. Keep functional changes focused and avoid
 unrelated formatting.
+
+DisplayModes.cs owns driver-mode enumeration, exact active-route validation and transient application
+with confirmed readback and one bounded rollback. UI and mode-selection policy remain with callers.
