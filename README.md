@@ -104,7 +104,7 @@ manufacturer/product IDs are a fallback only when neither observation has a devi
 names and `DISPLAY1` numbering are presentation data. Adapter LUID and target ID describe the current
 route and must be refreshed after hotplug. Enumeration retries the documented sizing race and remains
 read-only. `WaitForPresentAsync` polls fresh complete CCD snapshots; timeout and cancellation never
-change display state.
+change display state. `WaitForAvailableAsync` instead queries all CCD paths and requires target availability, so callers can wait for a connected but disabled display before applying a profile.
 
 `CaptureProfile` serializes the active CCD paths and modes alongside those identities. Before
 application, `ValidateProfile` rematches every saved target against the current topology and asks

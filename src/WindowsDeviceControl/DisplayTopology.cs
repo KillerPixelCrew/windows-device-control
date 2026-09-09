@@ -66,7 +66,7 @@ public sealed record DisplayProfileResult(bool Applied, int NativeStatus, bool R
 /// <summary>Result of waiting for a saved display identity.</summary>
 public enum DisplayWaitOutcome
 {
-    /// <summary>A matching active monitor was observed.</summary>
+    /// <summary>A matching monitor satisfying the requested active/available wait was observed.</summary>
     Present,
     /// <summary>The deadline elapsed without a matching active monitor.</summary>
     TimedOut,
@@ -211,6 +211,30 @@ public static partial class DisplayTopology
             if (snapshot.Paths.Exists(path => identity.Matches(path.Target))) { return (DisplayWaitOutcome.Present, snapshot); }
             TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero) { return (DisplayWaitOutcome.TimedOut, snapshot); }
+            await Task.Delay(remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250), cancellationToken)
+                .ConfigureAwait(false);
+        } while (true);
+    }
+
+    /// <summary>Waits for a connected display, including a target disabled in the current desktop profile.</summary>
+    /// <param name="identity">Previously captured monitor identity.</param>
+    /// <param name="timeout">Positive deadline no greater than ten minutes.</param>
+    /// <param name="cancellationToken">Cancels observation without changing display state.</param>
+    /// <returns>Present when a matching available CCD target is found, otherwise TimedOut.</returns>
+    /// <remarks>Uses all CCD paths and checks target availability. It does not enable a monitor.</remarks>
+    public static async Task<DisplayWaitOutcome> WaitForAvailableAsync(DisplayTargetIdentity identity,
+        TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        if (timeout <= TimeSpan.Zero || timeout > TimeSpan.FromMinutes(10)) { throw new ArgumentOutOfRangeException(nameof(timeout)); }
+        long started = Environment.TickCount64;
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var available = Query(AllPaths).Paths.Where(path => path.TargetInfo.TargetAvailable != 0).Select(ReadTarget);
+            if (available.Any(identity.Matches)) { return DisplayWaitOutcome.Present; }
+            var remaining = timeout - TimeSpan.FromMilliseconds(Environment.TickCount64 - started);
+            if (remaining <= TimeSpan.Zero) { return DisplayWaitOutcome.TimedOut; }
             await Task.Delay(remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250), cancellationToken)
                 .ConfigureAwait(false);
         } while (true);
