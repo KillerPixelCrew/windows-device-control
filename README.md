@@ -212,6 +212,14 @@ Windows fails the set with `ERROR_WMI_SET_FAILURE` (4214), which surfaces as a `
 `RestoreWakeDevices` touches only devices the snapshot observed, because a device that appeared
 since has no prior state to restore.
 
+`WasLastResumeUnattended` reports whether Windows attributes the last resume to something other
+than the user — a wake timer, a device, background work — rather than a button, key or lid. It is
+the one call that separates a wake worth staying awake for from one worth suspending again on, so
+read it on the resume notification rather than caching it. `ReadStandbyTiming` returns the last
+sleep and wake interrupt-time marks with the current one, from a single read, giving `Slept` and
+`SinceWake` for a grace period or a standby diagnostic. Neither reports *what* woke the machine:
+Windows exposes no documented call for that.
+
 Software wake sources are ordinary power settings. `ModernStandby` exposes their identities —
 `SettingAllowWakeTimers`, `SettingAllowAwayMode`, `SettingUnattendedSleepTimeout`,
 `SettingConnectivityInStandby`, `SettingDisconnectedStandby` and the two subgroups — and they are

@@ -156,4 +156,37 @@ public sealed class ModernStandbyTests
     [InlineData("  ")]
     public void AnEmptyDeviceNameIsARejectedArgument(string name)
         => Assert.Throws<ArgumentException>(() => ModernStandby.TrySetWakeArmed(name, armed: true));
+
+    [Fact]
+    public void StandbyTimingMeasuresTheSleepAndTheTimeSinceTheWake()
+    {
+        StandbyTiming timing = new(
+            Sleep: TimeSpan.FromHours(2),
+            Wake: TimeSpan.FromHours(9),
+            Now: TimeSpan.FromHours(10));
+
+        Assert.Equal(TimeSpan.FromHours(7), timing.Slept);
+        Assert.Equal(TimeSpan.FromHours(1), timing.SinceWake);
+    }
+
+    [Fact]
+    public void AMachineThatHasNotSleptThisBootMeasuresNoSleep()
+    {
+        // Both marks are zero on a machine that has never slept, and interrupt time does not run
+        // while asleep, so a wake mark can also sit behind the sleep mark. Neither is negative time.
+        StandbyTiming never = new(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.FromMinutes(30));
+        Assert.Equal(TimeSpan.Zero, never.Slept);
+        Assert.Equal(TimeSpan.FromMinutes(30), never.SinceWake);
+
+        StandbyTiming asleep = new(TimeSpan.FromHours(5), TimeSpan.FromHours(1), TimeSpan.FromHours(5));
+        Assert.Equal(TimeSpan.Zero, asleep.Slept);
+    }
+
+    [Fact]
+    public void AWakeMarkAheadOfTheReadDoesNotProduceNegativeTimeSinceWake()
+    {
+        StandbyTiming timing = new(TimeSpan.Zero, TimeSpan.FromHours(3), TimeSpan.FromHours(2));
+
+        Assert.Equal(TimeSpan.Zero, timing.SinceWake);
+    }
 }

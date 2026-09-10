@@ -31,7 +31,8 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `WindowsWakeSecurity.cs`: wake sign-in capture/apply/restore primitives. Callers persist recovery
   snapshots before mutation and retain them until restoration succeeds.
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
-  arming with snapshot/restore, plus the identities of the software wake-source power settings.
+  arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
+  of the software wake-source power settings.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
 

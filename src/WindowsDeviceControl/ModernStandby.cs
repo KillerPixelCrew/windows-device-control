@@ -30,6 +30,23 @@ public sealed record WakeDevice(string Name, bool Armed, WakeDeviceControl Contr
 /// <param name="Armed">Those of them that were armed.</param>
 public sealed record WakeDeviceSnapshot(IReadOnlyList<string> Known, IReadOnlyList<string> Armed);
 
+/// <summary>Interrupt-time marks around the machine's last standby, all from the same read.</summary>
+/// <remarks>
+///     Interrupt time counts from boot and does not advance while the machine is asleep, so these
+///     are only comparable with each other and with a later read on the same boot.
+/// </remarks>
+/// <param name="Sleep">Interrupt time at the last transition into sleep.</param>
+/// <param name="Wake">Interrupt time at the last wake.</param>
+/// <param name="Now">Interrupt time when the three were read.</param>
+public sealed record StandbyTiming(TimeSpan Sleep, TimeSpan Wake, TimeSpan Now)
+{
+    /// <summary>How long the machine was asleep, or zero when it has not slept this boot.</summary>
+    public TimeSpan Slept => Wake > Sleep ? Wake - Sleep : TimeSpan.Zero;
+
+    /// <summary>How long the machine has been awake since that wake.</summary>
+    public TimeSpan SinceWake => Now > Wake ? Now - Wake : TimeSpan.Zero;
+}
+
 /// <summary>What this machine reports about Modern Standby and its mandatory wake paths.</summary>
 /// <param name="LowPowerIdle">Whether the machine supports S0 low-power idle (Modern Standby).</param>
 /// <param name="ConnectedStandby">Whether it supports the network-connected form of it.</param>
@@ -116,6 +133,30 @@ public static partial class ModernStandby
         }
         return ReadCapabilities(buffer);
     }
+
+    /// <summary>Whether Windows attributes the last resume to something other than the user.</summary>
+    /// <remarks>
+    ///     False means a person woke the machine — a power button, a key, a lid. True means it came
+    ///     back on its own: a wake timer, a device, background work. This is the one call that
+    ///     separates a wake worth staying awake for from one worth going back to sleep on, and it is
+    ///     the whole basis of an automatic re-suspend policy. It describes the last resume, so read
+    ///     it on the resume notification rather than caching it.
+    /// </remarks>
+    /// <returns>True when the last resume was unattended.</returns>
+    public static bool WasLastResumeUnattended() => IsSystemResumeAutomatic();
+
+    /// <summary>Reads the interrupt-time marks around the last standby.</summary>
+    /// <remarks>
+    ///     All three come from one call sequence so they can be compared without a clock skewing
+    ///     between them. Answers "how long was it asleep" and "how long has it been awake", which is
+    ///     what a re-suspend grace period and a standby diagnostic both need. It does not report
+    ///     what woke the machine: Windows exposes no documented call for that.
+    /// </remarks>
+    /// <returns>The last sleep and wake marks and the current interrupt time.</returns>
+    public static StandbyTiming ReadStandbyTiming() => new(
+        ReadInterruptTime(LastSleepTime),
+        ReadInterruptTime(LastWakeTime),
+        QueryInterruptTimeNow());
 
     /// <summary>Enumerates the wake sources a caller can act on: those armed, and those Windows
     /// reports as programmable.</summary>
@@ -288,6 +329,25 @@ public static partial class ModernStandby
         throw Failure(ErrorInvalidData, "DevicePowerEnumDevices");
     }
 
+    /// <summary>One interrupt-time value, in 100 ns units, read through the power information call.</summary>
+    internal static TimeSpan ReadInterruptTime(uint level)
+    {
+        ulong ticks = 0;
+        uint status = CallNtPowerInformation(level, 0, 0, ref ticks, sizeof(ulong));
+        if (status != 0)
+        {
+            // NTSTATUS, not a Win32 code: preserved as-is rather than mapped to an invented one.
+            throw Failure(status, "CallNtPowerInformation");
+        }
+        return TimeSpan.FromTicks(checked((long)ticks));
+    }
+
+    private static TimeSpan QueryInterruptTimeNow()
+    {
+        QueryInterruptTime(out ulong ticks);
+        return TimeSpan.FromTicks(checked((long)ticks));
+    }
+
     private static List<string> Enumerate(uint interpretation)
     {
         List<string> names = [];
@@ -317,6 +377,12 @@ public static partial class ModernStandby
     private const uint MaximumDevices = 4096;
     private const uint ErrorInvalidData = 13;
     private const uint ErrorNoMoreItems = 259;
+
+    /// <summary>POWER_INFORMATION_LEVEL.LastWakeTime; interrupt time at the last wake.</summary>
+    private const uint LastWakeTime = 14;
+
+    /// <summary>POWER_INFORMATION_LEVEL.LastSleepTime; interrupt time at the last sleep.</summary>
+    private const uint LastSleepTime = 15;
 
     private static void Check(uint status, string operation)
     {
@@ -350,4 +416,18 @@ public static partial class ModernStandby
     [LibraryImport("powrprof.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint DevicePowerSetDeviceState(
         string deviceDescription, uint setFlags, nint setData);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsSystemResumeAutomatic();
+
+    [LibraryImport("powrprof.dll")]
+    private static partial uint CallNtPowerInformation(
+        uint informationLevel, nint inputBuffer, uint inputBufferLength,
+        ref ulong outputBuffer, uint outputBufferLength);
+
+    // Declared against kernel32 in the SDK headers but not exported from it. The API set is the
+    // documented forward-compatible name; KernelBase also carries it, and kernel32 does not.
+    [LibraryImport("api-ms-win-core-realtime-l1-1-0.dll")]
+    private static partial void QueryInterruptTime(out ulong interruptTime);
 }
