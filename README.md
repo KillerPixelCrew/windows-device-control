@@ -182,6 +182,32 @@ that snapshot before `DisableSignIn`, and retain it until `Restore` succeeds. Re
 elevation; this library never elevates or stores application configuration. Windows editions may
 ignore personalization policy even after accepting its registry value.
 
+### Hybrid processor core placement
+
+`QueryHybridCores` reports the machine's processor efficiency classes from Windows CPU set
+information and whether one scheme exposes the three hidden processor settings that steer thread
+placement on hybrid parts: HETEROPOLICY, SCHEDPOLICY and SHORTSCHEDPOLICY. Offer these controls only
+when the machine is hybrid and the scheme is configurable; the published value lists come from
+Windows, so a build that publishes none returns empty lists instead of an invented range.
+
+```csharp
+Guid scheme = WindowsPower.GetActiveScheme();
+HybridCoreSupport support = WindowsPower.QueryHybridCores(scheme);
+if (support is { Hybrid: true, Configurable: true })
+{
+    HybridCoreState previous = WindowsPower.ReadHybridCores(scheme, onBattery: false);
+    WindowsPower.WriteHybridCores(scheme, onBattery: false,
+        previous with { Threads = HybridSchedulingPolicy.PreferPerformantProcessors });
+    WindowsPower.RefreshActiveScheme();
+}
+```
+
+AC and battery values are separate; read and write each source explicitly. `ReadHybridCores` is the
+snapshot to persist before a write and to restore from afterwards, because `WriteHybridCores` issues
+its three writes in order and does not roll back. Windows applies processor policy when a scheme is
+activated, so a write to the active scheme needs `RefreshActiveScheme` to take effect. A policy value
+this library does not name is preserved as its raw number rather than replaced.
+
 ### Supported display modes
 
 DisplayModes.Read(target) returns fresh current and driver-validated modes for an active CCD target.

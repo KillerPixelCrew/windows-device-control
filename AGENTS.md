@@ -23,8 +23,9 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `DisplayTopology.cs`: supported CCD enumeration, stable monitor matching, appearance waits and
   validated profile capture/apply with rollback.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
-- `WindowsPower*.cs`: power-scheme enumeration, policy values and power-mode operations. Callers
-  own policy ordering, readback confirmation and UI; the library preserves native error codes.
+- `WindowsPower*.cs`: power-scheme enumeration, policy values, power-mode operations and hybrid
+  processor core placement. Callers own policy ordering, readback confirmation and UI; the library
+  preserves native error codes.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
 - `PowerRequestList.cs`: bounded system-wide wake-request decoding; an unreadable layout is unknown.
 - `WindowsWakeSecurity.cs`: wake sign-in capture/apply/restore primitives. Callers persist recovery
@@ -119,6 +120,17 @@ one is queued instead of building a repeated-key rattle. Disposal must release a
 
 Across all interop code, preserve exact native layouts, bounds checks, handle/COM ownership, and
 callback lifetimes. Unsafe code needs a local, auditable reason.
+
+## Power policy invariants
+
+Hybrid core placement is exposed as the three Windows processor settings it actually is, not as an
+invented set of composite performance modes. Capability comes from Windows: efficiency classes from
+CPU set information, accepted values from the setting's published list. Report an empty list rather
+than a guessed range, and preserve a policy value the enumeration does not name.
+
+Writes stay single-shot and per power source. The library does not activate a scheme on the caller's
+behalf, does not retry, and does not roll back a partial write; `ReadHybridCores` is the snapshot the
+caller persists and restores from.
 
 ## Testing
 
