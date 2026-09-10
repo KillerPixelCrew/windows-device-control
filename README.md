@@ -182,6 +182,42 @@ that snapshot before `DisableSignIn`, and retain it until `Restore` succeeds. Re
 elevation; this library never elevates or stores application configuration. Windows editions may
 ignore personalization policy even after accepting its registry value.
 
+### Modern Standby wake sources
+
+`ModernStandby.Query` reports whether the machine supports S0 low-power idle and its connected
+form, and which mandatory wake paths exist — power button, sleep button, lid, wake alarm. Those are
+reported, never written: nothing in this class can take away a recovery wake path.
+
+`EnumerateWakeDevices` returns the wake sources a caller can act on: the devices Windows reports as
+programmable, plus any that are armed without being programmable. The second group comes back as
+`WakeDeviceControl.Fixed` — visible and reportable, refused for writes. Devices that merely support
+waking from S0 are deliberately excluded; on a handheld that is most of the HID and Bluetooth
+endpoints, none of which Windows offers for change.
+
+```csharp
+WakeDeviceSnapshot snapshot = ModernStandby.CaptureWakeDevices();
+foreach (WakeDevice device in ModernStandby.EnumerateWakeDevices())
+{
+    if (device is { Control: WakeDeviceControl.Programmable, Armed: true })
+    {
+        ModernStandby.TrySetWakeArmed(device.Name, armed: false);
+    }
+}
+ModernStandby.RestoreWakeDevices(snapshot);
+```
+
+`TrySetWakeArmed` re-reads programmability rather than trusting the caller's record, returns false
+for a device Windows no longer offers, and is idempotent. Writes need elevation: unelevated,
+Windows fails the set with `ERROR_WMI_SET_FAILURE` (4214), which surfaces as a `Win32Exception`.
+`RestoreWakeDevices` touches only devices the snapshot observed, because a device that appeared
+since has no prior state to restore.
+
+Software wake sources are ordinary power settings. `ModernStandby` exposes their identities —
+`SettingAllowWakeTimers`, `SettingAllowAwayMode`, `SettingUnattendedSleepTimeout`,
+`SettingConnectivityInStandby`, `SettingDisconnectedStandby` and the two subgroups — and they are
+read and written with `WindowsPower.ReadSetting` / `WriteSetting` plus `RefreshActiveScheme`. The
+library stores no policy of its own for them.
+
 ### Hybrid processor core placement
 
 `QueryHybridCores` reports the machine's processor efficiency classes from Windows CPU set

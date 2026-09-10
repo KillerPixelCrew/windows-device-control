@@ -30,6 +30,8 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `PowerRequestList.cs`: bounded system-wide wake-request decoding; an unreadable layout is unknown.
 - `WindowsWakeSecurity.cs`: wake sign-in capture/apply/restore primitives. Callers persist recovery
   snapshots before mutation and retain them until restoration succeeds.
+- `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
+  arming with snapshot/restore, plus the identities of the software wake-source power settings.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
 
@@ -131,6 +133,18 @@ than a guessed range, and preserve a policy value the enumeration does not name.
 Writes stay single-shot and per power source. The library does not activate a scheme on the caller's
 behalf, does not retry, and does not roll back a partial write; `ReadHybridCores` is the snapshot the
 caller persists and restores from.
+
+Modern Standby wake control is per named device and never wholesale. There is no call that disables
+every wake source, and the power button, sleep button and lid are reported by `Query` rather than
+being writable at all. Enumeration is the actionable set — programmable, plus armed-but-fixed — not
+every device that supports waking from S0; a source that cannot safely be changed is reported as
+`Fixed` instead of being written to. `TrySetWakeArmed` re-reads programmability at the moment of the
+write, so a stale record cannot drive one. Restore touches only devices the snapshot observed.
+
+The enumeration's size argument is not an output: Windows leaves it at the buffer size it was given,
+so a device name ends at its terminator. The end of the list and a genuine failure both return
+FALSE, and only `ERROR_NO_MORE_ITEMS` separates them — do not treat every FALSE as the end, which
+reports a partial device list as a complete one.
 
 ## Testing
 
