@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Xunit;
@@ -210,6 +211,95 @@ public sealed class DisplayLayoutTests
         Assert.Equal(20, Marshal.SizeOf<DisplayTopology.SourceMode>());
         Assert.Equal(48, Marshal.SizeOf<DisplayTopology.VideoSignalInfo>());
         Assert.Equal(16, Marshal.OffsetOf<DisplayTopology.ModeInfo>(nameof(DisplayTopology.ModeInfo.Mode)).ToInt32());
+    }
+
+    [Fact]
+    public void TheLayoutRulesAreReachableWithoutTouchingADisplay()
+    {
+        // An editor has to refuse a layout as it is typed, and a stored layout has to be checkable
+        // while the monitors it names are unplugged. Neither can call Validate, which asks Windows.
+        DisplayTargetIdentity target = Target(@"\\?\a");
+
+        Assert.Null(DisplayLayouts.Describe(new([Output(target)])));
+        Assert.Contains("at least one display", DisplayLayouts.Describe(new([]))!);
+        Assert.Throws<ArgumentNullException>(() => DisplayLayouts.Describe(null!));
+    }
+
+    [Fact]
+    public void ACapturedProfileReadsBackAsTheLayoutItRecorded()
+    {
+        DisplayTargetIdentity first = Target(@"\\?\a", "Desk", 10);
+        DisplayTargetIdentity second = Target(@"\\?\b", "TV", 20);
+        DisplayProfile profile = Profile(
+            [(first, 0, 0, 2560, 1440, 60), (second, 2560, 0, 3840, 2160, 120)]);
+
+        DisplayLayout layout = DisplayLayouts.FromProfile(profile)!;
+
+        Assert.Equal(2, layout.Outputs.Count);
+        Assert.Equal((0, 2560, 1440), (layout.Outputs[0].X, layout.Outputs[0].Width, layout.Outputs[0].Height));
+        Assert.Equal(2560, layout.Outputs[1].X);
+        Assert.Equal(120, layout.Outputs[1].Refresh.Hertz);
+        // The profile never recorded these, and reading them now would describe today's desktop.
+        Assert.All(layout.Outputs, output => Assert.Null(output.DpiPercent));
+        Assert.All(layout.Outputs, output => Assert.Null(output.Hdr));
+    }
+
+    [Theory]
+    // A record of the wrong length, a target list that does not line up with the paths, and a
+    // recorded arrangement that no longer describes a desktop: all are dropped, never guessed at.
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public void AProfileThatCannotBeReadAsALayoutIsRefused(bool truncated, bool mismatched, bool overlapping)
+    {
+        DisplayTargetIdentity first = Target(@"\\?\a", "Desk", 10);
+        DisplayTargetIdentity second = Target(@"\\?\b", "TV", 20);
+        DisplayProfile profile = overlapping
+            ? Profile([(first, 0, 0, 2560, 1440, 60), (second, 0, 0, 3840, 2160, 60)])
+            : Profile([(first, 0, 0, 2560, 1440, 60)]);
+        if (truncated) { profile = profile with { PathData = [new byte[3]] }; }
+        if (mismatched) { profile = profile with { Targets = [first, second] }; }
+
+        Assert.Null(DisplayLayouts.FromProfile(profile));
+    }
+
+    /// <summary>Builds the native records <see cref="DisplayTopology.CaptureProfile"/> would have
+    /// written for one arrangement, so the decode can be tested without a second monitor.</summary>
+    private static DisplayProfile Profile(
+        (DisplayTargetIdentity Target, int X, int Y, int Width, int Height, int Hertz)[] outputs)
+    {
+        List<byte[]> paths = [], modes = [];
+        foreach (var (target, x, y, width, height, hertz) in outputs)
+        {
+            DisplayTopology.ModeInfo mode = new()
+            {
+                InfoType = 1,
+                Id = target.TargetId,
+                Mode = new() { Source = new() { Width = (uint)width, Height = (uint)height, X = x, Y = y } },
+            };
+            DisplayTopology.PathInfo path = new()
+            {
+                SourceInfo = new() { Id = target.TargetId, ModeInfoIdx = (uint)modes.Count },
+                TargetInfo = new()
+                {
+                    Id = target.TargetId,
+                    ModeInfoIdx = InvalidIndex,
+                    Rotation = 1,
+                    RefreshRate = new() { Numerator = (uint)hertz, Denominator = 1 },
+                },
+                Flags = Active,
+            };
+            modes.Add(Bytes(mode));
+            paths.Add(Bytes(path));
+        }
+        return new(1, [.. outputs.Select(output => output.Target)], paths, modes);
+    }
+
+    private static unsafe byte[] Bytes<T>(T value) where T : unmanaged
+    {
+        byte[] buffer = new byte[sizeof(T)];
+        fixed (byte* destination = buffer) { *(T*)destination = value; }
+        return buffer;
     }
 
     [Fact]

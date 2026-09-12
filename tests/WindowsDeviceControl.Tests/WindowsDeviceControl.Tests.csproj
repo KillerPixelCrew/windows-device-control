@@ -7,6 +7,9 @@
     <IsPackable>false</IsPackable>
     <Nullable>enable</Nullable>
     <ImplicitUsings>false</ImplicitUsings>
+    <!-- Only to build the native records a profile decode has to read, so that path can be tested
+         without a second monitor. No test calls a native API. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);1573;1591</NoWarn>
   </PropertyGroup>

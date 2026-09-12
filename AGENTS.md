@@ -26,6 +26,9 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
   the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
   state, an already-matching arrangement is not rewritten, and an unconfirmed apply rolls back once.
+  `Describe` exposes those rules without touching a display, so a caller's editor and its stored
+  configuration check a layout the same way this library will. Keep it that way: a second copy of
+  the rules in a consumer is how the two drift apart.
 - `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
   addressed by monitor identity. Support and current value are re-read before every write, and a
   refusal is reported rather than retried.

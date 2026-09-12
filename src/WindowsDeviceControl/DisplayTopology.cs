@@ -321,7 +321,7 @@ public static partial class DisplayTopology
         return encoded;
     }
 
-    private static unsafe T[] Decode<T>(IReadOnlyList<byte[]> values) where T : unmanaged
+    internal static unsafe T[] Decode<T>(IReadOnlyList<byte[]> values) where T : unmanaged
     {
         int size = sizeof(T);
         T[] decoded = new T[values.Count];

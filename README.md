@@ -265,6 +265,12 @@ returns the current desktop as values: identity, position, resolution, refresh, 
 and HDR. `Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies and
 confirms by readback.
 
+`Describe(layout)` is the rule set on its own: pure, touching no display, so an editor can refuse a
+layout as it is typed and a stored layout can be checked while the monitors it names are unplugged.
+`FromProfile(profile)` is the one-way trip out of a captured `DisplayProfile`, for callers migrating
+stored profiles to layouts; scaling and advanced colour come back unset, because the profile never
+recorded them and reading them now would describe today's desktop rather than the captured one.
+
 A layout is checked before Windows sees it: at least one display, exactly one at 0,0 as the primary,
 no duplicates, no overlaps, and every display touching the arrangement, because Windows snaps a
 detached desktop and the readback would then never match. A requested monitor that is not connected

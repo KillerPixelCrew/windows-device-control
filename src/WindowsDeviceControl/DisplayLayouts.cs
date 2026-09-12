@@ -164,6 +164,60 @@ public static class DisplayLayouts
         [.. Observe().Targets.Where(target => target is { Active: true, Current: not null })
             .Select(target => target.Current!)]);
 
+    /// <summary>Why this layout could never describe a desktop, or null when it could.
+    ///
+    /// Pure, and it touches no display, so an editor can refuse a layout as it is typed and a
+    /// stored layout can be checked while the monitors it names are unplugged. <see
+    /// cref="Validate"/> answers the separate question of whether Windows would accept it now.
+    /// </summary>
+    /// <param name="layout">The layout to check.</param>
+    /// <returns>A user-facing reason, or null when the layout is well formed.</returns>
+    public static string? Describe(DisplayLayout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        return DisplayLayoutPlanner.Describe(layout);
+    }
+
+    /// <summary>Reads a profile captured by <see cref="DisplayTopology.CaptureProfile"/> back as an
+    /// editable layout.
+    ///
+    /// A profile is a native configuration meant to be replayed, not read; this is the one-way trip
+    /// out of that form, for callers migrating stored profiles to layouts. Scaling and advanced
+    /// colour are left unset because the profile never recorded them, and reading them now would
+    /// describe today's desktop rather than the captured one.</summary>
+    /// <param name="profile">A previously captured profile.</param>
+    /// <returns>The layout, or null when the profile cannot be read as one.</returns>
+    public static DisplayLayout? FromProfile(DisplayProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        DisplayTopology.PathInfo[] paths;
+        DisplayTopology.ModeInfo[] modes;
+        try
+        {
+            paths = DisplayTopology.Decode<DisplayTopology.PathInfo>(profile.PathData);
+            modes = DisplayTopology.Decode<DisplayTopology.ModeInfo>(profile.ModeData);
+        }
+        catch (ArgumentException) { return null; }
+        if (paths.Length != profile.Targets.Count) { return null; }
+
+        List<DisplayLayoutOutput> outputs = [];
+        for (int index = 0; index < paths.Length; index++)
+        {
+            DisplayTopology.PathInfo path = paths[index];
+            if ((path.Flags & PathActive) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length) { continue; }
+            DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
+            if (mode.InfoType != SourceModeInfo) { continue; }
+            DisplayTargetIdentity identity = profile.Targets[index];
+            if (outputs.Exists(other => other.Target.Matches(identity))) { continue; }
+            DisplayTopology.SourceMode source = mode.Mode.Source;
+            outputs.Add(new(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
+                new(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
+                path.TargetInfo.Rotation));
+        }
+        DisplayLayout layout = new(outputs);
+        return Describe(layout) is null ? layout : null;
+    }
+
     /// <summary>Checks a layout against Windows without changing anything.</summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>Invalid, TargetsAbsent, Rejected, or Applied meaning "would apply".</returns>
