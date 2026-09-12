@@ -88,6 +88,9 @@ var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSe
 | `Backlight` | Internal panel brightness over the ACPI backlight device |
 | `WaveOutFeedback` | The short click Windows itself plays for volume feedback |
 | `DisplayTopology` | Active CCD paths, rematchable monitor identities, and cancellable display-appearance waits |
+| `DisplayLayouts` | Complete desktop arrangements by value: which monitors are on, which is primary, position, mode, scaling and HDR |
+| `DisplayScaling` | One display's Windows scaling percentage, read and written through the relative-step packets |
+| `DisplayColor` | One display's advanced colour (HDR) state, with support re-read before every write |
 
 Every public member is documented and the build fails on one that is not, so IntelliSense is the
 reference — including which callbacks arrive on a Windows service thread and which calls return
@@ -251,6 +254,31 @@ snapshot to persist before a write and to restore from afterwards, because `Writ
 its three writes in order and does not roll back. Windows applies processor policy when a scheme is
 activated, so a write to the active scheme needs `RefreshActiveScheme` to take effect. A policy value
 this library does not name is preserved as its raw number rather than replaced.
+
+### Editable display layouts
+
+`DisplayTopology` replays a captured native configuration, which restores what was there and nothing
+else. `DisplayLayouts` is the editable form. `Observe()` reports every monitor the adapter can see,
+active or not, with a fingerprint that only changes when the observation does; two equal
+fingerprints a moment apart are what a caller waits for before acting on an arrival. `Capture()`
+returns the current desktop as values: identity, position, resolution, refresh, rotation, scaling
+and HDR. `Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies and
+confirms by readback.
+
+A layout is checked before Windows sees it: at least one display, exactly one at 0,0 as the primary,
+no duplicates, no overlaps, and every display touching the arrangement, because Windows snaps a
+detached desktop and the readback would then never match. A requested monitor that is not connected
+returns `TargetsAbsent` rather than throwing, so a caller can wait for a television that only
+appears when an HDMI switch selects this machine. An arrangement that already matches returns
+`AlreadyActive` without writing, which makes compensation idempotent.
+
+The planner supplies a complete configuration: the path already driving a monitor keeps its source,
+a second display never shares one, monitors left out of the layout are supplied inactive, and the
+target mode index is left invalid so the driver picks a signal for the requested resolution and
+rate. Scaling and HDR are applied per display afterwards; a refusal there is a warning rather than a
+reason to undo an arrangement that is already on screen. An unconfirmed application gets exactly one
+rollback, and nothing is ever retried automatically. `SDC_TOPOLOGY_SUPPLIED` is deliberately not
+used: it takes modes from the Windows database, so it cannot express position or resolution.
 
 ### Supported display modes
 

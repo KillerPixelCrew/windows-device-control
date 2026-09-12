@@ -21,7 +21,14 @@ including callback threading, completion timing, consent, error meanings, and ow
   connection.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology.cs`: supported CCD enumeration, stable monitor matching, appearance waits and
-  validated profile capture/apply with rollback.
+  validated profile capture/apply with rollback. It also owns the native CCD shapes, which are
+  internal so the layout code shares one set of offsets rather than keeping a second copy.
+- `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
+  the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
+  state, an already-matching arrangement is not rewritten, and an unconfirmed apply rolls back once.
+- `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
+  addressed by monitor identity. Support and current value are re-read before every write, and a
+  refusal is reported rather than retried.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
 - `WindowsPower*.cs`: power-scheme enumeration, policy values, power-mode operations and hybrid
   processor core placement. Callers own policy ordering, readback confirmation and UI; the library
