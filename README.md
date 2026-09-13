@@ -295,3 +295,8 @@ Run these blocking driver operations on a worker thread. Clone sources are refus
 one source affects multiple targets. Physical visibility still needs application-level confirmation.
 
 Native API reference: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
+
+Display discovery bounds CCD buffers at 4,096 possible routes and 8,192 mode records.
+Possible source/target combinations can greatly exceed the active display count: a desktop
+query on 2026-09-13 returned 284 possible routes and three active routes. The bound applies
+to both the editable layout and native topology paths, before allocating their buffers.

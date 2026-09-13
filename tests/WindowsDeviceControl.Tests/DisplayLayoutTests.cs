@@ -10,6 +10,19 @@ namespace WindowsDeviceControl.Tests;
 /// the planner is pure, which is what lets the awkward cases be covered at all.</summary>
 public sealed class DisplayLayoutTests
 {
+    [Theory]
+    [InlineData(284u, 568u)]
+    [InlineData(4096u, 8192u)]
+    public void PossibleRouteCountsCanExceedTheNumberOfDisplays(uint paths, uint modes)
+        => DisplayTopology.ValidateBufferCounts(paths, modes);
+
+    [Theory]
+    [InlineData(4097u, 8192u)]
+    [InlineData(4096u, 8193u)]
+    [InlineData(uint.MaxValue, uint.MaxValue)]
+    public void ExcessiveRouteBuffersAreStillRefusedBeforeAllocation(uint paths, uint modes)
+        => Assert.Throws<InvalidOperationException>(() => DisplayTopology.ValidateBufferCounts(paths, modes));
+
     private const uint Active = 0x1;
     private const uint InvalidIndex = 0xffffffff;
 

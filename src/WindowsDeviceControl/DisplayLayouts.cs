@@ -448,10 +448,7 @@ public static class DisplayLayouts
         {
             int status = DisplayTopology.GetDisplayConfigBufferSizes(flags, out uint pathCount, out uint modeCount);
             if (status != 0) { throw new Win32Exception(status, "Display topology buffer sizing failed."); }
-            if (pathCount > 256 || modeCount > 1024)
-            {
-                throw new InvalidOperationException("Display topology exceeds supported bounds.");
-            }
+            DisplayTopology.ValidateBufferCounts(pathCount, modeCount);
             DisplayTopology.PathInfo[] paths = new DisplayTopology.PathInfo[pathCount];
             DisplayTopology.ModeInfo[] modes = new DisplayTopology.ModeInfo[modeCount];
             status = DisplayTopology.QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);

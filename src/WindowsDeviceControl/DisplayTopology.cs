@@ -95,7 +95,7 @@ public static partial class DisplayTopology
         {
             int status = GetDisplayConfigBufferSizes(OnlyActivePaths, out uint pathCount, out uint modeCount);
             if (status != 0) { throw new Win32Exception(status, "Display topology buffer sizing failed."); }
-            if (pathCount > 256 || modeCount > 1024) { throw new InvalidOperationException("Display topology exceeds supported bounds."); }
+            ValidateBufferCounts(pathCount, modeCount);
             PathInfo[] paths = new PathInfo[pathCount];
             ModeInfo[] modes = new ModeInfo[modeCount];
             status = QueryDisplayConfig(OnlyActivePaths, ref pathCount, paths, ref modeCount, modes, 0);
@@ -240,13 +240,22 @@ public static partial class DisplayTopology
         } while (true);
     }
 
+    // QDC_ALL_PATHS contains possible source/target combinations, not just connected monitors.
+    // The desktop reported 284 paths for three active routes on 2026-09-13. Keep allocations
+    // bounded below one MiB while allowing adapters with many routing combinations.
+    internal static void ValidateBufferCounts(uint paths, uint modes)
+    {
+        if (paths > 4096 || modes > 8192)
+        { throw new InvalidOperationException($"Display topology exceeds supported bounds ({paths} paths, {modes} modes)."); }
+    }
+
     private static unsafe NativeSnapshot Query(uint flags)
     {
         for (int attempt = 0; attempt < 4; attempt++)
         {
             int status = GetDisplayConfigBufferSizes(flags, out uint pathCount, out uint modeCount);
             if (status != 0) { throw new Win32Exception(status, "Display topology buffer sizing failed."); }
-            if (pathCount > 256 || modeCount > 1024) { throw new InvalidOperationException("Display topology exceeds supported bounds."); }
+            ValidateBufferCounts(pathCount, modeCount);
             PathInfo[] paths = new PathInfo[pathCount];
             ModeInfo[] modes = new ModeInfo[modeCount];
             status = QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);
