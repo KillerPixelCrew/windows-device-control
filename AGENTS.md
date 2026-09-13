@@ -198,3 +198,6 @@ unrelated formatting.
 
 DisplayModes.cs owns driver-mode enumeration, exact active-route validation and transient application
 with confirmed readback and one bounded rollback. UI and mode-selection policy remain with callers.
+DisplayEdid.cs provides read-only timing candidates for an exact monitor interface even while its
+source is disabled. Keep checksums and block bounds strict; EDID candidates are not driver-validated
+mode snapshots and must not bypass the normal layout validation and apply path.

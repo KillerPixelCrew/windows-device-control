@@ -296,6 +296,22 @@ one source affects multiple targets. Physical visibility still needs application
 
 Native API reference: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
 
+`DisplayEdid.ReadModes(target)` reads recognized progressive timings from the exact monitor's EDID,
+including when Windows has disabled its source. Call it on a worker. It uses
+[DisplayMonitor.FromInterfaceIdAsync and GetDescriptor](https://learn.microsoft.com/en-us/uwp/api/windows.devices.display.displaymonitor),
+with a three-second interface lookup budget. No display is activated or tested against the driver.
+These are candidates for a saved layout; the apply path must still validate the complete arrangement.
+The reader checks block checksums and bounds and handles base established/standard/detailed timings,
+common CTA progressive video codes and detailed timings, and DisplayID type I/VII detailed
+timings. Unknown timing formats and interlaced entries are skipped. Integer refresh rates follow
+`DisplayMode`; EDID does not supply the driver's complete set of scaled or custom modes.
+
+Timing format references: [DRM EDID timing definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_edid.c)
+and [libdisplay-info DisplayID decoding](https://chromium.googlesource.com/external/gitlab.freedesktop.org/emersion/libdisplay-info/+/refs/heads/upstream/main/displayid.c).
+On 2026-09-13, read-only checks on Windows build 26200 returned EDID modes for three connected, disabled
+monitors: Odyssey G7 (3840x2160 at 165 Hz), HP X32 (2560x1440 at 165 Hz), and Odyssey G93SC
+(5120x1440 at 240 Hz). This did not apply or prove visibility of those modes.
+
 Display discovery bounds CCD buffers at 4,096 possible routes and 8,192 mode records.
 Possible source/target combinations can greatly exceed the active display count: a desktop
 query on 2026-09-13 returned 284 possible routes and three active routes. The bound applies
