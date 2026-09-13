@@ -130,7 +130,7 @@ public static class DisplayLayouts
     private const uint ModeInfoIdxInvalid = 0xffffffff;
     private const uint SourceModeInfo = 1;
     private const uint TargetModeInfo = 2;
-    private const uint PixelFormat32Bpp = 5;
+    private const uint PixelFormat32Bpp = 4;
     private const int GetSourceName = 1;
     private const int ErrorInsufficientBuffer = 122;
 

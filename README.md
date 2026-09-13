@@ -286,6 +286,14 @@ reason to undo an arrangement that is already on screen. An unconfirmed applicat
 rollback, and nothing is ever retried automatically. `SDC_TOPOLOGY_SUPPLIED` is deliberately not
 used: it takes modes from the Windows database, so it cannot express position or resolution.
 
+Planned source modes use `DISPLAYCONFIG_PIXELFORMAT_32BPP` (4), and requested refresh rates use
+progressive scan ordering. On 2026-09-13, a connected but inactive HISENSE on Windows build 26200
+rejected a 3840x2160 at 60 Hz layout with native error 87 while scan ordering was unspecified.
+Setting progressive ordering made native validation succeed without changing the requested rate.
+This is validation evidence; it does not by itself prove a completed display switch.
+Reference comparisons used [DisplayMagician's CCD implementation](https://github.com/terrymacdonald/DisplayMagician/blob/main/DisplayMagicianShared/Windows/CCD.cs)
+and [ColorControl's CCD implementation](https://github.com/Maassoft/ColorControl/blob/master/Shared/Native/CCD.cs).
+
 ### Supported display modes
 
 DisplayModes.Read(target) returns fresh current and driver-validated modes for an active CCD target.

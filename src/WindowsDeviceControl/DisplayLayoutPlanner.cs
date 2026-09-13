@@ -143,6 +143,9 @@ internal static class DisplayLayoutPlanner
                 Numerator = output.Refresh.Numerator,
                 Denominator = output.Refresh.Denominator,
             };
+            // Inactive CCD paths have unspecified scan ordering. Pair the requested refresh with
+            // progressive scan instead of replaying that placeholder (Windows rejects it with 87).
+            path.TargetInfo.ScanLineOrdering = 1;
             path.TargetInfo.Rotation = output.Rotation == 0 ? 1 : output.Rotation;
             plannedPaths.Add(path);
 

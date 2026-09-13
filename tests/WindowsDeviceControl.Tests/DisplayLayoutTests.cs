@@ -103,6 +103,9 @@ public sealed class DisplayLayoutTests
         Assert.Equal(2560, modes[1].Mode.Source.X);
         Assert.Equal(3840u, modes[1].Mode.Source.Width);
         Assert.Equal(120u, planned[1].TargetInfo.RefreshRate.Numerator);
+        Assert.All(planned.Take(2), path => Assert.Equal(1u, path.TargetInfo.ScanLineOrdering));
+        // DISPLAYCONFIG_PIXELFORMAT_32BPP is 4; 5 means NONGDI.
+        Assert.All(modes, mode => Assert.Equal(4u, mode.Mode.Source.PixelFormat));
         // The target mode is left for Windows to choose for the requested resolution and rate.
         Assert.All(planned.Take(2), path => Assert.Equal(InvalidIndex, path.TargetInfo.ModeInfoIdx));
     }
