@@ -173,9 +173,12 @@ public static partial class DisplayTopology
         TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(identity);
-        return await PollAsync(timeout, () => Query(AllPaths).Paths
-            .Where(path => path.TargetInfo.TargetAvailable != 0).Select(ReadTarget).Any(identity.Matches),
-            cancellationToken).ConfigureAwait(false);
+        return await PollAsync(timeout, () =>
+        {
+            Dictionary<RouteKey, DisplayTargetIdentity> read = [];
+            return Query(AllPaths).Paths.Where(path => path.TargetInfo.TargetAvailable != 0)
+                .Select(path => ReadTarget(path, read)).Any(identity.Matches);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     // QDC_ALL_PATHS contains possible source/target combinations, not just connected monitors.
@@ -235,6 +238,20 @@ public static partial class DisplayTopology
         return new(NativeText.ReadFixed(target.MonitorDevicePath, 128), edidValid ? target.EdidManufacturerId : null,
             edidValid ? target.EdidProductCodeId : null, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
             path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
+    }
+
+    /// <summary>Reads a path's monitor identity once per target route within one observation. All
+    /// paths query many possible routes to the same target, and its identity is the same on each.
+    /// A failed read is not remembered.</summary>
+    internal static DisplayTargetIdentity ReadTarget(PathInfo path, Dictionary<RouteKey, DisplayTargetIdentity> read)
+    {
+        RouteKey key = new(path.TargetInfo.AdapterId, path.TargetInfo.Id);
+        if (!read.TryGetValue(key, out DisplayTargetIdentity? identity))
+        {
+            identity = ReadTarget(path);
+            read[key] = identity;
+        }
+        return identity;
     }
 
     private static unsafe string ReadSourceName(PathInfo path)
@@ -362,8 +379,8 @@ public static partial class DisplayTopology
     // The native CCD shapes are internal rather than private so the layout editor beside this class
     // can build a supplied configuration from the same declarations. One decoded layout, one set of
     // offsets: a second copy would be a second thing to get wrong.
-    [StructLayout(LayoutKind.Sequential)] internal struct Luid { public uint LowPart; public int HighPart; }
-    private readonly record struct RouteKey(Luid Adapter, uint Id);
+    [StructLayout(LayoutKind.Sequential)] internal record struct Luid { public uint LowPart; public int HighPart; }
+    internal readonly record struct RouteKey(Luid Adapter, uint Id);
     internal sealed record NativeSnapshot(PathInfo[] Paths, ModeInfo[] Modes);
     [StructLayout(LayoutKind.Sequential)] internal struct Rational { public uint Numerator; public uint Denominator; }
     [StructLayout(LayoutKind.Sequential)] internal struct DeviceInfoHeader { public int Type; public uint Size; public Luid AdapterId; public uint Id; }

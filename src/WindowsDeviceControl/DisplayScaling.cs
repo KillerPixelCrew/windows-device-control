@@ -93,7 +93,7 @@ public static partial class DisplayScaling
     /// <returns>The nearest supported step.</returns>
     public static int Snap(int percent) => Steps.MinBy(step => Math.Abs(step - percent));
 
-    private static bool TryRead(
+    internal static bool TryRead(
         DisplayTopology.Luid adapter, uint source, out int current, out int recommended, out int maximum)
     {
         current = recommended = maximum = 0;

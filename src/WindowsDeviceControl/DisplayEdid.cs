@@ -9,6 +9,14 @@ namespace WindowsDeviceControl;
 /// <summary>Reads advertised monitor timings without activating a Windows display source.</summary>
 public static class DisplayEdid
 {
+    private static ReadOnlySpan<byte> Magic => [0, 255, 255, 255, 255, 255, 255, 0];
+
+    /// <summary>The established timings, in bit order. The 1024x768@87 entry is interlaced.</summary>
+    private static readonly DisplayMode[] Established = [new(720, 400, 70), new(720, 400, 88), new(640, 480, 60),
+        new(640, 480, 67), new(640, 480, 72), new(640, 480, 75), new(800, 600, 56), new(800, 600, 60),
+        new(800, 600, 72), new(800, 600, 75), new(832, 624, 75), new(1024, 768, 87),
+        new(1024, 768, 60), new(1024, 768, 70), new(1024, 768, 75), new(1280, 1024, 75), new(1152, 870, 75)];
+
     /// <summary>Reads EDID through the exact monitor interface, including a connected disabled monitor.</summary>
     /// <param name="target">Monitor interface identity obtained from display discovery.</param>
     /// <returns>Progressive timing candidates, not a driver validation or an active mode snapshot.</returns>
@@ -27,18 +35,14 @@ public static class DisplayEdid
     internal static IReadOnlyList<DisplayMode> Parse(ReadOnlySpan<byte> edid)
     {
         if (edid.Length < 128 || edid.Length > 32768 || edid[18] != 1
-            || !edid[..8].SequenceEqual(new byte[] { 0, 255, 255, 255, 255, 255, 255, 0 })
+            || !edid[..8].SequenceEqual(Magic)
             || !Checksum(edid[..128])) { return []; }
         HashSet<DisplayMode> modes = [];
         AddStandard(edid.Slice(38, 16), edid[19], modes);
-        DisplayMode[] established = [new(720, 400, 70), new(720, 400, 88), new(640, 480, 60),
-            new(640, 480, 67), new(640, 480, 72), new(640, 480, 75), new(800, 600, 56), new(800, 600, 60),
-            new(800, 600, 72), new(800, 600, 75), new(832, 624, 75), new(1024, 768, 87),
-            new(1024, 768, 60), new(1024, 768, 70), new(1024, 768, 75), new(1280, 1024, 75), new(1152, 870, 75)];
-        for (int bit = 0; bit < established.Length; bit++)
+        for (int bit = 0; bit < Established.Length; bit++)
         {
             // The 1024x768@87 entry is interlaced, which DisplayMode cannot represent.
-            if (bit != 11 && (edid[35 + bit / 8] & (128 >> (bit % 8))) != 0) { modes.Add(established[bit]); }
+            if (bit != 11 && (edid[35 + bit / 8] & (128 >> (bit % 8))) != 0) { modes.Add(Established[bit]); }
         }
         for (int offset = 54; offset + 18 <= 126; offset += 18)
         {

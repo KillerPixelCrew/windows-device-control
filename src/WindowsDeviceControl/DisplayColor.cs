@@ -76,7 +76,7 @@ public static partial class DisplayColor
         return false;
     }
 
-    private static bool TryRead(DisplayTopology.Luid adapter, uint id, out bool enabled, out bool supported)
+    internal static bool TryRead(DisplayTopology.Luid adapter, uint id, out bool enabled, out bool supported)
     {
         AdvancedColorInfo packet = new()
         {

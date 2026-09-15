@@ -38,15 +38,18 @@ public static partial class DisplayModes
         {
             var path = Find(target);
             if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current)) { return null; }
-            List<DisplayMode> supported = [];
+            HashSet<DisplayMode> supported = [];
             for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
             {
                 if (mode.Width == 0 || mode.Height == 0 || mode.Frequency < 2 || mode.Bits != current.Bits) { continue; }
+                // The driver lists a width, height and rate once per variant; one passing test offers it.
+                var projected = Project(mode);
+                if (supported.Contains(projected)) { continue; }
                 mode.Fields = ModeFields;
-                if (Change(path.SourceName, ref mode, 2) == 0) { supported.Add(Project(mode)); }
+                if (Change(path.SourceName, ref mode, 2) == 0) { supported.Add(projected); }
             }
             if (!SameRoute(path, Find(target))) { return null; }
-            return new(path, Project(current), supported.Distinct().OrderBy(mode => mode.Width)
+            return new(path, Project(current), supported.OrderBy(mode => mode.Width)
                 .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
         }
     }

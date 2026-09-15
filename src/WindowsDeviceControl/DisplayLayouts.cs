@@ -127,14 +127,19 @@ public static class DisplayLayouts
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
     /// <returns>The observation and its fingerprint.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
-    public static DisplayArrangement Observe()
+    public static DisplayArrangement Observe() => Observe([], out _);
+
+    /// <summary>Observes every monitor, remembering target identities in <paramref name="read"/> and
+    /// returning the paths the observation came from, so a caller can plan on the same query.</summary>
+    internal static DisplayArrangement Observe(
+        Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, out DisplayTopology.PathInfo[] paths)
     {
-        (DisplayTopology.PathInfo[] paths, DisplayTopology.ModeInfo[] modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
+        (paths, DisplayTopology.ModeInfo[] modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
         List<DisplayTargetObservation> targets = [];
         foreach (DisplayTopology.PathInfo path in paths)
         {
             DisplayTargetIdentity identity;
-            try { identity = DisplayTopology.ReadTarget(path); }
+            try { identity = DisplayTopology.ReadTarget(path, read); }
             // One unreadable target must not hide the rest: a monitor can drop out between the
             // query and the name read, and the caller is often waiting for a different one.
             catch (Win32Exception) { continue; }
@@ -226,12 +231,12 @@ public static class DisplayLayouts
             return new(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], invalid);
         }
 
+        Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read = [];
         DisplayArrangement arrangement;
         DisplayTopology.PathInfo[] paths;
         try
         {
-            arrangement = Observe();
-            paths = DisplayTopology.Query(DisplayTopology.AllPaths).Paths;
+            arrangement = Observe(read, out paths);
         }
         catch (Win32Exception ex)
         {
@@ -259,7 +264,7 @@ public static class DisplayLayouts
         DisplayTopology.ModeInfo[] plannedModes;
         try
         {
-            (planned, plannedModes) = DisplayLayoutPlanner.Plan(paths, layout, DisplayTopology.ReadTarget);
+            (planned, plannedModes) = DisplayLayoutPlanner.Plan(paths, layout, path => DisplayTopology.ReadTarget(path, read));
         }
         catch (InvalidOperationException ex)
         {
@@ -401,10 +406,12 @@ public static class DisplayLayouts
         DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
         if (mode.InfoType != SourceModeType) { return null; }
         DisplayTopology.SourceMode source = mode.Mode.Source;
+        // The active path already names this display's source and target, so the scaling and colour
+        // reads use it instead of finding the display again.
         return new(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
             new(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
             path.TargetInfo.Rotation,
-            DisplayScaling.TryRead(identity, out int percent) ? percent : null,
-            DisplayColor.TryReadHdr(identity, out bool enabled, out bool supported) && supported ? enabled : null);
+            DisplayScaling.TryRead(path.SourceInfo.AdapterId, path.SourceInfo.Id, out int percent, out _, out _) ? percent : null,
+            DisplayColor.TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out bool enabled, out bool supported) && supported ? enabled : null);
     }
 }
