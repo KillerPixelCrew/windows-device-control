@@ -203,10 +203,10 @@ public sealed class SafetyTests
     }
 
     [Fact]
-    public void QueuedWaveOutCueReturnsSuccessWithoutWritingAgain()
+    public void AQueuedWaveOutCueIsRecognisedBeforeWritingAgain()
     {
-        Assert.True(WaveOutFeedback.TryGetQueuedResult(0x10, out var result));
-        Assert.Equal(0, result);
+        Assert.True(WaveOutFeedback.IsQueued(0x10));
+        Assert.False(WaveOutFeedback.IsQueued(0));
     }
 
     private static WindowsRadio.WifiNetworkFacts Facts(

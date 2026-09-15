@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Text.Unicode;
 
 namespace WindowsDeviceControl;
 
@@ -39,26 +40,14 @@ public static class WifiProfile
         string ssid,
         byte[] rawSsid,
         bool enhancedOpen)
-    {
-        var authentication = enhancedOpen ? "OWE" : "open";
-        var encryption = enhancedOpen ? "AES" : "none";
-        return $$"""
-            <?xml version="1.0"?>
-            <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-              <name>{{Escape(profileName)}}</name>
-              <SSIDConfig><SSID>{{SsidElement(ssid, rawSsid)}}</SSID></SSIDConfig>
-              <connectionType>ESS</connectionType>
-              <connectionMode>auto</connectionMode>
-              <MSM><security>
-                <authEncryption>
-                  <authentication>{{authentication}}</authentication>
-                  <encryption>{{encryption}}</encryption>
-                  <useOneX>false</useOneX>
-                </authEncryption>
-              </security></MSM>
-            </WLANProfile>
-            """;
-    }
+        => Document(
+            profileName,
+            ssid,
+            rawSsid,
+            enhancedOpen ? "OWE" : "open",
+            enhancedOpen ? "AES" : "none",
+            string.Empty,
+            string.Empty);
 
     /// <summary>Builds a profile for a pre-shared-key network.</summary>
     /// <param name="profileName">The name Windows stores the profile under. Conventionally the
@@ -90,7 +79,28 @@ public static class WifiProfile
             _ => ("WPAPSK", "TKIP", string.Empty),
         };
         var keyType = IsRawKey(passphrase) ? "networkKey" : "passPhrase";
-        return $$"""
+        return Document(profileName, ssid, rawSsid, authentication, encryption, transition, $$"""
+
+                <sharedKey>
+                  <keyType>{{keyType}}</keyType>
+                  <protected>false</protected>
+                  <keyMaterial>{{Escape(passphrase)}}</keyMaterial>
+                </sharedKey>
+            """);
+    }
+
+    /// <summary>The profile document both shapes share. <paramref name="transition"/> follows the
+    /// <c>useOneX</c> element and <paramref name="sharedKey"/> follows <c>authEncryption</c>; each
+    /// carries its own leading line break when present.</summary>
+    private static string Document(
+        string profileName,
+        string ssid,
+        byte[] rawSsid,
+        string authentication,
+        string encryption,
+        string transition,
+        string sharedKey)
+        => $$"""
             <?xml version="1.0"?>
             <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
               <name>{{Escape(profileName)}}</name>
@@ -102,16 +112,10 @@ public static class WifiProfile
                   <authentication>{{authentication}}</authentication>
                   <encryption>{{encryption}}</encryption>
                   <useOneX>false</useOneX>{{transition}}
-                </authEncryption>
-                <sharedKey>
-                  <keyType>{{keyType}}</keyType>
-                  <protected>false</protected>
-                  <keyMaterial>{{Escape(passphrase)}}</keyMaterial>
-                </sharedKey>
+                </authEncryption>{{sharedKey}}
               </security></MSM>
             </WLANProfile>
             """;
-    }
 
     /// <summary>Reads the SSID out of a profile document Windows produced.</summary>
     /// <param name="xml">The profile XML, as returned by WLANAPI when a saved profile is read.</param>
@@ -164,22 +168,9 @@ public static class WifiProfile
         => value.Length == 64 && value.All(Uri.IsHexDigit);
 
     private static string SsidElement(string ssid, byte[] rawSsid)
-        => rawSsid.Length > 0 && !IsUtf8(rawSsid)
+        => rawSsid.Length > 0 && !Utf8.IsValid(rawSsid)
             ? $"<hex>{Convert.ToHexString(rawSsid)}</hex>"
             : $"<name>{Escape(ssid)}</name>";
-
-    private static bool IsUtf8(byte[] bytes)
-    {
-        try
-        {
-            _ = new UTF8Encoding(false, true).GetString(bytes);
-            return true;
-        }
-        catch (DecoderFallbackException)
-        {
-            return false;
-        }
-    }
 
     private static string Escape(string value) => WebUtility.HtmlEncode(value)
         .Replace("&#39;", "&apos;", StringComparison.Ordinal);

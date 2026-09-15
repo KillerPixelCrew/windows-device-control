@@ -2,7 +2,6 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace WindowsDeviceControl;
 
@@ -32,6 +31,7 @@ public static partial class PowerRequestList
     private const int GetPowerRequestListClass = 45;
     private const int StatusBufferTooSmall = unchecked((int)0xC0000023);
     private const int StatusAccessDenied = unchecked((int)0xC0000022);
+    private const int InitialBuffer = 4096;
     private const int MaxBuffer = 1024 * 1024;
     /// <summary>Sanity ceiling on the request count; a live system shows ~50.</summary>
     private const int MaxRequests = 100_000;
@@ -43,42 +43,30 @@ public static partial class PowerRequestList
     /// commonly missing elevation — the same restriction powercfg has).</summary>
     public static (IReadOnlyList<PowerRequestEntry>? Entries, string? Error) Query()
     {
-        var length = 4096;
-        while (true)
+        // The call reports only that the buffer was too small, not the size it needs, so the
+        // buffer doubles up to the bound and is decoded where Windows wrote it.
+        for (var length = InitialBuffer; length <= MaxBuffer; length *= 2)
         {
-            var buffer = Marshal.AllocHGlobal(length);
-            try
+            var buffer = new byte[length];
+            var status = NtPowerInformation(
+                GetPowerRequestListClass, 0, 0, buffer, (uint)length);
+            if (status == 0)
             {
-                var status = NtPowerInformation(
-                    GetPowerRequestListClass, 0, 0, buffer, (uint)length);
-                if (status == 0)
-                {
-                    var bytes = new byte[length];
-                    Marshal.Copy(buffer, bytes, 0, length);
-                    var entries = DecodeWithBuild(bytes, NtBuild());
-                    return entries is null
-                        ? (null, "Unrecognized power request layout")
-                        : (entries, null);
-                }
-                if (status == StatusAccessDenied)
-                {
-                    return (null, "Administrator rights required");
-                }
-                if (status != StatusBufferTooSmall)
-                {
-                    return (null, $"Query failed (NTSTATUS 0x{(uint)status:X8})");
-                }
+                var entries = DecodeWithBuild(buffer, NtBuild());
+                return entries is null
+                    ? (null, "Unrecognized power request layout")
+                    : (entries, null);
             }
-            finally
+            if (status == StatusAccessDenied)
             {
-                Marshal.FreeHGlobal(buffer);
+                return (null, "Administrator rights required");
             }
-            length += 4096;
-            if (length > MaxBuffer)
+            if (status != StatusBufferTooSmall)
             {
-                return (null, "Request list too large to read");
+                return (null, $"Query failed (NTSTATUS 0x{(uint)status:X8})");
             }
         }
+        return (null, "Request list too large to read");
     }
 
     private static uint NtBuild()
@@ -251,27 +239,20 @@ public static partial class PowerRequestList
         {
             return false;
         }
-        var builder = new StringBuilder();
-        var i = offset;
-        while (i + 1 < buffer.Length)
+        // Windows buffers are little-endian UTF-16. A terminator may follow the last allowed unit.
+        var units = MemoryMarshal.Cast<byte, char>(buffer[offset..]);
+        var length = units[..Math.Min(units.Length, MaxStringUnits + 1)].IndexOf('\0');
+        if (length < 0)
         {
-            var unit = (char)BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(i, 2));
-            if (unit == '\0')
-            {
-                value = builder.ToString();
-                return true;
-            }
-            if (builder.Length >= MaxStringUnits)
-            {
-                return false;
-            }
-            builder.Append(unit);
-            i += 2;
+            return false;
         }
-        return false;
+        value = new string(units[..length]);
+        return true;
     }
+
     [LibraryImport("ntdll.dll")]
-    private static partial int NtPowerInformation(int informationLevel, nint inputBuffer, uint inputLength, nint outputBuffer, uint outputLength);
+    private static partial int NtPowerInformation(
+        int informationLevel, nint inputBuffer, uint inputLength, [Out] byte[] outputBuffer, uint outputLength);
 
     [LibraryImport("ntdll.dll")]
     private static partial void RtlGetNtVersionNumbers(out uint major, out uint minor, out uint build);

@@ -11,6 +11,7 @@ public sealed partial class WaveOutFeedback : IDisposable
     private const uint SampleRate = 44100;
     private const uint DurationMilliseconds = 80;
     private const uint HeaderInQueue = 0x10;
+    private static readonly uint HeaderSize = (uint)Marshal.SizeOf<WaveHeader>();
 
     private nint _output;
     private nint _samples;
@@ -54,11 +55,11 @@ public sealed partial class WaveOutFeedback : IDisposable
             return HResultFromMultimedia(1);
         }
         var header = Marshal.PtrToStructure<WaveHeader>(_header);
-        if (TryGetQueuedResult(header.Flags, out var queuedResult))
+        if (IsQueued(header.Flags))
         {
-            return queuedResult;
+            return 0;
         }
-        var result = WaveOutWrite(_output, _header, (uint)Marshal.SizeOf<WaveHeader>());
+        var result = WaveOutWrite(_output, _header, HeaderSize);
         return HResultFromMultimedia(result);
     }
 
@@ -88,9 +89,9 @@ public sealed partial class WaveOutFeedback : IDisposable
             Data = _samples,
             BufferLength = (uint)(samples.Length * sizeof(short)),
         };
-        _header = Marshal.AllocHGlobal(Marshal.SizeOf<WaveHeader>());
+        _header = Marshal.AllocHGlobal((int)HeaderSize);
         Marshal.StructureToPtr(header, _header, fDeleteOld: false);
-        result = WaveOutPrepareHeader(_output, _header, (uint)Marshal.SizeOf<WaveHeader>());
+        result = WaveOutPrepareHeader(_output, _header, HeaderSize);
         if (result != 0)
         {
             return HResultFromMultimedia(result);
@@ -107,10 +108,7 @@ public sealed partial class WaveOutFeedback : IDisposable
             WaveOutReset(_output);
             if (_prepared)
             {
-                WaveOutUnprepareHeader(
-                    _output,
-                    _header,
-                    (uint)Marshal.SizeOf<WaveHeader>());
+                WaveOutUnprepareHeader(_output, _header, HeaderSize);
                 _prepared = false;
             }
             WaveOutClose(_output);
@@ -151,11 +149,7 @@ public sealed partial class WaveOutFeedback : IDisposable
     private static int HResultFromMultimedia(uint result)
         => result == 0 ? 0 : unchecked((int)(0x80070000 | (result & 0xFFFF)));
 
-    internal static bool TryGetQueuedResult(uint headerFlags, out int result)
-    {
-        result = 0;
-        return (headerFlags & HeaderInQueue) != 0;
-    }
+    internal static bool IsQueued(uint headerFlags) => (headerFlags & HeaderInQueue) != 0;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WaveFormat
