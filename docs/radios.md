@@ -3,7 +3,7 @@
 What the platform actually does, and the approaches that were tried and disproven. It lives here
 rather than in comments because most of it spans several files, and because anyone re-deriving this
 surface from Microsoft's documentation will make the same wrong turns. The implementation is
-`src\WindowsDeviceControl\WindowsRadio.cs`, `WifiProfile.cs`, the `CoreAudio` files, `Backlight.cs` and
+the `WindowsRadio` and `CoreAudio` files in `src\WindowsDeviceControl`, `WifiProfile.cs`, `Backlight.cs` and
 `WaveOutFeedback.cs`; there is no native component and no helper process.
 
 ## Radio power

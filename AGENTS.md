@@ -14,8 +14,10 @@ including callback threading, completion timing, consent, error meanings, and ow
 
 ## Repository map
 
-- `WindowsRadio.cs`: radio access and power, native WLAN, Wi-Fi watches, Bluetooth discovery,
-  pairing, and unpairing.
+- `WindowsRadio*.cs`: radio access and power, native WLAN, Wi-Fi watches, Bluetooth discovery,
+  pairing, and unpairing. `WindowsRadio.cs` holds the public types, and the partials follow the
+  areas: `Power`, `Bluetooth`, `Wifi`, `WifiRules` (the pure Wi-Fi decisions the tests cover),
+  `WifiWatch` (WLAN notifications) and `WlanNative`. Only the three WLAN partials are `unsafe`.
 - `WifiProfile.cs`: exact WLAN profile XML, SSID bytes, security shapes, and passphrase validation.
 - `CoreAudio.cs`: endpoint enumeration, default-role transactions, and volume/mute.
   `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, and `CoreAudio.Native.cs` the COM

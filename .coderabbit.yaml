@@ -30,7 +30,7 @@ reviews:
     - "!**/bin/**"
     - "!**/obj/**"
   path_instructions:
-    - path: "src/WindowsDeviceControl/WindowsRadio.cs"
+    - path: "src/WindowsDeviceControl/WindowsRadio*.cs"
       instructions: |
         - Preserve access-before-mutation, every-adapter application, and state
           priority On, Disabled, Off, Unknown, Absent.
