@@ -12,6 +12,7 @@ internal static class Win32Error
 {
     internal const uint ErrorSuccess = 0;
     internal const uint ErrorFileNotFound = 2;
+    internal const uint ErrorInvalidHandle = 6;
     internal const uint ErrorInvalidData = 13;
     internal const uint ErrorInsufficientBuffer = 122;
     internal const uint ErrorMoreData = 234;

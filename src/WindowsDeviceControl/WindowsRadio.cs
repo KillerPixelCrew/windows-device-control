@@ -80,7 +80,7 @@ public static unsafe partial class WindowsRadio
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan PairingTimeout = TimeSpan.FromSeconds(90);
     private static readonly object RadioCacheLock = new();
-    private static (long Taken, IReadOnlyList<Radio> Radios)? _radioCache;
+    private static (long Taken, Radio[] Radios)? _radioCache;
     private static readonly object BluetoothWatchLock = new();
     private static BluetoothWatch? _bluetoothWatch;
     private static readonly object WifiWatchLock = new();
@@ -89,6 +89,14 @@ public static unsafe partial class WindowsRadio
     private static long _nextPairingAttempt;
     private static readonly ConcurrentDictionary<uint, PendingPairing> PendingPairings = new();
     private static readonly ConcurrentDictionary<long, byte> ActivePairingAttempts = new();
+    private static readonly string[] ContainerProperties = [AepContainer, DeviceContainer];
+    private static string[]? _connectedSelectors;
+    private static readonly object StatusClientLock = new();
+    private static WlanClient? _statusClient;
+    private static readonly object SavedProfileLock = new();
+    private static readonly Dictionary<(Guid Adapter, string Name), SavedProfile> SavedProfiles = [];
+    private static readonly Dictionary<Guid, string[]> SavedProfileNames = [];
+    private static long _savedProfileGeneration;
 
     /// <summary>The result of a radio power query.</summary>
     public enum Power
@@ -372,10 +380,13 @@ public static unsafe partial class WindowsRadio
     /// <see cref="RadioKind"/> value.</exception>
     public static Power GetPower(RadioKind kind)
     {
-        var radios = GetRadios(kind);
-        return radios.Count == 0
-            ? Power.Absent
-            : AggregatePower(radios.Select(radio => MapPower(radio.State)));
+        var radios = GetRadios(kind, out var states);
+        var power = Power.Absent;
+        for (var index = 0; index < radios.Count; index++)
+        {
+            power = Prefer(power, MapPower(states?[index] ?? radios[index].State));
+        }
+        return power;
     }
 
     /// <summary>Asks Windows whether this process may change radio power.</summary>
@@ -403,7 +414,7 @@ public static unsafe partial class WindowsRadio
         {
             return access;
         }
-        var radios = GetRadios(kind);
+        var radios = GetRadios(kind, out _);
         if (radios.Count == 0)
         {
             throw new InvalidOperationException("Windows reported no radio of the requested kind.");
@@ -448,15 +459,20 @@ public static unsafe partial class WindowsRadio
         ReadConsent(Registry.CurrentUser, capability),
         ReadConsent(Registry.LocalMachine, capability));
 
-    private static IReadOnlyList<Radio> GetRadios(RadioKind kind)
+    /// <summary>The adapters of one kind, from a briefly cached enumeration.</summary>
+    /// <param name="kind">Which radio family to return.</param>
+    /// <param name="states">When the cached list was reused, the state each returned adapter
+    /// reported while the cache was checked; null after a fresh enumeration.</param>
+    private static IReadOnlyList<Radio> GetRadios(RadioKind kind, out RadioState[]? states)
     {
         ValidateRadioKind(kind);
-        IReadOnlyList<Radio> all;
+        Radio[] all;
+        RadioState[]? observed = null;
         lock (RadioCacheLock)
         {
             if (_radioCache is { } cached
                 && Stopwatch.GetElapsedTime(cached.Taken) < RadioCacheTtl
-                && (cached.Radios.Count == 0 || cached.Radios.All(CanReadRadio)))
+                && TryReadStates(cached.Radios, out observed))
             {
                 all = cached.Radios;
             }
@@ -464,13 +480,25 @@ public static unsafe partial class WindowsRadio
             {
                 all = Radio.GetRadiosAsync().WaitWinRt().ToArray();
                 _radioCache = (Stopwatch.GetTimestamp(), all);
+                observed = null;
             }
         }
         // Fully qualified: this type declares its own RadioKind, so the WinRT one needs naming.
         var expected = kind == RadioKind.WiFi
             ? Windows.Devices.Radios.RadioKind.WiFi
             : Windows.Devices.Radios.RadioKind.Bluetooth;
-        return all.Where(radio => radio.Kind == expected).ToArray();
+        List<Radio> radios = [];
+        List<RadioState>? kindStates = observed is null ? null : [];
+        for (var index = 0; index < all.Length; index++)
+        {
+            if (all[index].Kind == expected)
+            {
+                radios.Add(all[index]);
+                kindStates?.Add(observed![index]);
+            }
+        }
+        states = kindStates?.ToArray();
+        return radios;
     }
 
     private static void ValidateRadioKind(RadioKind kind)
@@ -481,17 +509,24 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    private static bool CanReadRadio(Radio radio)
+    /// <summary>Reads every cached adapter's state. One unreadable adapter means the cache is stale.</summary>
+    private static bool TryReadStates(Radio[] radios, out RadioState[]? states)
     {
-        try
+        var read = new RadioState[radios.Length];
+        for (var index = 0; index < radios.Length; index++)
         {
-            _ = radio.State;
-            return true;
+            try
+            {
+                read[index] = radios[index].State;
+            }
+            catch
+            {
+                states = null;
+                return false;
+            }
         }
-        catch
-        {
-            return false;
-        }
+        states = read;
+        return true;
     }
 
     /// <summary>Reduces several adapters' power states to the one a caller should act on.</summary>
@@ -503,16 +538,28 @@ public static unsafe partial class WindowsRadio
     /// </returns>
     public static Power AggregatePower(IEnumerable<Power> states)
     {
-        var materialized = states.ToArray();
-        foreach (var preferred in new[] { Power.On, Power.Disabled, Power.Off, Power.Unknown })
+        ArgumentNullException.ThrowIfNull(states);
+        var power = Power.Absent;
+        foreach (var state in states)
         {
-            if (materialized.Contains(preferred))
-            {
-                return preferred;
-            }
+            power = Prefer(power, state);
         }
-        return Power.Absent;
+        return power;
     }
+
+    /// <summary>The state that represents both: On, then Disabled, Off and Unknown. Any other value
+    /// counts as no adapter.</summary>
+    private static Power Prefer(Power current, Power candidate)
+        => Rank(candidate) < Rank(current) ? candidate : current;
+
+    private static int Rank(Power state) => state switch
+    {
+        Power.On => 0,
+        Power.Disabled => 1,
+        Power.Off => 2,
+        Power.Unknown => 3,
+        _ => 4,
+    };
 
     private static Power MapPower(RadioState state) => state switch
     {
@@ -617,19 +664,18 @@ public static unsafe partial class WindowsRadio
     /// — for a status icon, say.</returns>
     public static int ConnectedBluetoothCount()
     {
-        var selectors = new[]
-        {
+        // Built on first use rather than in the type initializer, so a failing WinRT call cannot
+        // break every other member of this class.
+        var selectors = _connectedSelectors ??=
+        [
             Windows.Devices.Bluetooth.BluetoothDevice.GetDeviceSelectorFromConnectionStatus(
                 BluetoothConnectionStatus.Connected),
             BluetoothLEDevice.GetDeviceSelectorFromConnectionStatus(BluetoothConnectionStatus.Connected),
-        };
+        ];
         var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var selector in selectors)
         {
-            var devices = DeviceInformation.FindAllAsync(
-                    selector,
-                    new[] { AepContainer, DeviceContainer })
-                .WaitWinRt();
+            var devices = DeviceInformation.FindAllAsync(selector, ContainerProperties).WaitWinRt();
             foreach (var device in devices)
             {
                 identities.Add(BluetoothIdentity(device.Id, device.Properties));
@@ -782,9 +828,14 @@ public static unsafe partial class WindowsRadio
                     ReadBluetoothDevice(info)));
                 return;
             }
-            try
+        }
+        try
+        {
+            // The lookup can block in the device stack, so it runs without the lock that stopping
+            // the watch and every other callback wait on. The result is still published under it.
+            var resolved = ReadEndpoint(update.Id);
+            lock (BluetoothWatchLock)
             {
-                var resolved = ReadEndpoint(update.Id);
                 if (!ReferenceEquals(_bluetoothWatch, watch))
                 {
                     return;
@@ -794,10 +845,10 @@ public static unsafe partial class WindowsRadio
                     BluetoothChangeKind.Updated,
                     ReadBluetoothDevice(resolved)));
             }
-            catch
-            {
-                // A disappearing endpoint is followed by Removed; it has no update to publish.
-            }
+        }
+        catch
+        {
+            // A disappearing endpoint is followed by Removed; it has no update to publish.
         }
     }
 
@@ -1102,13 +1153,30 @@ public static unsafe partial class WindowsRadio
     /// reports the one Windows is actually using.</returns>
     public static WifiStatus GetWifiStatus()
     {
-        using var client = WlanClient.Open();
-        var selected = SelectInterface(client.Interfaces());
-        var current = TryCurrentConnection(client.Handle, selected.Id);
-        return new WifiStatus(
-            MapInterfaceState(selected.State),
-            current?.Signal ?? 0,
-            current?.Ssid ?? string.Empty);
+        lock (StatusClientLock)
+        {
+            // A status read keeps one client handle. It only reads, so a handle the WLAN service
+            // invalidated is reopened once and the read repeated; writes open a handle of their own.
+            _statusClient ??= WlanClient.Open();
+            IReadOnlyList<WlanInterfaceInfo> interfaces;
+            try
+            {
+                interfaces = _statusClient.Interfaces();
+            }
+            catch (Win32Exception ex) when (ex.NativeErrorCode == (int)ErrorInvalidHandle)
+            {
+                _statusClient.Dispose();
+                _statusClient = null;
+                _statusClient = WlanClient.Open();
+                interfaces = _statusClient.Interfaces();
+            }
+            var selected = SelectInterface(interfaces);
+            var current = TryCurrentConnection(_statusClient.Handle, selected.Id);
+            return new WifiStatus(
+                MapInterfaceState(selected.State),
+                current?.Signal ?? 0,
+                current?.Ssid ?? string.Empty);
+        }
     }
 
     /// <summary>Asks every Wi-Fi adapter to scan for networks.</summary>
@@ -1175,6 +1243,9 @@ public static unsafe partial class WindowsRadio
         }
 
         using var client = WlanClient.Open();
+        // This call writes profiles, so its name checks and rollback snapshot come from what is
+        // stored now. Reads within the call then share one parse of each profile.
+        InvalidateSavedProfiles(null);
         var interfaces = client.Interfaces();
         var choice = ChooseInterface(client.Handle, interfaces, ssid, passphrase is null);
         var facts = choice.Facts;
@@ -1386,6 +1457,8 @@ public static unsafe partial class WindowsRadio
     public static void ForgetWifi(string ssid)
     {
         using var client = WlanClient.Open();
+        // Deletion is chosen from the SSIDs inside stored profiles, so those are read fresh.
+        InvalidateSavedProfiles(null);
         ForEachAdapter(client, requireEvery: true, adapter =>
         {
             var facts = ReadScanFacts(client.Handle, adapter.Id, ssid);
@@ -1408,7 +1481,9 @@ public static unsafe partial class WindowsRadio
             }
             foreach (var name in names)
             {
-                CheckWlan("WlanDeleteProfile", WlanDeleteProfile(client.Handle, in adapter.Id, name, 0));
+                var status = WlanDeleteProfile(client.Handle, in adapter.Id, name, 0);
+                InvalidateSavedProfiles(adapter.Id);
+                CheckWlan("WlanDeleteProfile", status);
             }
         });
     }
@@ -1501,7 +1576,7 @@ public static unsafe partial class WindowsRadio
     /// when Windows has no text for the code. Never empty, so it is always safe to show.</returns>
     public static string ReasonText(uint code)
     {
-        var buffer = new char[1024];
+        Span<char> buffer = stackalloc char[1024];
         fixed (char* text = buffer)
         {
             var status = WlanReasonCodeToString(code, (uint)buffer.Length, text, 0);
@@ -1510,10 +1585,9 @@ public static unsafe partial class WindowsRadio
                 return $"Wi-Fi reason code {code}";
             }
         }
-        var result = new string(buffer, 0, Array.IndexOf(buffer, '\0') is var end && end >= 0
-            ? end
-            : buffer.Length).Trim();
-        return result.Length == 0 ? $"Wi-Fi reason code {code}" : result;
+        var end = buffer.IndexOf('\0');
+        var result = (end >= 0 ? buffer[..end] : buffer).Trim();
+        return result.IsEmpty ? $"Wi-Fi reason code {code}" : new string(result);
     }
 
     /// <summary>Starts reporting Wi-Fi scan and connection changes.</summary>
@@ -1670,7 +1744,10 @@ public static unsafe partial class WindowsRadio
         {
             return;
         }
-        var profiles = ReadProfileSsids(client, adapter, failOnListError: false);
+        var savedSsids = ReadProfileSsids(client, adapter, failOnListError: false)
+            .Where(profile => profile.Ssid is not null)
+            .Select(profile => Convert.ToHexString(profile.Ssid!))
+            .ToHashSet(StringComparer.Ordinal);
         var connected = TryCurrentConnection(client, adapter)?.RawSsid;
         foreach (var network in networks)
         {
@@ -1680,9 +1757,7 @@ public static unsafe partial class WindowsRadio
             }
             var raw = network.RawSsid;
             var key = Convert.ToHexString(raw);
-            var saved = network.ProfileName is not null
-                || profiles.Any(profile => profile.Ssid is { } profileSsid
-                    && profileSsid.AsSpan().SequenceEqual(raw));
+            var saved = network.ProfileName is not null || savedSsids.Contains(key);
             var facts = new WifiNetworkFacts(
                 network.Ssid,
                 raw,
@@ -1863,26 +1938,82 @@ public static unsafe partial class WindowsRadio
         {
             return [];
         }
+        string[] names;
         try
         {
-            var names = ReadWlanList(list, 4096, rejection: null,
+            names = ReadWlanList(list, 4096, rejection: null,
                 static (WlanProfileInfo record) => NativeText.ReadFixed(record.Name, 256));
-            var profiles = new List<SavedProfile>(names.Length);
-            foreach (var name in names)
-            {
-                if (name.Length == 0)
-                {
-                    continue;
-                }
-                var xml = TryReadProfileXml(client, adapter, name);
-                var rawSsid = xml is null ? null : WifiProfile.TryReadSsid(xml);
-                profiles.Add(new SavedProfile(name, rawSsid, xml));
-            }
-            return profiles;
         }
         finally
         {
             WlanFreeMemory(list);
+        }
+
+        long generation;
+        lock (SavedProfileLock)
+        {
+            if (!SavedProfileNames.TryGetValue(adapter, out var known) || !known.AsSpan().SequenceEqual(names))
+            {
+                InvalidateSavedProfiles(adapter);
+                SavedProfileNames[adapter] = names;
+            }
+            generation = _savedProfileGeneration;
+        }
+        var profiles = new List<SavedProfile>(names.Length);
+        foreach (var name in names)
+        {
+            if (name.Length == 0)
+            {
+                continue;
+            }
+            SavedProfile? cached;
+            lock (SavedProfileLock)
+            {
+                cached = SavedProfiles.TryGetValue((adapter, name), out var entry) ? entry : null;
+            }
+            if (cached is { } known)
+            {
+                profiles.Add(known);
+                continue;
+            }
+            var xml = TryReadProfileXml(client, adapter, name);
+            var profile = new SavedProfile(name, xml is null ? null : WifiProfile.TryReadSsid(xml), xml);
+            // Unreadable XML is not remembered, so it is asked for again on the next read.
+            if (xml is not null)
+            {
+                lock (SavedProfileLock)
+                {
+                    if (generation == _savedProfileGeneration)
+                    {
+                        SavedProfiles[(adapter, name)] = profile;
+                    }
+                }
+            }
+            profiles.Add(profile);
+        }
+        return profiles;
+    }
+
+    /// <summary>Forgets the parsed profiles of one adapter, or of every adapter when null, and
+    /// stops reads already in progress from storing what they found.</summary>
+    /// <remarks>A cached profile stays valid while its adapter's profile-name list is unchanged and
+    /// this library has not written or deleted a profile since.</remarks>
+    private static void InvalidateSavedProfiles(Guid? adapter)
+    {
+        lock (SavedProfileLock)
+        {
+            _savedProfileGeneration++;
+            if (adapter is not { } only)
+            {
+                SavedProfiles.Clear();
+                SavedProfileNames.Clear();
+                return;
+            }
+            SavedProfileNames.Remove(only);
+            foreach (var key in SavedProfiles.Keys.Where(key => key.Adapter == only).ToArray())
+            {
+                SavedProfiles.Remove(key);
+            }
         }
     }
 
@@ -1933,6 +2064,7 @@ public static unsafe partial class WindowsRadio
     private static void SetProfile(nint client, Guid adapter, string xml)
     {
         var status = WlanSetProfile(client, in adapter, 0, xml, null, 1, 0, out var reason);
+        InvalidateSavedProfiles(adapter);
         if (status == ErrorSuccess)
         {
             return;
@@ -1962,6 +2094,7 @@ public static unsafe partial class WindowsRadio
             return;
         }
         var status = WlanDeleteProfile(client, in adapter, authored.Name, 0);
+        InvalidateSavedProfiles(adapter);
         if (status is not ErrorSuccess and not ErrorNotFound)
         {
             throw WlanFailure("WlanDeleteProfile", status);
