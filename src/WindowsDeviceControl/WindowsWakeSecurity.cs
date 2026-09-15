@@ -25,7 +25,6 @@ public sealed record WakeSecuritySnapshot(bool PolicyExisted, int PolicyAc, int 
 public static class WindowsWakeSecurity
 {
     private static readonly Guid ConsoleLock = new("0e796bdb-100d-47d6-a2d5-f7d2daa51f51");
-    private static readonly Guid SubNone = new("fea3413e-7e05-4911-9a71-700331f1c294");
     private static readonly string PolicyKey = @"SOFTWARE\Policies\Microsoft\Power\PowerSettings\" + ConsoleLock;
     private const string SchemesKey = @"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes";
     private const string PersonalizationKey = @"SOFTWARE\Policies\Microsoft\Windows\Personalization";
@@ -37,7 +36,7 @@ public static class WindowsWakeSecurity
         using var policy = Registry.LocalMachine.OpenSubKey(PolicyKey);
         using var personalization = Registry.LocalMachine.OpenSubKey(PersonalizationKey);
         List<WakeSecurityScheme> schemes = [];
-        foreach (Guid scheme in EnumerateSchemes())
+        foreach (Guid scheme in SchemesOrActive())
         {
             using var setting = Registry.LocalMachine.OpenSubKey(SchemePath(scheme));
             schemes.Add(new(scheme, Read(setting, "ACSettingIndex"), Read(setting, "DCSettingIndex")));
@@ -61,8 +60,8 @@ public static class WindowsWakeSecurity
             policy.SetValue("ACSettingIndex", 0, RegistryValueKind.DWord);
             policy.SetValue("DCSettingIndex", 0, RegistryValueKind.DWord);
         }
-        foreach (Guid scheme in EnumerateSchemes()) { WriteScheme(scheme, 0, 0); }
-        WindowsPower.SetActiveScheme(WindowsPower.GetActiveScheme());
+        foreach (Guid scheme in SchemesOrActive()) { WriteScheme(scheme, 0, 0); }
+        WindowsPower.RefreshActiveScheme();
         using var personalization = Registry.LocalMachine.CreateSubKey(PersonalizationKey);
         personalization.SetValue("NoLockScreen", 1, RegistryValueKind.DWord);
     }
@@ -88,8 +87,8 @@ public static class WindowsWakeSecurity
         {
             foreach (var scheme in snapshot.Schemes) { WriteScheme(scheme.Scheme, scheme.Ac, scheme.Dc); }
         }
-        else { foreach (Guid scheme in EnumerateSchemes()) { WriteScheme(scheme, 1, 1); } }
-        WindowsPower.SetActiveScheme(WindowsPower.GetActiveScheme());
+        else { foreach (Guid scheme in SchemesOrActive()) { WriteScheme(scheme, 1, 1); } }
+        WindowsPower.RefreshActiveScheme();
         using var personalization = snapshot is { NoLockScreen: >= 0 }
             ? Registry.LocalMachine.CreateSubKey(PersonalizationKey)
             : Registry.LocalMachine.OpenSubKey(PersonalizationKey, writable: true);
@@ -97,23 +96,22 @@ public static class WindowsWakeSecurity
     }
 
     private static int Read(RegistryKey? key, string value) => key?.GetValue(value) as int? ?? -1;
-    private static string SchemePath(Guid scheme) => $@"{SchemesKey}\{scheme}\{SubNone}\{ConsoleLock}";
+    private static string SchemePath(Guid scheme) => $@"{SchemesKey}\{scheme}\{ModernStandby.SubgroupNone}\{ConsoleLock}";
     private static void RestoreValue(RegistryKey key, string name, int value)
     {
         if (value < 0) { key.DeleteValue(name, throwOnMissingValue: false); }
         else { key.SetValue(name, value, RegistryValueKind.DWord); }
     }
-    private static List<Guid> EnumerateSchemes()
+    private static List<Guid> SchemesOrActive()
     {
-        List<Guid> result = [];
-        for (uint index = 0; WindowsPower.EnumerateScheme(index) is { } scheme; index++) { result.Add(scheme); }
+        List<Guid> result = WindowsPower.EnumerateSchemes();
         if (result.Count == 0) { result.Add(WindowsPower.GetActiveScheme()); }
         return result;
     }
     private static void WriteScheme(Guid scheme, int ac, int dc)
     {
-        if (ac >= 0) { WindowsPower.WriteSetting(scheme, SubNone, ConsoleLock, false, (uint)ac); }
-        if (dc >= 0) { WindowsPower.WriteSetting(scheme, SubNone, ConsoleLock, true, (uint)dc); }
+        if (ac >= 0) { WindowsPower.WriteSetting(scheme, ModernStandby.SubgroupNone, ConsoleLock, false, (uint)ac); }
+        if (dc >= 0) { WindowsPower.WriteSetting(scheme, ModernStandby.SubgroupNone, ConsoleLock, true, (uint)dc); }
         if (ac < 0 || dc < 0)
         {
             using var key = Registry.LocalMachine.OpenSubKey(SchemePath(scheme), writable: true);

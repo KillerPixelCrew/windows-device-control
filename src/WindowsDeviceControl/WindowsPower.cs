@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using static WindowsDeviceControl.Win32Error;
@@ -27,6 +28,14 @@ public static partial class WindowsPower
             throw Failure(ErrorInvalidData, "PowerEnumerate");
         }
         return id;
+    }
+
+    /// <summary>Every installed scheme, in enumeration order.</summary>
+    internal static List<Guid> EnumerateSchemes()
+    {
+        List<Guid> schemes = [];
+        for (uint index = 0; EnumerateScheme(index) is { } scheme; index++) { schemes.Add(scheme); }
+        return schemes;
     }
 
     /// <summary>Reads a localized scheme name with bounded buffer retries.</summary>

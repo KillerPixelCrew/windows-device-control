@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.InteropServices;
 using static WindowsDeviceControl.Win32Error;
 
@@ -198,20 +199,8 @@ public static partial class WindowsPower
             }
             offset += (int)size;
         }
-        List<HybridCoreClass> result = [];
-        foreach (byte efficiency in SortedKeys(classes))
-        {
-            (int logical, HashSet<int> cores) = classes[efficiency];
-            result.Add(new(efficiency, cores.Count, logical));
-        }
-        return result;
-    }
-
-    private static List<byte> SortedKeys(Dictionary<byte, (int Logical, HashSet<int> Cores)> classes)
-    {
-        List<byte> keys = new(classes.Keys);
-        keys.Sort();
-        return keys;
+        return [.. classes.OrderBy(entry => entry.Key)
+            .Select(entry => new HybridCoreClass(entry.Key, entry.Value.Cores.Count, entry.Value.Logical))];
     }
 
     private static bool CanRead(Guid scheme, Guid setting)
@@ -243,14 +232,7 @@ public static partial class WindowsPower
     }
 
     private static List<HybridSchedulingPolicy> PossiblePolicies(Guid setting)
-    {
-        List<HybridSchedulingPolicy> policies = [];
-        foreach (uint value in PossibleValues(setting))
-        {
-            policies.Add((HybridSchedulingPolicy)value);
-        }
-        return policies;
-    }
+        => [.. PossibleValues(setting).Select(value => (HybridSchedulingPolicy)value)];
 
     private static unsafe byte[] ReadCpuSetInformation()
     {

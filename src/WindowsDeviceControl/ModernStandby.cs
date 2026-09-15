@@ -177,10 +177,11 @@ public static partial class ModernStandby
         }
         try
         {
+            byte[] buffer = new byte[MaximumNameBytes];
             HashSet<string> programmable = new(
-                Enumerate(FilterDevicesPresent | FilterWakeProgrammable), StringComparer.Ordinal);
+                Enumerate(FilterDevicesPresent | FilterWakeProgrammable, buffer), StringComparer.Ordinal);
             HashSet<string> armed = new(
-                Enumerate(FilterDevicesPresent | FilterWakeEnabled), StringComparer.Ordinal);
+                Enumerate(FilterDevicesPresent | FilterWakeEnabled, buffer), StringComparer.Ordinal);
 
             List<string> names = [.. programmable];
             foreach (string name in armed)
@@ -349,12 +350,14 @@ public static partial class ModernStandby
         return TimeSpan.FromTicks(checked((long)ticks));
     }
 
-    private static List<string> Enumerate(uint interpretation)
+    private static List<string> Enumerate(uint interpretation, byte[] buffer)
     {
         List<string> names = [];
         for (uint index = 0; index < MaximumDevices; index++)
         {
-            byte[] buffer = new byte[MaximumNameBytes];
+            // Cleared rather than reallocated, so a shorter name still ends at the zero padding a
+            // fresh buffer would have given it.
+            Array.Clear(buffer);
             uint size = MaximumNameBytes;
             if (DevicePowerEnumDevices(index, interpretation, 0, buffer, ref size))
             {
@@ -387,7 +390,7 @@ public static partial class ModernStandby
     [return: MarshalAs(UnmanagedType.U1)]
     private static partial bool GetPwrCapabilities([Out] byte[] capabilities);
 
-    [LibraryImport("powrprof.dll")]
+    [LibraryImport("powrprof.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.U1)]
     private static partial bool DevicePowerOpen(uint debugMask);
 
