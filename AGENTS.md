@@ -51,7 +51,9 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
   that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
-- `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
+- `tests/WindowsDeviceControl.Tests`: deterministic, hardware-independent tests, one file per subject
+  (`WindowsRadioTests`, `CoreAudioTests`, `DisplayTopologyTests`, `DisplayLayoutTests`,
+  `WindowsPowerTests` and the rest), with shared builders and assertions in `TestFixtures.cs`.
 
 Source paths without a leading directory in the map above are relative to
 `src/WindowsDeviceControl`. There is no native companion, helper process, packaged identity, or COM

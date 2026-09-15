@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using Xunit;
+using static WindowsDeviceControl.Tests.TestFixtures;
 
 namespace WindowsDeviceControl.Tests;
 
@@ -10,24 +10,8 @@ namespace WindowsDeviceControl.Tests;
 /// the planner is pure, which is what lets the awkward cases be covered at all.</summary>
 public sealed class DisplayLayoutTests
 {
-    [Theory]
-    [InlineData(284u, 568u)]
-    [InlineData(4096u, 8192u)]
-    public void PossibleRouteCountsCanExceedTheNumberOfDisplays(uint paths, uint modes)
-        => DisplayTopology.ValidateBufferCounts(paths, modes);
-
-    [Theory]
-    [InlineData(4097u, 8192u)]
-    [InlineData(4096u, 8193u)]
-    [InlineData(uint.MaxValue, uint.MaxValue)]
-    public void ExcessiveRouteBuffersAreStillRefusedBeforeAllocation(uint paths, uint modes)
-        => Assert.Throws<InvalidOperationException>(() => DisplayTopology.ValidateBufferCounts(paths, modes));
-
     private const uint Active = 0x1;
     private const uint InvalidIndex = 0xffffffff;
-
-    private static DisplayTargetIdentity Target(string path, string name = "Monitor", uint id = 1) =>
-        new(path, null, null, name, 0, 0, id);
 
     private static DisplayLayoutOutput Output(DisplayTargetIdentity target,
         int x = 0, int y = 0, int width = 1920, int height = 1080, int hertz = 60) =>
@@ -218,18 +202,6 @@ public sealed class DisplayLayoutTests
     }
 
     [Fact]
-    public void TheNativeModeRecordKeepsItsDocumentedLayout()
-    {
-        // The union sits at offset 16 and the whole record is 64 bytes; a wrong offset here would
-        // silently write a resolution into the wrong field.
-        Assert.Equal(64, Marshal.SizeOf<DisplayTopology.ModeInfo>());
-        Assert.Equal(48, Marshal.SizeOf<DisplayTopology.ModeUnion>());
-        Assert.Equal(20, Marshal.SizeOf<DisplayTopology.SourceMode>());
-        Assert.Equal(48, Marshal.SizeOf<DisplayTopology.VideoSignalInfo>());
-        Assert.Equal(16, Marshal.OffsetOf<DisplayTopology.ModeInfo>(nameof(DisplayTopology.ModeInfo.Mode)).ToInt32());
-    }
-
-    [Fact]
     public void TheLayoutRulesAreReachableWithoutTouchingADisplay()
     {
         // An editor has to refuse a layout as it is typed, and a stored layout has to be checkable
@@ -284,16 +256,11 @@ public sealed class DisplayLayoutTests
     private static DisplayProfile Profile(
         (DisplayTargetIdentity Target, int X, int Y, int Width, int Height, int Hertz)[] outputs)
     {
-        List<byte[]> paths = [], modes = [];
+        List<DisplayTopology.PathInfo> paths = [];
+        List<DisplayTopology.ModeInfo> modes = [];
         foreach (var (target, x, y, width, height, hertz) in outputs)
         {
-            DisplayTopology.ModeInfo mode = new()
-            {
-                InfoType = 1,
-                Id = target.TargetId,
-                Mode = new() { Source = new() { Width = (uint)width, Height = (uint)height, X = x, Y = y } },
-            };
-            DisplayTopology.PathInfo path = new()
+            paths.Add(new()
             {
                 SourceInfo = new() { Id = target.TargetId, ModeInfoIdx = (uint)modes.Count },
                 TargetInfo = new()
@@ -304,18 +271,16 @@ public sealed class DisplayLayoutTests
                     RefreshRate = new() { Numerator = (uint)hertz, Denominator = 1 },
                 },
                 Flags = Active,
-            };
-            modes.Add(Bytes(mode));
-            paths.Add(Bytes(path));
+            });
+            modes.Add(new()
+            {
+                InfoType = 1,
+                Id = target.TargetId,
+                Mode = new() { Source = new() { Width = (uint)width, Height = (uint)height, X = x, Y = y } },
+            });
         }
-        return new(1, [.. outputs.Select(output => output.Target)], paths, modes);
-    }
-
-    private static unsafe byte[] Bytes<T>(T value) where T : unmanaged
-    {
-        byte[] buffer = new byte[sizeof(T)];
-        fixed (byte* destination = buffer) { *(T*)destination = value; }
-        return buffer;
+        return new(1, [.. outputs.Select(output => output.Target)],
+            DisplayTopology.Encode(paths.ToArray()), DisplayTopology.Encode(modes.ToArray()));
     }
 
     [Fact]

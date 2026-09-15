@@ -100,7 +100,7 @@ public static partial class DisplayTopology
         return new(paths, modes);
     }
 
-    private static unsafe IReadOnlyList<byte[]> Encode<T>(T[] values) where T : unmanaged
+    internal static unsafe IReadOnlyList<byte[]> Encode<T>(T[] values) where T : unmanaged
     {
         int size = sizeof(T);
         var encoded = new byte[values.Length][];

@@ -1,8 +1,7 @@
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Text;
 using Xunit;
+using static WindowsDeviceControl.Tests.TestFixtures;
 
 namespace WindowsDeviceControl.Tests;
 
@@ -43,11 +42,7 @@ public sealed class ModernStandbyTests
 
     [Fact]
     public void ATruncatedCapabilityStructureIsRefused()
-    {
-        var error = Assert.Throws<Win32Exception>(
-            () => ModernStandby.ReadCapabilities(new byte[CapabilitiesBytes - 1]));
-        Assert.Equal(13, error.NativeErrorCode);
-    }
+        => AssertInvalidData(() => ModernStandby.ReadCapabilities(new byte[CapabilitiesBytes - 1]));
 
     [Fact]
     public void ADeviceNameEndsAtItsTerminatorRatherThanAtTheBufferSize()
@@ -62,12 +57,7 @@ public sealed class ModernStandbyTests
 
     [Fact]
     public void ANameWithNoTerminatorInTheBufferIsRefused()
-    {
-        byte[] buffer = Encoding.Unicode.GetBytes("USB4");
-
-        var error = Assert.Throws<Win32Exception>(() => ModernStandby.DecodeDeviceName(buffer));
-        Assert.Equal(13, error.NativeErrorCode);
-    }
+        => AssertInvalidData(() => ModernStandby.DecodeDeviceName(Encoding.Unicode.GetBytes("USB4")));
 
     [Theory]
     [InlineData("")]
@@ -77,56 +67,43 @@ public sealed class ModernStandbyTests
         byte[] buffer = new byte[64];
         Encoding.Unicode.GetBytes(name).CopyTo(buffer, 0);
 
-        var error = Assert.Throws<Win32Exception>(() => ModernStandby.DecodeDeviceName(buffer));
-        Assert.Equal(13, error.NativeErrorCode);
+        AssertInvalidData(() => ModernStandby.DecodeDeviceName(buffer));
     }
 
-    [Fact]
-    public void RestoreWritesOnlyTheDevicesWhoseArmingActuallyMoved()
+    [Theory]
+    [MemberData(nameof(RestoreCases))]
+    public void RestoreWritesOnlyObservedProgrammableDevicesWhoseArmingMoved(
+        WakeDevice[] current, WakeDeviceSnapshot snapshot, (string Name, bool Armed)[] expected)
+        => Assert.Equal(expected, ModernStandby.RestorePlan(current, snapshot));
+
+    public static TheoryData<WakeDevice[], WakeDeviceSnapshot, (string Name, bool Armed)[]> RestoreCases => new()
     {
-        List<WakeDevice> current =
-        [
-            new("Sensors", true, WakeDeviceControl.Programmable),
-            new("Wi-Fi", true, WakeDeviceControl.Programmable),
-        ];
-        WakeDeviceSnapshot snapshot = new(["Sensors", "Wi-Fi"], ["Wi-Fi"]);
-
-        Assert.Equal([("Sensors", false)], ModernStandby.RestorePlan(current, snapshot));
-    }
-
-    [Fact]
-    public void RestoringAnUnchangedMachineWritesNothing()
-    {
-        List<WakeDevice> current =
-        [
-            new("Sensors", false, WakeDeviceControl.Programmable),
-            new("Wi-Fi", true, WakeDeviceControl.Programmable),
-        ];
-
-        Assert.Empty(ModernStandby.RestorePlan(current, new(["Sensors", "Wi-Fi"], ["Wi-Fi"])));
-    }
-
-    [Fact]
-    public void ADeviceThatAppearedAfterTheSnapshotIsLeftAlone()
-    {
-        // There is no prior state for it, and inventing one would be a change dressed as a restore.
-        List<WakeDevice> current = [new("Dock", true, WakeDeviceControl.Programmable)];
-
-        Assert.Empty(ModernStandby.RestorePlan(current, new(["Wi-Fi"], ["Wi-Fi"])));
-    }
-
-    [Fact]
-    public void ADeviceThatIsNoLongerProgrammableIsSkippedRatherThanFailingTheRestore()
-    {
-        List<WakeDevice> current =
-        [
-            new("Firmware timer", true, WakeDeviceControl.Fixed),
-            new("Wi-Fi", true, WakeDeviceControl.Programmable),
-        ];
-        WakeDeviceSnapshot snapshot = new(["Firmware timer", "Wi-Fi"], []);
-
-        Assert.Equal([("Wi-Fi", false)], ModernStandby.RestorePlan(current, snapshot));
-    }
+        // Only the device whose arming actually moved is written.
+        {
+            [new("Sensors", true, WakeDeviceControl.Programmable), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
+            new(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
+            [("Sensors", false)]
+        },
+        // Restoring an unchanged machine writes nothing.
+        {
+            [new("Sensors", false, WakeDeviceControl.Programmable), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
+            new(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
+            []
+        },
+        // A device that appeared after the snapshot has no prior state, and inventing one would be a
+        // change dressed as a restore.
+        {
+            [new("Dock", true, WakeDeviceControl.Programmable)],
+            new(["Wi-Fi"], ["Wi-Fi"]),
+            []
+        },
+        // A device that is no longer programmable is skipped rather than failing the restore.
+        {
+            [new("Firmware timer", true, WakeDeviceControl.Fixed), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
+            new(["Firmware timer", "Wi-Fi"], []),
+            [("Wi-Fi", false)]
+        },
+    };
 
     [Fact]
     public void TheSubgroupAndSettingIdentitiesAreTheOnesWindowsPublishes()
@@ -157,36 +134,21 @@ public sealed class ModernStandbyTests
     public void AnEmptyDeviceNameIsARejectedArgument(string name)
         => Assert.Throws<ArgumentException>(() => ModernStandby.TrySetWakeArmed(name, armed: true));
 
-    [Fact]
-    public void StandbyTimingMeasuresTheSleepAndTheTimeSinceTheWake()
+    [Theory]
+    // Asleep from two hours to nine, read at ten.
+    [InlineData(120, 540, 600, 420, 60)]
+    // Both marks are zero on a machine that has not slept this boot.
+    [InlineData(0, 0, 30, 0, 30)]
+    // Interrupt time does not run while asleep, so a wake mark can sit behind the sleep mark.
+    [InlineData(300, 60, 300, 0, 240)]
+    // A wake mark ahead of the read is not negative time since the wake.
+    [InlineData(0, 180, 120, 180, 0)]
+    public void StandbyTimingNeverMeasuresNegativeTime(int sleep, int wake, int now, int slept, int sinceWake)
     {
         StandbyTiming timing = new(
-            Sleep: TimeSpan.FromHours(2),
-            Wake: TimeSpan.FromHours(9),
-            Now: TimeSpan.FromHours(10));
+            TimeSpan.FromMinutes(sleep), TimeSpan.FromMinutes(wake), TimeSpan.FromMinutes(now));
 
-        Assert.Equal(TimeSpan.FromHours(7), timing.Slept);
-        Assert.Equal(TimeSpan.FromHours(1), timing.SinceWake);
-    }
-
-    [Fact]
-    public void AMachineThatHasNotSleptThisBootMeasuresNoSleep()
-    {
-        // Both marks are zero on a machine that has never slept, and interrupt time does not run
-        // while asleep, so a wake mark can also sit behind the sleep mark. Neither is negative time.
-        StandbyTiming never = new(TimeSpan.Zero, TimeSpan.Zero, TimeSpan.FromMinutes(30));
-        Assert.Equal(TimeSpan.Zero, never.Slept);
-        Assert.Equal(TimeSpan.FromMinutes(30), never.SinceWake);
-
-        StandbyTiming asleep = new(TimeSpan.FromHours(5), TimeSpan.FromHours(1), TimeSpan.FromHours(5));
-        Assert.Equal(TimeSpan.Zero, asleep.Slept);
-    }
-
-    [Fact]
-    public void AWakeMarkAheadOfTheReadDoesNotProduceNegativeTimeSinceWake()
-    {
-        StandbyTiming timing = new(TimeSpan.Zero, TimeSpan.FromHours(3), TimeSpan.FromHours(2));
-
-        Assert.Equal(TimeSpan.Zero, timing.SinceWake);
+        Assert.Equal(TimeSpan.FromMinutes(slept), timing.Slept);
+        Assert.Equal(TimeSpan.FromMinutes(sinceWake), timing.SinceWake);
     }
 }

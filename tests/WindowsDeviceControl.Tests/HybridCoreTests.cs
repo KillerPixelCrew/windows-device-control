@@ -1,8 +1,8 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.ComponentModel;
 using Xunit;
+using static WindowsDeviceControl.Tests.TestFixtures;
 
 namespace WindowsDeviceControl.Tests;
 
@@ -57,8 +57,7 @@ public sealed class HybridCoreTests
         byte[] buffer = Buffer((group: 0, core: 0, efficiency: 0));
         BinaryPrimitives.WriteUInt32LittleEndian(buffer, size);
 
-        var error = Assert.Throws<Win32Exception>(() => WindowsPower.ParseCpuSets(buffer));
-        Assert.Equal(13, error.NativeErrorCode);
+        AssertInvalidData(() => WindowsPower.ParseCpuSets(buffer));
     }
 
     [Fact]
@@ -67,8 +66,7 @@ public sealed class HybridCoreTests
         byte[] buffer = new byte[16];
         BinaryPrimitives.WriteUInt32LittleEndian(buffer, 16);
 
-        var error = Assert.Throws<Win32Exception>(() => WindowsPower.ParseCpuSets(buffer));
-        Assert.Equal(13, error.NativeErrorCode);
+        AssertInvalidData(() => WindowsPower.ParseCpuSets(buffer));
     }
 
     [Fact]
