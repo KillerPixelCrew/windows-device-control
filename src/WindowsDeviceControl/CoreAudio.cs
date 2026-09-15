@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WindowsDeviceControl;
 
@@ -82,6 +84,15 @@ public static partial class CoreAudio
         new Guid("8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C"),
         2);
 
+    /// <summary>Both flows a device container can expose endpoints in.</summary>
+    private static readonly DataFlow[] EndpointFlows = [DataFlow.Render, DataFlow.Capture];
+
+    private static readonly AudioRole[] DefaultRoles =
+        [AudioRole.Console, AudioRole.Multimedia, AudioRole.Communications];
+
+    private static readonly object EnumeratorGate = new();
+    private static IMMDeviceEnumerator? _enumerator;
+
     /// <summary>One active Core Audio endpoint.</summary>
     /// <param name="Id">The opaque endpoint identifier used when selecting it.</param>
     /// <param name="Name">The friendly name shown to the user.</param>
@@ -112,56 +123,20 @@ public static partial class CoreAudio
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
         var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        IMMDeviceEnumerator? enumerator = null;
-        try
+        ForEachEndpoint(Enumerator(), endpoint =>
         {
-            enumerator = CreateEnumerator();
-            foreach (var flow in new[] { DataFlow.Render, DataFlow.Capture })
+            if (TryReadContainer(endpoint) is { } container)
             {
-                IMMDeviceCollection? collection = null;
-                try
-                {
-                    var result = enumerator.EnumAudioEndpoints(flow, DeviceStateAll, out collection);
-                    Marshal.ThrowExceptionForHR(result);
-                    if (collection is null)
-                    {
-                        continue;
-                    }
-                    Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
-                    for (var index = 0u; index < count; index++)
-                    {
-                        IMMDevice? endpoint = null;
-                        try
-                        {
-                            if (collection.Item(index, out endpoint) < 0 || endpoint is null
-                                || TryReadContainer(endpoint) is not { } container)
-                            {
-                                continue;
-                            }
-                            var active = endpoint.GetState(out var state) >= 0
-                                && state == DeviceStateActive;
-                            groups[container] = groups.GetValueOrDefault(container) || active;
-                        }
-                        finally
-                        {
-                            Release(endpoint);
-                        }
-                    }
-                }
-                finally
-                {
-                    Release(collection);
-                }
+                var active = endpoint.GetState(out var state) >= 0
+                    && state == DeviceStateActive;
+                groups[container] = groups.GetValueOrDefault(container) || active;
             }
-            return groups.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
-                .Select(entry => new BluetoothAudioContainer(entry.Key, entry.Value))
-                .ToArray();
-        }
-        finally
-        {
-            Release(enumerator);
-        }
+            return false;
+        });
+        return groups.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(entry => new BluetoothAudioContainer(entry.Key, entry.Value))
+            .ToArray();
     }
 
     /// <summary>Connects or disconnects one paired Bluetooth audio device.</summary>
@@ -175,107 +150,96 @@ public static partial class CoreAudio
     {
         ArgumentException.ThrowIfNullOrEmpty(containerId);
         var target = containerId.Trim('{', '}').ToLowerInvariant();
-        IMMDeviceEnumerator? enumerator = null;
+        var enumerator = Enumerator();
         Exception? last = null;
         var matched = false;
-        try
+        var sent = ForEachEndpoint(enumerator, endpoint =>
         {
-            enumerator = CreateEnumerator();
-            foreach (var flow in new[] { DataFlow.Render, DataFlow.Capture })
+            if (!string.Equals(TryReadContainer(endpoint), target, StringComparison.OrdinalIgnoreCase))
             {
-                IMMDeviceCollection? collection = null;
-                try
-                {
-                    Marshal.ThrowExceptionForHR(
-                        enumerator.EnumAudioEndpoints(flow, DeviceStateAll, out collection));
-                    if (collection is null)
-                    {
-                        continue;
-                    }
-                    Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
-                    for (var index = 0u; index < count; index++)
-                    {
-                        IMMDevice? endpoint = null;
-                        try
-                        {
-                            if (collection.Item(index, out endpoint) < 0 || endpoint is null
-                                || !string.Equals(
-                                    TryReadContainer(endpoint), target, StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-                            matched = true;
-                            try
-                            {
-                                SendBluetoothAudioOneShot(enumerator, endpoint, connect);
-                                return;
-                            }
-                            catch (Exception ex)
-                            {
-                                last = ex;
-                            }
-                        }
-                        finally
-                        {
-                            Release(endpoint);
-                        }
-                    }
-                }
-                finally
-                {
-                    Release(collection);
-                }
+                return false;
             }
-        }
-        finally
+            matched = true;
+            try
+            {
+                SendBluetoothAudioOneShot(enumerator, endpoint, connect);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                return false;
+            }
+        });
+        if (sent)
         {
-            Release(enumerator);
+            return;
         }
         throw last ?? new InvalidOperationException(matched
             ? "No endpoint accepted the Bluetooth audio request."
             : "The Bluetooth device has no audio endpoint.");
     }
 
-    private static string? TryReadContainer(IMMDevice endpoint)
+    /// <summary>Visits every endpoint of both flows in any state, releasing each after its visit.</summary>
+    /// <returns>True when a visit stopped the walk by returning true.</returns>
+    private static bool ForEachEndpoint(IMMDeviceEnumerator enumerator, Func<IMMDevice, bool> visit)
     {
-        IPropertyStore? store = null;
-        var value = default(PropVariant);
-        try
+        foreach (var flow in EndpointFlows)
         {
-            if (endpoint.OpenPropertyStore(StorageModeRead, out store) < 0 || store is null)
+            IMMDeviceCollection? collection = null;
+            try
             {
-                return null;
+                Marshal.ThrowExceptionForHR(
+                    enumerator.EnumAudioEndpoints(flow, DeviceStateAll, out collection));
+                if (collection is null)
+                {
+                    continue;
+                }
+                Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
+                for (var index = 0u; index < count; index++)
+                {
+                    IMMDevice? endpoint = null;
+                    try
+                    {
+                        if (collection.Item(index, out endpoint) >= 0 && endpoint is not null
+                            && visit(endpoint))
+                        {
+                            return true;
+                        }
+                    }
+                    finally
+                    {
+                        Release(endpoint);
+                    }
+                }
             }
-            var key = DeviceContainerIdKey;
-            return store.GetValue(ref key, out value) >= 0
-                ? value.GuidValue?.ToString("D")
-                : null;
+            finally
+            {
+                Release(collection);
+            }
         }
-        finally
-        {
-            PropVariantClear(ref value);
-            Release(store);
-        }
+        return false;
     }
+
+    private static string? TryReadContainer(IMMDevice endpoint)
+        => ReadStringProperty(endpoint, DeviceContainerIdKey, static value => value.GuidValue?.ToString("D"));
 
     private static void SendBluetoothAudioOneShot(
         IMMDeviceEnumerator enumerator,
         IMMDevice endpoint,
         bool connect)
     {
-        object? activated = null;
         IDeviceTopology? topology = null;
         IConnector? connector = null;
         IMMDevice? adapter = null;
         IKsControl? control = null;
         try
         {
-            var topologyId = DeviceTopologyId;
-            Marshal.ThrowExceptionForHR(endpoint.Activate(
-                ref topologyId, ClsctxAll, 0, out activated));
-            topology = activated as IDeviceTopology
-                ?? throw new InvalidCastException("The endpoint does not expose IDeviceTopology.");
-            activated = null;
+            Marshal.ThrowExceptionForHR(Activate(endpoint, DeviceTopologyId, out topology));
+            if (topology is null)
+            {
+                throw new InvalidCastException("The endpoint does not expose IDeviceTopology.");
+            }
             Marshal.ThrowExceptionForHR(topology.GetConnector(0, out connector));
             if (connector is null)
             {
@@ -291,12 +255,11 @@ public static partial class CoreAudio
             {
                 throw new InvalidOperationException("The audio adapter could not be opened.");
             }
-            var ksControlId = KsControlId;
-            Marshal.ThrowExceptionForHR(adapter.Activate(
-                ref ksControlId, ClsctxAll, 0, out activated));
-            control = activated as IKsControl
-                ?? throw new InvalidCastException("The audio adapter does not expose IKsControl.");
-            activated = null;
+            Marshal.ThrowExceptionForHR(Activate(adapter, KsControlId, out control));
+            if (control is null)
+            {
+                throw new InvalidCastException("The audio adapter does not expose IKsControl.");
+            }
             var property = new KsProperty
             {
                 Set = BluetoothAudioPropertySet,
@@ -316,7 +279,6 @@ public static partial class CoreAudio
             Release(adapter);
             Release(connector);
             Release(topology);
-            Release(activated);
         }
     }
 
@@ -334,53 +296,11 @@ public static partial class CoreAudio
     /// </remarks>
     public static int ApplyCommand(VolumeCommand command, out int percentage, out int muted)
     {
-        percentage = 0;
-        muted = 0;
-        IMMDeviceEnumerator? enumerator = null;
-        IMMDevice? device = null;
-        IAudioEndpointVolume? volume = null;
-        try
-        {
-            var result = OpenDefaultVolume(
-                AudioDirection.Render,
-                out enumerator,
-                out device,
-                out volume);
-            if (result < 0 || volume is null)
-            {
-                return result;
-            }
-            switch (command)
-            {
-                case VolumeCommand.ToggleMute:
-                    result = volume.GetMute(out var isMuted);
-                    if (result >= 0)
-                    {
-                        result = volume.SetMute(!isMuted, 0);
-                    }
-                    break;
-                case VolumeCommand.StepDown:
-                    result = volume.VolumeStepDown(0);
-                    break;
-                case VolumeCommand.StepUp:
-                    result = volume.VolumeStepUp(0);
-                    break;
-                default:
-                    result = InvalidArgument;
-                    break;
-            }
-            return result < 0 ? result : ReadVolume(volume, out percentage, out muted);
-        }
-        catch (COMException ex)
-        {
-            return ex.HResult;
-        }
-        finally
-        {
-            Release(volume);
-            Release(device);
-            Release(enumerator);
-        }
+        var call = new VolumeCall { Command = command };
+        var result = WithDefaultVolume(AudioDirection.Render, ref call, ApplyVolumeCommand);
+        percentage = call.Percentage;
+        muted = call.Muted;
+        return result;
     }
 
     /// <summary>Reads the default playback endpoint's master volume and mute state.</summary>
@@ -402,31 +322,18 @@ public static partial class CoreAudio
     {
         percentage = 0;
         muted = 0;
-        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
+        if (!IsDirection(direction))
         {
             return InvalidArgument;
         }
 
-        IMMDeviceEnumerator? enumerator = null;
-        IMMDevice? device = null;
-        IAudioEndpointVolume? volume = null;
-        try
-        {
-            var result = OpenDefaultVolume(direction, out enumerator, out device, out volume);
-            return result < 0 || volume is null
-                ? result
-                : ReadVolume(volume, out percentage, out muted);
-        }
-        catch (COMException ex)
-        {
-            return ex.HResult;
-        }
-        finally
-        {
-            Release(volume);
-            Release(device);
-            Release(enumerator);
-        }
+        var call = new VolumeCall();
+        var result = WithDefaultVolume(direction, ref call,
+            static (IAudioEndpointVolume volume, ref VolumeCall state)
+                => ReadVolume(volume, out state.Percentage, out state.Muted));
+        percentage = call.Percentage;
+        muted = call.Muted;
+        return result;
     }
 
     /// <summary>Sets the default playback endpoint's master volume.</summary>
@@ -451,43 +358,15 @@ public static partial class CoreAudio
         out int muted)
     {
         muted = 0;
-        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
+        if (!IsDirection(direction))
         {
             return InvalidArgument;
         }
 
-        IMMDeviceEnumerator? enumerator = null;
-        IMMDevice? device = null;
-        IAudioEndpointVolume? volume = null;
-        try
-        {
-            percentage = Math.Clamp(percentage, 0, 100);
-            var result = OpenDefaultVolume(direction, out enumerator, out device, out volume);
-            if (result >= 0 && volume is not null)
-            {
-                result = volume.SetMasterVolumeLevelScalar(percentage / 100.0f, 0);
-            }
-            if (result >= 0 && percentage > 0 && volume is not null)
-            {
-                result = volume.SetMute(false, 0);
-            }
-            if (result >= 0 && volume is not null)
-            {
-                result = volume.GetMute(out var isMuted);
-                muted = isMuted ? 1 : 0;
-            }
-            return result;
-        }
-        catch (COMException ex)
-        {
-            return ex.HResult;
-        }
-        finally
-        {
-            Release(volume);
-            Release(device);
-            Release(enumerator);
-        }
+        var call = new VolumeCall { Percentage = Math.Clamp(percentage, 0, 100) };
+        var result = WithDefaultVolume(direction, ref call, SetVolumeLevel);
+        muted = call.Muted;
+        return result;
     }
 
     /// <summary>Sets the default playback endpoint's mute state.</summary>
@@ -496,30 +375,9 @@ public static partial class CoreAudio
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int SetMuted(bool muted)
     {
-        IMMDeviceEnumerator? enumerator = null;
-        IMMDevice? device = null;
-        IAudioEndpointVolume? volume = null;
-        try
-        {
-            var result = OpenDefaultVolume(
-                AudioDirection.Render,
-                out enumerator,
-                out device,
-                out volume);
-            return result < 0 || volume is null
-                ? result
-                : volume.SetMute(muted, 0);
-        }
-        catch (COMException ex)
-        {
-            return ex.HResult;
-        }
-        finally
-        {
-            Release(volume);
-            Release(device);
-            Release(enumerator);
-        }
+        var call = new VolumeCall { Mute = muted };
+        return WithDefaultVolume(AudioDirection.Render, ref call,
+            static (IAudioEndpointVolume volume, ref VolumeCall state) => volume.SetMute(state.Mute, 0));
     }
 
     /// <summary>Lists the active audio endpoints in one direction.</summary>
@@ -532,18 +390,17 @@ public static partial class CoreAudio
     {
         var records = new List<AudioEndpoint>();
         endpoints = records;
-        if (direction is not AudioDirection.Render and not AudioDirection.Capture)
+        if (!IsDirection(direction))
         {
             return InvalidArgument;
         }
 
-        IMMDeviceEnumerator? enumerator = null;
         IMMDeviceCollection? collection = null;
         IMMDevice? defaultDevice = null;
         try
         {
-            enumerator = CreateEnumerator();
-            var dataFlow = direction == AudioDirection.Render ? DataFlow.Render : DataFlow.Capture;
+            var enumerator = Enumerator();
+            var dataFlow = (DataFlow)direction;
             var result = enumerator.EnumAudioEndpoints(
                 dataFlow,
                 DeviceStateActive,
@@ -570,32 +427,17 @@ public static partial class CoreAudio
             for (uint index = 0; index < count; index++)
             {
                 IMMDevice? device = null;
-                IPropertyStore? properties = null;
-                var friendlyName = default(PropVariant);
                 try
                 {
-                    var itemResult = collection.Item(index, out device);
-                    if (itemResult < 0 || device is null)
+                    if (collection.Item(index, out device) < 0 || device is null
+                        || device.GetId(out var id) < 0 || string.IsNullOrEmpty(id))
                     {
                         continue;
                     }
-                    itemResult = device.GetId(out var id);
-                    if (itemResult < 0 || string.IsNullOrEmpty(id))
-                    {
-                        continue;
-                    }
-                    var name = "Audio device";
-                    itemResult = device.OpenPropertyStore(StorageModeRead, out properties);
-                    if (itemResult >= 0 && properties is not null)
-                    {
-                        var key = DeviceFriendlyNameKey;
-                        itemResult = properties.GetValue(ref key, out friendlyName);
-                        if (itemResult >= 0
-                            && friendlyName.StringValue is string { Length: > 0 } value)
-                        {
-                            name = value;
-                        }
-                    }
+                    var name = ReadStringProperty(device, DeviceFriendlyNameKey, static value => value.StringValue)
+                        is { Length: > 0 } friendlyName
+                        ? friendlyName
+                        : "Audio device";
                     records.Add(new AudioEndpoint(
                         id,
                         name,
@@ -603,8 +445,6 @@ public static partial class CoreAudio
                 }
                 finally
                 {
-                    PropVariantClear(ref friendlyName);
-                    Release(properties);
                     Release(device);
                 }
             }
@@ -619,7 +459,6 @@ public static partial class CoreAudio
         {
             Release(defaultDevice);
             Release(collection);
-            Release(enumerator);
         }
     }
 
@@ -662,11 +501,10 @@ public static partial class CoreAudio
             return InvalidArgument;
         }
 
-        IMMDeviceEnumerator? enumerator = null;
         IPolicyConfig? policy = null;
         try
         {
-            enumerator = CreateEnumerator();
+            var enumerator = Enumerator();
             var previous = new Dictionary<AudioRole, string>();
             foreach (var role in DefaultRoles)
             {
@@ -682,7 +520,7 @@ public static partial class CoreAudio
             var result = ApplyDefaultEndpointTransaction(
                 endpointId,
                 previous,
-                (id, role) => SetDefaultEndpoint(activePolicy, id, role),
+                (id, role) => SetRoleDefault(activePolicy, id, role),
                 out var updates);
             roleResults = updates;
             return result;
@@ -694,12 +532,8 @@ public static partial class CoreAudio
         finally
         {
             Release(policy);
-            Release(enumerator);
         }
     }
-
-    private static readonly AudioRole[] DefaultRoles =
-        [AudioRole.Console, AudioRole.Multimedia, AudioRole.Communications];
 
     internal static int CompareEndpoints(AudioEndpoint left, AudioEndpoint right)
     {
@@ -737,7 +571,7 @@ public static partial class CoreAudio
         }
     }
 
-    private static int SetDefaultEndpoint(
+    private static int SetRoleDefault(
         IPolicyConfig policy,
         string endpointId,
         AudioRole role)
@@ -786,41 +620,157 @@ public static partial class CoreAudio
         return failure;
     }
 
+    private static bool IsDirection(AudioDirection direction)
+        => direction is AudioDirection.Render or AudioDirection.Capture;
+
+    /// <summary>The process-wide device enumerator, created on first use.</summary>
+    /// <remarks>MMDeviceEnumerator is free-threaded. It is created on a multithreaded-apartment
+    /// thread, so a first call from a UI thread cannot tie it to that thread's message loop. A
+    /// failed creation is not remembered: the next call tries again, as a fresh enumerator per
+    /// call did.</remarks>
+    private static IMMDeviceEnumerator Enumerator()
+    {
+        if (Volatile.Read(ref _enumerator) is { } existing)
+        {
+            return existing;
+        }
+        lock (EnumeratorGate)
+        {
+            return _enumerator ??= Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA
+                ? CreateEnumerator()
+                : Task.Run(CreateEnumerator).GetAwaiter().GetResult();
+        }
+    }
+
     private static IMMDeviceEnumerator CreateEnumerator()
         => (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
 
+    /// <summary>The inputs and results of one call on the default endpoint's volume.</summary>
+    private struct VolumeCall
+    {
+        internal VolumeCommand Command;
+        internal bool Mute;
+        internal int Percentage;
+        internal int Muted;
+    }
+
+    private delegate int VolumeAction(IAudioEndpointVolume volume, ref VolumeCall call);
+
+    /// <summary>Opens the default endpoint's volume in one direction, runs one action on it and
+    /// releases everything. A COM failure is returned as its HRESULT.</summary>
+    private static int WithDefaultVolume(AudioDirection direction, ref VolumeCall call, VolumeAction action)
+    {
+        IMMDevice? device = null;
+        IAudioEndpointVolume? volume = null;
+        try
+        {
+            var result = OpenDefaultVolume(direction, out device, out volume);
+            return result < 0 || volume is null ? result : action(volume, ref call);
+        }
+        catch (COMException ex)
+        {
+            return ex.HResult;
+        }
+        finally
+        {
+            Release(volume);
+            Release(device);
+        }
+    }
+
+    private static int ApplyVolumeCommand(IAudioEndpointVolume volume, ref VolumeCall call)
+    {
+        int result;
+        switch (call.Command)
+        {
+            case VolumeCommand.ToggleMute:
+                result = volume.GetMute(out var isMuted);
+                if (result >= 0)
+                {
+                    result = volume.SetMute(!isMuted, 0);
+                }
+                break;
+            case VolumeCommand.StepDown:
+                result = volume.VolumeStepDown(0);
+                break;
+            case VolumeCommand.StepUp:
+                result = volume.VolumeStepUp(0);
+                break;
+            default:
+                result = InvalidArgument;
+                break;
+        }
+        return result < 0 ? result : ReadVolume(volume, out call.Percentage, out call.Muted);
+    }
+
+    private static int SetVolumeLevel(IAudioEndpointVolume volume, ref VolumeCall call)
+    {
+        var result = volume.SetMasterVolumeLevelScalar(call.Percentage / 100.0f, 0);
+        if (result >= 0 && call.Percentage > 0)
+        {
+            result = volume.SetMute(false, 0);
+        }
+        if (result >= 0)
+        {
+            result = volume.GetMute(out var isMuted);
+            call.Muted = isMuted ? 1 : 0;
+        }
+        return result;
+    }
+
     private static int OpenDefaultVolume(
         AudioDirection direction,
-        out IMMDeviceEnumerator? enumerator,
         out IMMDevice? device,
         out IAudioEndpointVolume? volume)
     {
-        enumerator = CreateEnumerator();
         volume = null;
-        var result = enumerator.GetDefaultAudioEndpoint(
-            direction == AudioDirection.Render ? DataFlow.Render : DataFlow.Capture,
+        var result = Enumerator().GetDefaultAudioEndpoint(
+            (DataFlow)direction,
             AudioRole.Console,
             out device);
         if (result < 0 || device is null)
         {
             return result;
         }
-        var interfaceId = AudioEndpointVolumeId;
-        result = device.Activate(
-            ref interfaceId,
-            ClsctxAll,
-            0,
-            out var activated);
-        if (result >= 0)
+        result = Activate(device, AudioEndpointVolumeId, out volume);
+        return result >= 0 && volume is null ? Failure : result;
+    }
+
+    /// <summary>Activates one interface on a device. An activation that succeeds without exposing
+    /// <typeparamref name="T"/> is released and leaves the instance null.</summary>
+    private static int Activate<T>(IMMDevice device, Guid interfaceId, out T? instance)
+        where T : class
+    {
+        var result = device.Activate(ref interfaceId, ClsctxAll, 0, out var activated);
+        instance = result >= 0 ? activated as T : null;
+        if (instance is null)
         {
-            volume = activated as IAudioEndpointVolume;
-            if (volume is null)
-            {
-                Release(activated);
-                return Failure;
-            }
+            Release(activated);
         }
         return result;
+    }
+
+    /// <summary>Reads one endpoint property, clearing the variant and releasing the store before
+    /// returning.</summary>
+    private static string? ReadStringProperty(
+        IMMDevice endpoint,
+        PropertyKey key,
+        Func<PropVariant, string?> read)
+    {
+        IPropertyStore? store = null;
+        var value = default(PropVariant);
+        try
+        {
+            return endpoint.OpenPropertyStore(StorageModeRead, out store) >= 0 && store is not null
+                && store.GetValue(ref key, out value) >= 0
+                ? read(value)
+                : null;
+        }
+        finally
+        {
+            PropVariantClear(ref value);
+            Release(store);
+        }
     }
 
     private static int ReadVolume(
@@ -858,7 +808,6 @@ public static partial class CoreAudio
     {
         Render,
         Capture,
-        All,
     }
 
     [StructLayout(LayoutKind.Sequential)]
