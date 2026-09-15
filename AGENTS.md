@@ -17,8 +17,9 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `WindowsRadio.cs`: radio access and power, native WLAN, Wi-Fi watches, Bluetooth discovery,
   pairing, and unpairing.
 - `WifiProfile.cs`: exact WLAN profile XML, SSID bytes, security shapes, and passphrase validation.
-- `CoreAudio.cs`: endpoint enumeration, default-role transactions, volume/mute, and Bluetooth audio
-  connection.
+- `CoreAudio.cs`: endpoint enumeration, default-role transactions, and volume/mute.
+  `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, and `CoreAudio.Native.cs` the COM
+  declarations, `PROPVARIANT` cleanup and the shared device enumerator.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology.cs`: supported CCD enumeration, stable monitor matching, appearance waits and
   validated profile capture/apply with rollback. It also owns the native CCD shapes, which are
@@ -120,7 +121,7 @@ state from a later snapshot rather than treating the call return as final state.
 
 ## Audio, brightness, and feedback invariants
 
-Keep COM declarations and `PROPVARIANT` cleanup private to `CoreAudio.cs`.
+Keep COM declarations and `PROPVARIANT` cleanup private to `CoreAudio`, in `CoreAudio.Native.cs`.
 
 Default endpoint changes are transactions across Console, Multimedia, and Communications roles.
 Snapshot all previous defaults before writing. On failure, roll back every changed role in reverse

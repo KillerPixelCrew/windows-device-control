@@ -3,7 +3,7 @@
 What the platform actually does, and the approaches that were tried and disproven. It lives here
 rather than in comments because most of it spans several files, and because anyone re-deriving this
 surface from Microsoft's documentation will make the same wrong turns. The implementation is
-`src\WindowsDeviceControl\WindowsRadio.cs`, `WifiProfile.cs`, `CoreAudio.cs`, `Backlight.cs` and
+`src\WindowsDeviceControl\WindowsRadio.cs`, `WifiProfile.cs`, the `CoreAudio` files, `Backlight.cs` and
 `WaveOutFeedback.cs`; there is no native component and no helper process.
 
 ## Radio power
@@ -143,7 +143,7 @@ endpoint snapshot rather than from the call's return.
 
 ## Default endpoint switching
 
-COM interface declarations and PROPVARIANT cleanup stay private to `CoreAudio.cs`. Changing the
+COM interface declarations and PROPVARIANT cleanup stay private to `CoreAudio`, in `CoreAudio.Native.cs`. Changing the
 default playback endpoint snapshots all three previous role defaults before the first write. A later
 failure rolls every changed role back in reverse order, attempts every rollback, and returns the
 per-role apply/rollback HRESULTs to callers that use the detailed overload.

@@ -47,7 +47,7 @@ reviews:
         Preserve XML escaping, exact SSID `<hex>`, PSK validation, and distinct
         WPA3 transition, WPA2-AES, legacy WPA-TKIP, and OWE forms. Enterprise
         and WEP stay explicitly unsupported; flag invented flows for them.
-    - path: "src/WindowsDeviceControl/CoreAudio.cs"
+    - path: "src/WindowsDeviceControl/CoreAudio*.cs"
       instructions: |
         - Int-returning methods expose HRESULTs; flag lossy booleans or enums.
         - Preserve COM declarations/releases, PROPVARIANT cleanup, container
