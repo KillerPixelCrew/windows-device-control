@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
@@ -26,8 +25,8 @@ public static partial class DisplayColor
     {
         ArgumentNullException.ThrowIfNull(target);
         enabled = supported = false;
-        if (!TryFind(target, out DisplayTopology.Luid adapter, out uint id)) { return false; }
-        return TryRead(adapter, id, out enabled, out supported);
+        return DisplayTopology.TryFindActive(target, out DisplayTopology.PathInfo path)
+            && TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out enabled, out supported);
     }
 
     /// <summary>Sets a monitor's advanced colour state and confirms it by readback.</summary>
@@ -41,11 +40,13 @@ public static partial class DisplayColor
     {
         ArgumentNullException.ThrowIfNull(target);
         detail = "";
-        if (!TryFind(target, out DisplayTopology.Luid adapter, out uint id))
+        if (!DisplayTopology.TryFindActive(target, out DisplayTopology.PathInfo path))
         {
             detail = "the display is not active, so its colour state was left alone";
             return false;
         }
+        DisplayTopology.Luid adapter = path.TargetInfo.AdapterId;
+        uint id = path.TargetInfo.Id;
         if (!TryRead(adapter, id, out bool current, out bool supported))
         {
             detail = "its colour state could not be read";
@@ -89,24 +90,6 @@ public static partial class DisplayColor
         supported = (packet.Value & SupportedBit) != 0;
         enabled = (packet.Value & EnabledBit) != 0;
         return true;
-    }
-
-    /// <summary>Finds the current CCD route to one monitor. The route changes on hotplug, so it is
-    /// resolved per call rather than stored.</summary>
-    internal static bool TryFind(DisplayTargetIdentity target, out DisplayTopology.Luid adapter, out uint id)
-    {
-        adapter = default;
-        id = 0;
-        try
-        {
-            DisplayTopologySnapshot snapshot = DisplayTopology.CaptureActive();
-            ActiveDisplayPath? path = snapshot.Paths.FirstOrDefault(candidate => target.Matches(candidate.Target));
-            if (path is null) { return false; }
-            adapter = new() { LowPart = path.Target.AdapterLowPart, HighPart = path.Target.AdapterHighPart };
-            id = path.Target.TargetId;
-            return true;
-        }
-        catch (System.ComponentModel.Win32Exception) { return false; }
     }
 
     [StructLayout(LayoutKind.Sequential)]

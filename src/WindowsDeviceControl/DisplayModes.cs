@@ -23,7 +23,7 @@ public sealed record DisplayModeSnapshot(ActiveDisplayPath Path, DisplayMode Cur
 /// Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
 /// not prove physical visibility. An unconfirmed write gets one rollback to the captured mode,
 /// only while the original route remains present; callers must not automatically retry.</remarks>
-public static unsafe partial class DisplayModes
+public static partial class DisplayModes
 {
     private static readonly object Gate = new();
     private const uint ModeFields = 0x00040000 | 0x00080000 | 0x00100000 | 0x00400000;

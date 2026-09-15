@@ -86,14 +86,12 @@ internal static class DisplayLayoutPlanner
 
     /// <summary>Builds the paths and modes for one layout from the adapter's own path list.</summary>
     /// <param name="paths">Every path the adapter advertises, from a QDC_ALL_PATHS query.</param>
-    /// <param name="modes">The modes that query returned, used for the current source of a target.</param>
     /// <param name="layout">The layout to express.</param>
     /// <param name="readTarget">Reads a path's monitor identity.</param>
     /// <returns>The configuration to supply to Windows.</returns>
     /// <exception cref="InvalidOperationException">No usable path or source exists for a display.</exception>
     internal static (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes) Plan(
         DisplayTopology.PathInfo[] paths,
-        DisplayTopology.ModeInfo[] modes,
         DisplayLayout layout,
         Func<DisplayTopology.PathInfo, DisplayTargetIdentity> readTarget)
     {
@@ -180,7 +178,6 @@ internal static class DisplayLayoutPlanner
             plannedPaths.Add(path);
         }
 
-        _ = modes;
         return ([.. plannedPaths], [.. plannedModes]);
     }
 

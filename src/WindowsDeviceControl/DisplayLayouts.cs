@@ -119,35 +119,26 @@ public sealed record DisplayLayoutResult(
 /// </remarks>
 public static class DisplayLayouts
 {
-    private const uint OnlyActivePaths = 0x2;
-    private const uint AllPaths = 0x1;
-    private const uint UseSupplied = 0x20;
-    private const uint SdcValidate = 0x40;
-    private const uint SdcApply = 0x80;
-    private const uint SaveToDatabase = 0x200;
-    private const uint AllowChanges = 0x400;
-    private const uint PathActive = 0x1;
-    private const uint ModeInfoIdxInvalid = 0xffffffff;
-    private const uint SourceModeInfo = 1;
-    private const uint TargetModeInfo = 2;
-    private const uint PixelFormat32Bpp = 4;
-    private const int GetSourceName = 1;
+    internal const uint PathActiveFlag = 0x1;
+    internal const uint InvalidModeIndex = 0xffffffff;
+    internal const uint SourceModeType = 1;
+    internal const uint Pixel32Bpp = 4;
 
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
     /// <returns>The observation and its fingerprint.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
     public static DisplayArrangement Observe()
     {
-        (DisplayTopology.PathInfo[] paths, DisplayTopology.ModeInfo[] modes) = Query(AllPaths);
+        (DisplayTopology.PathInfo[] paths, DisplayTopology.ModeInfo[] modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
         List<DisplayTargetObservation> targets = [];
         foreach (DisplayTopology.PathInfo path in paths)
         {
             DisplayTargetIdentity identity;
-            try { identity = ReadTarget(path); }
+            try { identity = DisplayTopology.ReadTarget(path); }
             // One unreadable target must not hide the rest: a monitor can drop out between the
             // query and the name read, and the caller is often waiting for a different one.
             catch (Win32Exception) { continue; }
-            bool active = (path.Flags & PathActive) != 0;
+            bool active = (path.Flags & PathActiveFlag) != 0;
             if (targets.Exists(other => other.Target.Matches(identity) && (other.Active || !active))) { continue; }
             targets.RemoveAll(other => other.Target.Matches(identity));
             targets.Add(new(identity, path.TargetInfo.TargetAvailable != 0, active,
@@ -203,9 +194,9 @@ public static class DisplayLayouts
         for (int index = 0; index < paths.Length; index++)
         {
             DisplayTopology.PathInfo path = paths[index];
-            if ((path.Flags & PathActive) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length) { continue; }
+            if ((path.Flags & PathActiveFlag) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length) { continue; }
             DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
-            if (mode.InfoType != SourceModeInfo) { continue; }
+            if (mode.InfoType != SourceModeType) { continue; }
             DisplayTargetIdentity identity = profile.Targets[index];
             if (outputs.Exists(other => other.Target.Matches(identity))) { continue; }
             DisplayTopology.SourceMode source = mode.Mode.Source;
@@ -237,16 +228,15 @@ public static class DisplayLayouts
 
         DisplayArrangement arrangement;
         DisplayTopology.PathInfo[] paths;
-        DisplayTopology.ModeInfo[] modes;
         try
         {
             arrangement = Observe();
-            (paths, modes) = Query(AllPaths);
+            paths = DisplayTopology.Query(DisplayTopology.AllPaths).Paths;
         }
         catch (Win32Exception ex)
         {
             return new(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
-                Bound("The current display configuration could not be read: " + ex.Message));
+                DisplayTopology.Bound("The current display configuration could not be read: " + ex.Message));
         }
 
         IReadOnlyList<DisplayTargetIdentity> absent =
@@ -269,15 +259,14 @@ public static class DisplayLayouts
         DisplayTopology.ModeInfo[] plannedModes;
         try
         {
-            (planned, plannedModes) = DisplayLayoutPlanner.Plan(paths, modes, layout, ReadTarget);
+            (planned, plannedModes) = DisplayLayoutPlanner.Plan(paths, layout, DisplayTopology.ReadTarget);
         }
         catch (InvalidOperationException ex)
         {
-            return new(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], Bound(ex.Message));
+            return new(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], DisplayTopology.Bound(ex.Message));
         }
 
-        int status = DisplayTopology.SetDisplayConfig((uint)planned.Length, planned,
-            (uint)plannedModes.Length, plannedModes, UseSupplied | SdcValidate | AllowChanges);
+        int status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcValidate);
         if (status != 0)
         {
             return new(DisplayLayoutOutcome.Rejected, [], status, false, false, [],
@@ -288,11 +277,11 @@ public static class DisplayLayouts
             return new(DisplayLayoutOutcome.Applied, [], 0, false, false, [], "The layout is valid for this hardware.");
         }
 
-        (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes) rollback;
+        DisplayTopology.NativeSnapshot rollback;
         DisplayLayout rollbackLayout;
         try
         {
-            rollback = Query(OnlyActivePaths);
+            rollback = DisplayTopology.Query(DisplayTopology.OnlyActivePaths);
             rollbackLayout = Capture();
         }
         catch (Win32Exception ex)
@@ -301,15 +290,14 @@ public static class DisplayLayouts
                 "The current arrangement could not be captured for rollback; nothing was applied.");
         }
 
-        status = DisplayTopology.SetDisplayConfig((uint)planned.Length, planned,
-            (uint)plannedModes.Length, plannedModes, UseSupplied | SdcApply | SaveToDatabase | AllowChanges);
+        status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
         if (status == 0 && Confirm(layout))
         {
             return ApplyPerTarget(layout, DisplayLayoutOutcome.Applied, [], "Layout applied and confirmed.");
         }
 
-        int rollbackStatus = DisplayTopology.SetDisplayConfig((uint)rollback.Paths.Length, rollback.Paths,
-            (uint)rollback.Modes.Length, rollback.Modes, UseSupplied | SdcApply | SaveToDatabase | AllowChanges);
+        int rollbackStatus = DisplayTopology.Supply(rollback.Paths, rollback.Modes,
+            DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
         if (rollbackStatus == 0)
         {
             // Scaling and colour follow the topology back, so the desktop is left as it was found.
@@ -406,27 +394,12 @@ public static class DisplayLayouts
     private static string Describe(DisplayTargetIdentity target) =>
         target.FriendlyName.Length != 0 ? target.FriendlyName : Key(target);
 
-    private static unsafe DisplayTargetIdentity ReadTarget(DisplayTopology.PathInfo path)
-    {
-        DisplayTopology.TargetDeviceName target = new()
-        {
-            Header = DisplayTopology.Header<DisplayTopology.TargetDeviceName>(2, path.TargetInfo.AdapterId, path.TargetInfo.Id),
-        };
-        int status = DisplayTopology.DisplayConfigGetDeviceInfo(ref target);
-        if (status != 0) { throw new Win32Exception(status, "Display target identity query failed."); }
-        bool edidValid = (target.Flags & 0x2) != 0;
-        return new(NativeText.ReadFixed(target.MonitorDevicePath, 128),
-            edidValid ? target.EdidManufacturerId : null, edidValid ? target.EdidProductCodeId : null,
-            NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
-            path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
-    }
-
     private static DisplayLayoutOutput? ReadOutput(
         DisplayTopology.PathInfo path, DisplayTopology.ModeInfo[] modes, DisplayTargetIdentity identity)
     {
         if (path.SourceInfo.ModeInfoIdx >= modes.Length) { return null; }
         DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
-        if (mode.InfoType != SourceModeInfo) { return null; }
+        if (mode.InfoType != SourceModeType) { return null; }
         DisplayTopology.SourceMode source = mode.Mode.Source;
         return new(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
             new(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
@@ -434,32 +407,4 @@ public static class DisplayLayouts
             DisplayScaling.TryRead(identity, out int percent) ? percent : null,
             DisplayColor.TryReadHdr(identity, out bool enabled, out bool supported) && supported ? enabled : null);
     }
-
-    private static (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes) Query(uint flags)
-    {
-        for (int attempt = 0; attempt < 4; attempt++)
-        {
-            int status = DisplayTopology.GetDisplayConfigBufferSizes(flags, out uint pathCount, out uint modeCount);
-            if (status != 0) { throw new Win32Exception(status, "Display topology buffer sizing failed."); }
-            DisplayTopology.ValidateBufferCounts(pathCount, modeCount);
-            DisplayTopology.PathInfo[] paths = new DisplayTopology.PathInfo[pathCount];
-            DisplayTopology.ModeInfo[] modes = new DisplayTopology.ModeInfo[modeCount];
-            status = DisplayTopology.QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);
-            if (status == Win32Error.ErrorInsufficientBuffer) { continue; }
-            if (status != 0) { throw new Win32Exception(status, "Display topology query failed."); }
-            if (pathCount != paths.Length) { Array.Resize(ref paths, checked((int)pathCount)); }
-            if (modeCount != modes.Length) { Array.Resize(ref modes, checked((int)modeCount)); }
-            return (paths, modes);
-        }
-        throw new Win32Exception((int)Win32Error.ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
-    }
-
-    private static string Bound(string value) => value.Length <= 512 ? value : value[..512];
-
-    internal const uint PathActiveFlag = PathActive;
-    internal const uint InvalidModeIndex = ModeInfoIdxInvalid;
-    internal const uint SourceModeType = SourceModeInfo;
-    internal const uint TargetModeType = TargetModeInfo;
-    internal const uint Pixel32Bpp = PixelFormat32Bpp;
-    internal const int SourceNameType = GetSourceName;
 }

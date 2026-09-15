@@ -95,7 +95,7 @@ public sealed class DisplayLayoutTests
         ]);
 
         (DisplayTopology.PathInfo[] planned, DisplayTopology.ModeInfo[] modes) =
-            DisplayLayoutPlanner.Plan(paths, [], layout, naming);
+            DisplayLayoutPlanner.Plan(paths, layout, naming);
 
         Assert.Equal(2, modes.Length);
         Assert.All(planned.Take(2), path => Assert.NotEqual(0u, path.Flags & Active));
@@ -117,7 +117,7 @@ public sealed class DisplayLayoutTests
         var naming = Naming((10, @"\\?\keep"), (20, @"\\?\drop"));
 
         (DisplayTopology.PathInfo[] planned, _) = DisplayLayoutPlanner.Plan(
-            paths, [], new([Output(Target(@"\\?\keep", id: 10))]), naming);
+            paths, new([Output(Target(@"\\?\keep", id: 10))]), naming);
 
         DisplayTopology.PathInfo dropped = planned.Single(path => path.TargetInfo.Id == 20);
         Assert.Equal(0u, dropped.Flags & Active);
@@ -133,7 +133,7 @@ public sealed class DisplayLayoutTests
         var naming = Naming((10, @"\\?\a"));
 
         (DisplayTopology.PathInfo[] planned, _) = DisplayLayoutPlanner.Plan(
-            paths, [], new([Output(Target(@"\\?\a", id: 10))]), naming);
+            paths, new([Output(Target(@"\\?\a", id: 10))]), naming);
 
         Assert.Equal(1u, planned[0].SourceInfo.Id);
     }
@@ -149,7 +149,7 @@ public sealed class DisplayLayoutTests
             Output(Target(@"\\?\b", id: 20), x: 1920),
         ]);
 
-        (DisplayTopology.PathInfo[] planned, _) = DisplayLayoutPlanner.Plan(paths, [], layout, naming);
+        (DisplayTopology.PathInfo[] planned, _) = DisplayLayoutPlanner.Plan(paths, layout, naming);
 
         Assert.Equal(0u, planned[0].SourceInfo.Id);
         Assert.Equal(1u, planned[1].SourceInfo.Id);
@@ -161,7 +161,7 @@ public sealed class DisplayLayoutTests
         DisplayTopology.PathInfo[] paths = [Path(0, 10)];
 
         InvalidOperationException failure = Assert.Throws<InvalidOperationException>(() =>
-            DisplayLayoutPlanner.Plan(paths, [], new([Output(Target(@"\\?\missing", "Living room TV", 99))]),
+            DisplayLayoutPlanner.Plan(paths, new([Output(Target(@"\\?\missing", "Living room TV", 99))]),
                 Naming((10, @"\\?\a"))));
 
         Assert.Contains("Living room TV", failure.Message);
@@ -175,7 +175,7 @@ public sealed class DisplayLayoutTests
         var naming = Naming((10, @"\\?\a"));
 
         (DisplayTopology.PathInfo[] planned, _) = DisplayLayoutPlanner.Plan(
-            paths, [], new([Output(Target(@"\\?\a", id: 10))]), naming);
+            paths, new([Output(Target(@"\\?\a", id: 10))]), naming);
 
         Assert.Single(planned);
         Assert.Equal(10u, planned[0].TargetInfo.Id);

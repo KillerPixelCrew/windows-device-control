@@ -115,49 +115,14 @@ public static partial class DisplayScaling
         return true;
     }
 
-    /// <summary>Finds the CCD source currently driving one monitor. Scaling is a property of the
-    /// source, so an inactive monitor has none.</summary>
+    /// <summary>Finds the CCD source currently driving one monitor, taken from the same path that
+    /// matched it. Scaling is a property of the source, so an inactive monitor has none.</summary>
     private static bool TryFindSource(DisplayTargetIdentity target, out DisplayTopology.Luid adapter, out uint source)
     {
-        adapter = default;
-        source = 0;
-        try
-        {
-            DisplayTopologySnapshot snapshot = DisplayTopology.CaptureActive();
-            ActiveDisplayPath? path = snapshot.Paths.FirstOrDefault(candidate => target.Matches(candidate.Target));
-            if (path is null) { return false; }
-            return TryFindSourceId(path.SourceName, out adapter, out source);
-        }
-        catch (System.ComponentModel.Win32Exception) { return false; }
-    }
-
-    private static unsafe bool TryFindSourceId(string sourceName, out DisplayTopology.Luid adapter, out uint source)
-    {
-        adapter = default;
-        source = 0;
-        int status = DisplayTopology.GetDisplayConfigBufferSizes(0x2, out uint pathCount, out uint modeCount);
-        if (status != 0 || pathCount > 256 || modeCount > 1024) { return false; }
-        DisplayTopology.PathInfo[] paths = new DisplayTopology.PathInfo[pathCount];
-        DisplayTopology.ModeInfo[] modes = new DisplayTopology.ModeInfo[modeCount];
-        if (DisplayTopology.QueryDisplayConfig(0x2, ref pathCount, paths, ref modeCount, modes, 0) != 0) { return false; }
-        for (int index = 0; index < pathCount; index++)
-        {
-            DisplayTopology.SourceDeviceName name = new()
-            {
-                Header = DisplayTopology.Header<DisplayTopology.SourceDeviceName>(
-                    1, paths[index].SourceInfo.AdapterId, paths[index].SourceInfo.Id),
-            };
-            if (DisplayTopology.DisplayConfigGetDeviceInfo(ref name) != 0) { continue; }
-            if (!string.Equals(NativeText.ReadFixed(name.ViewGdiDeviceName, 32), sourceName,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            adapter = paths[index].SourceInfo.AdapterId;
-            source = paths[index].SourceInfo.Id;
-            return true;
-        }
-        return false;
+        bool found = DisplayTopology.TryFindActive(target, out DisplayTopology.PathInfo path);
+        adapter = path.SourceInfo.AdapterId;
+        source = path.SourceInfo.Id;
+        return found;
     }
 
     [StructLayout(LayoutKind.Sequential)]
