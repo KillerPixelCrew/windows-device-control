@@ -75,13 +75,7 @@ public static partial class DisplayScaling
         }
         DpiScaleSet packet = new()
         {
-            Header = new()
-            {
-                Type = SetDpiScale,
-                Size = (uint)Marshal.SizeOf<DpiScaleSet>(),
-                AdapterId = adapter,
-                Id = source,
-            },
+            Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
             ScaleRelative = index - recommendedIndex,
         };
         if (DisplayConfigSetDeviceInfo(ref packet) != 0)
@@ -105,13 +99,7 @@ public static partial class DisplayScaling
         current = recommended = maximum = 0;
         DpiScaleGet packet = new()
         {
-            Header = new()
-            {
-                Type = GetDpiScale,
-                Size = (uint)Marshal.SizeOf<DpiScaleGet>(),
-                AdapterId = adapter,
-                Id = source,
-            },
+            Header = DisplayTopology.Header<DpiScaleGet>(GetDpiScale, adapter, source),
         };
         if (DisplayConfigGetDeviceInfo(ref packet) != 0) { return false; }
         int relative = Math.Clamp(packet.CurrentScaleRelative, packet.MinScaleRelative, packet.MaxScaleRelative);
@@ -156,16 +144,11 @@ public static partial class DisplayScaling
         {
             DisplayTopology.SourceDeviceName name = new()
             {
-                Header = new()
-                {
-                    Type = 1,
-                    Size = (uint)Marshal.SizeOf<DisplayTopology.SourceDeviceName>(),
-                    AdapterId = paths[index].SourceInfo.AdapterId,
-                    Id = paths[index].SourceInfo.Id,
-                },
+                Header = DisplayTopology.Header<DisplayTopology.SourceDeviceName>(
+                    1, paths[index].SourceInfo.AdapterId, paths[index].SourceInfo.Id),
             };
             if (DisplayTopology.DisplayConfigGetDeviceInfo(ref name) != 0) { continue; }
-            if (!string.Equals(DisplayTopology.ReadNativeString(name.ViewGdiDeviceName, 32), sourceName,
+            if (!string.Equals(NativeText.ReadFixed(name.ViewGdiDeviceName, 32), sourceName,
                     StringComparison.OrdinalIgnoreCase))
             {
                 continue;

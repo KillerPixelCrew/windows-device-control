@@ -79,7 +79,6 @@ public static partial class DisplayTopology
     private const uint AllPaths = 0x1;
     private const int GetSourceName = 1;
     private const int GetTargetName = 2;
-    private const int ErrorInsufficientBuffer = 122;
     private const uint UseSupplied = 0x20;
     private const uint Validate = 0x40;
     private const uint Apply = 0x80;
@@ -99,35 +98,29 @@ public static partial class DisplayTopology
             PathInfo[] paths = new PathInfo[pathCount];
             ModeInfo[] modes = new ModeInfo[modeCount];
             status = QueryDisplayConfig(OnlyActivePaths, ref pathCount, paths, ref modeCount, modes, 0);
-            if (status == ErrorInsufficientBuffer) { continue; }
+            if (status == Win32Error.ErrorInsufficientBuffer) { continue; }
             if (status != 0) { throw new Win32Exception(status, "Active display topology query failed."); }
             List<ActiveDisplayPath> result = new(checked((int)pathCount));
             for (int index = 0; index < pathCount; index++)
             {
                 PathInfo path = paths[index];
-                TargetDeviceName target = new()
-                {
-                    Header = new() { Type = GetTargetName, Size = (uint)Marshal.SizeOf<TargetDeviceName>(), AdapterId = path.TargetInfo.AdapterId, Id = path.TargetInfo.Id }
-                };
+                TargetDeviceName target = new() { Header = Header<TargetDeviceName>(GetTargetName, path.TargetInfo.AdapterId, path.TargetInfo.Id) };
                 status = DisplayConfigGetDeviceInfo(ref target);
                 if (status != 0) { throw new Win32Exception(status, "Display target identity query failed."); }
-                SourceDeviceName source = new()
-                {
-                    Header = new() { Type = GetSourceName, Size = (uint)Marshal.SizeOf<SourceDeviceName>(), AdapterId = path.SourceInfo.AdapterId, Id = path.SourceInfo.Id }
-                };
+                SourceDeviceName source = new() { Header = Header<SourceDeviceName>(GetSourceName, path.SourceInfo.AdapterId, path.SourceInfo.Id) };
                 status = DisplayConfigGetDeviceInfo(ref source);
                 if (status != 0) { throw new Win32Exception(status, "Display source identity query failed."); }
                 bool edidValid = (target.Flags & 0x2) != 0;
-                DisplayTargetIdentity identity = new(Read(target.MonitorDevicePath, 128),
+                DisplayTargetIdentity identity = new(NativeText.ReadFixed(target.MonitorDevicePath, 128),
                     edidValid ? target.EdidManufacturerId : null, edidValid ? target.EdidProductCodeId : null,
-                    Read(target.MonitorFriendlyDeviceName, 64), path.TargetInfo.AdapterId.LowPart,
+                    NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64), path.TargetInfo.AdapterId.LowPart,
                     path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
-                result.Add(new(identity, Read(source.ViewGdiDeviceName, 32), path.TargetInfo.OutputTechnology,
+                result.Add(new(identity, NativeText.ReadFixed(source.ViewGdiDeviceName, 32), path.TargetInfo.OutputTechnology,
                     path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator));
             }
             return new(result.AsReadOnly(), DateTimeOffset.UtcNow);
         }
-        throw new Win32Exception(ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
+        throw new Win32Exception((int)Win32Error.ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
     }
 
     /// <summary>Captures the complete active topology in a serializable profile.</summary>
@@ -259,26 +252,23 @@ public static partial class DisplayTopology
             PathInfo[] paths = new PathInfo[pathCount];
             ModeInfo[] modes = new ModeInfo[modeCount];
             status = QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);
-            if (status == ErrorInsufficientBuffer) { continue; }
+            if (status == Win32Error.ErrorInsufficientBuffer) { continue; }
             if (status != 0) { throw new Win32Exception(status, "Display topology query failed."); }
             if (pathCount != paths.Length) { Array.Resize(ref paths, checked((int)pathCount)); }
             if (modeCount != modes.Length) { Array.Resize(ref modes, checked((int)modeCount)); }
             return new(paths, modes);
         }
-        throw new Win32Exception(ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
+        throw new Win32Exception((int)Win32Error.ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
     }
 
     private static unsafe DisplayTargetIdentity ReadTarget(PathInfo path)
     {
-        TargetDeviceName target = new()
-        {
-            Header = new() { Type = GetTargetName, Size = (uint)Marshal.SizeOf<TargetDeviceName>(), AdapterId = path.TargetInfo.AdapterId, Id = path.TargetInfo.Id }
-        };
+        TargetDeviceName target = new() { Header = Header<TargetDeviceName>(GetTargetName, path.TargetInfo.AdapterId, path.TargetInfo.Id) };
         int status = DisplayConfigGetDeviceInfo(ref target);
         if (status != 0) { throw new Win32Exception(status, "Display target identity query failed."); }
         bool edidValid = (target.Flags & 0x2) != 0;
-        return new(Read(target.MonitorDevicePath, 128), edidValid ? target.EdidManufacturerId : null,
-            edidValid ? target.EdidProductCodeId : null, Read(target.MonitorFriendlyDeviceName, 64),
+        return new(NativeText.ReadFixed(target.MonitorDevicePath, 128), edidValid ? target.EdidManufacturerId : null,
+            edidValid ? target.EdidProductCodeId : null, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
             path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
     }
 
@@ -354,12 +344,9 @@ public static partial class DisplayTopology
         return false;
     }
 
-    private static unsafe string Read(char* value, int capacity)
-    {
-        int length = 0;
-        while (length < capacity && value[length] != '\0') { length++; }
-        return new string(value, 0, length);
-    }
+    /// <summary>Builds the header every CCD device-info packet starts with.</summary>
+    internal static DeviceInfoHeader Header<T>(int type, Luid adapter, uint id) where T : struct
+        => new() { Type = type, Size = (uint)Marshal.SizeOf<T>(), AdapterId = adapter, Id = id };
 
     // The native CCD shapes are internal rather than private so the layout editor beside this class
     // can build a supplied configuration from the same declarations. One decoded layout, one set of
@@ -405,12 +392,6 @@ public static partial class DisplayTopology
         public fixed char MonitorFriendlyDeviceName[64];
         public fixed char MonitorDevicePath[128];
     }
-
-    /// <summary>Reads a fixed-width native string, which is not always terminated.</summary>
-    /// <param name="value">Pointer to the first character.</param>
-    /// <param name="capacity">Maximum characters to read.</param>
-    /// <returns>The string up to its terminator or capacity.</returns>
-    internal static unsafe string ReadNativeString(char* value, int capacity) => Read(value, capacity);
 
     [LibraryImport("user32.dll")] internal static partial int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
     [LibraryImport("user32.dll")]

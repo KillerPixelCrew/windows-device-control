@@ -132,7 +132,6 @@ public static class DisplayLayouts
     private const uint TargetModeInfo = 2;
     private const uint PixelFormat32Bpp = 4;
     private const int GetSourceName = 1;
-    private const int ErrorInsufficientBuffer = 122;
 
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
     /// <returns>The observation and its fingerprint.</returns>
@@ -411,20 +410,14 @@ public static class DisplayLayouts
     {
         DisplayTopology.TargetDeviceName target = new()
         {
-            Header = new()
-            {
-                Type = 2,
-                Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DisplayTopology.TargetDeviceName>(),
-                AdapterId = path.TargetInfo.AdapterId,
-                Id = path.TargetInfo.Id,
-            },
+            Header = DisplayTopology.Header<DisplayTopology.TargetDeviceName>(2, path.TargetInfo.AdapterId, path.TargetInfo.Id),
         };
         int status = DisplayTopology.DisplayConfigGetDeviceInfo(ref target);
         if (status != 0) { throw new Win32Exception(status, "Display target identity query failed."); }
         bool edidValid = (target.Flags & 0x2) != 0;
-        return new(DisplayTopology.ReadNativeString(target.MonitorDevicePath, 128),
+        return new(NativeText.ReadFixed(target.MonitorDevicePath, 128),
             edidValid ? target.EdidManufacturerId : null, edidValid ? target.EdidProductCodeId : null,
-            DisplayTopology.ReadNativeString(target.MonitorFriendlyDeviceName, 64),
+            NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
             path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
     }
 
@@ -452,13 +445,13 @@ public static class DisplayLayouts
             DisplayTopology.PathInfo[] paths = new DisplayTopology.PathInfo[pathCount];
             DisplayTopology.ModeInfo[] modes = new DisplayTopology.ModeInfo[modeCount];
             status = DisplayTopology.QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, 0);
-            if (status == ErrorInsufficientBuffer) { continue; }
+            if (status == Win32Error.ErrorInsufficientBuffer) { continue; }
             if (status != 0) { throw new Win32Exception(status, "Display topology query failed."); }
             if (pathCount != paths.Length) { Array.Resize(ref paths, checked((int)pathCount)); }
             if (modeCount != modes.Length) { Array.Resize(ref modes, checked((int)modeCount)); }
             return (paths, modes);
         }
-        throw new Win32Exception(ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
+        throw new Win32Exception((int)Win32Error.ErrorInsufficientBuffer, "Display topology changed repeatedly during capture.");
     }
 
     private static string Bound(string value) => value.Length <= 512 ? value : value[..512];

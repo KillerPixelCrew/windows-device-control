@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace WindowsDeviceControl;
@@ -20,12 +19,11 @@ namespace WindowsDeviceControl;
 /// every call; callers translate that into an absent control, never an error state.
 /// </para>
 /// </remarks>
-public static partial class Backlight
+public static class Backlight
 {
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
     private const uint ShareReadWrite = 0x00000003;
-    private const uint OpenExisting = 3;
 
     private const uint IoctlVideoQueryDisplayBrightness = 0x230498;
     private const uint IoctlVideoSetDisplayBrightness = 0x23049C;
@@ -47,7 +45,7 @@ public static partial class Backlight
 
         // DISPLAY_BRIGHTNESS: ucDisplayPolicy, ucACBrightness, ucDCBrightness.
         byte* buffer = stackalloc byte[3];
-        if (!DeviceIoControl(
+        if (!Kernel32.DeviceIoControl(
                 device,
                 IoctlVideoQueryDisplayBrightness,
                 0,
@@ -82,7 +80,7 @@ public static partial class Backlight
         request[0] = PolicyBoth;
         request[1] = level;
         request[2] = level;
-        return DeviceIoControl(
+        return Kernel32.DeviceIoControl(
             device,
             IoctlVideoSetDisplayBrightness,
             (nint)request,
@@ -93,24 +91,12 @@ public static partial class Backlight
             0);
     }
 
-    private static SafeFileHandle OpenLcd() => CreateFileW(
+    private static SafeFileHandle OpenLcd() => Kernel32.CreateFile(
         @"\\.\LCD",
         GenericRead | GenericWrite,
         ShareReadWrite,
         0,
-        OpenExisting,
+        Kernel32.OpenExisting,
         0,
         0);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
-        StringMarshalling = StringMarshalling.Utf16)]
-    private static partial SafeFileHandle CreateFileW(
-        string fileName, uint desiredAccess, uint shareMode, nint securityAttributes,
-        uint creationDisposition, uint flagsAndAttributes, nint templateFile);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeviceIoControl(
-        SafeFileHandle device, uint ioControlCode, nint inBuffer, uint inBufferSize,
-        nint outBuffer, uint outBufferSize, out uint bytesReturned, nint overlapped);
 }

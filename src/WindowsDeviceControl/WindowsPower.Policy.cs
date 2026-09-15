@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 

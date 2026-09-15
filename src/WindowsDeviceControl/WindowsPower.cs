@@ -1,16 +1,13 @@
 using System;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
+using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 
 /// <summary>Owns powrprof buffers and preserves native failures as Win32Exception codes.</summary>
 public static partial class WindowsPower
 {
-    private const uint ErrorNoMoreItems = 259;
-    private const uint ErrorMoreData = 234;
-    private const uint ErrorInvalidData = 13;
     private const uint AccessScheme = 16;
     private const uint MaximumNameBytes = 65536;
 
@@ -106,16 +103,6 @@ public static partial class WindowsPower
     /// <param name="id">Installed scheme identity.</param>
     public static void SetActiveScheme(Guid id) => Check(PowerSetActiveScheme(0, in id), "PowerSetActiveScheme");
 
-    private static void Check(uint status, string operation)
-    {
-        if (status != 0)
-        {
-            throw Failure(status, operation);
-        }
-    }
-
-    private static Win32Exception Failure(uint status, string operation)
-        => new(unchecked((int)status), $"{operation} failed (status {status}).");
     [LibraryImport("powrprof.dll")]
     private static partial uint PowerGetActiveScheme(nint userRootPowerKey, out nint activePolicyGuid);
 

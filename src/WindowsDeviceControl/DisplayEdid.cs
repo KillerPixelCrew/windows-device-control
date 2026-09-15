@@ -20,8 +20,7 @@ public static class DisplayEdid
         ArgumentNullException.ThrowIfNull(target);
         if (string.IsNullOrEmpty(target.DevicePath)) { return []; }
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
-        DisplayMonitor monitor = DisplayMonitor.FromInterfaceIdAsync(target.DevicePath)
-            .AsTask(timeout.Token).GetAwaiter().GetResult();
+        DisplayMonitor monitor = DisplayMonitor.FromInterfaceIdAsync(target.DevicePath).WaitWinRt(timeout.Token);
         return Parse(monitor.GetDescriptor(DisplayMonitorDescriptorKind.Edid));
     }
 

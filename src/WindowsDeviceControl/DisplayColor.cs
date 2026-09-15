@@ -61,13 +61,7 @@ public static partial class DisplayColor
 
         AdvancedColorState packet = new()
         {
-            Header = new()
-            {
-                Type = SetAdvancedColorState,
-                Size = (uint)Marshal.SizeOf<AdvancedColorState>(),
-                AdapterId = adapter,
-                Id = id,
-            },
+            Header = DisplayTopology.Header<AdvancedColorState>(SetAdvancedColorState, adapter, id),
             EnableAdvancedColor = enabled ? 1u : 0u,
         };
         int status = DisplayConfigSetDeviceInfo(ref packet);
@@ -85,13 +79,7 @@ public static partial class DisplayColor
     {
         AdvancedColorInfo packet = new()
         {
-            Header = new()
-            {
-                Type = GetAdvancedColorInfo,
-                Size = (uint)Marshal.SizeOf<AdvancedColorInfo>(),
-                AdapterId = adapter,
-                Id = id,
-            },
+            Header = DisplayTopology.Header<AdvancedColorInfo>(GetAdvancedColorInfo, adapter, id),
         };
         if (DisplayConfigGetDeviceInfo(ref packet) != 0)
         {

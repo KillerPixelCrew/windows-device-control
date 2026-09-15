@@ -43,6 +43,8 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
+- `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
+  that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `tests/WindowsDeviceControl.Tests/SafetyTests.cs`: deterministic safety and rollback contracts.
 

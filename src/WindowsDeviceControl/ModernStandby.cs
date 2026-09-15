@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
+using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 
@@ -375,25 +376,12 @@ public static partial class ModernStandby
     }
 
     private const uint MaximumDevices = 4096;
-    private const uint ErrorInvalidData = 13;
-    private const uint ErrorNoMoreItems = 259;
 
     /// <summary>POWER_INFORMATION_LEVEL.LastWakeTime; interrupt time at the last wake.</summary>
     private const uint LastWakeTime = 14;
 
     /// <summary>POWER_INFORMATION_LEVEL.LastSleepTime; interrupt time at the last sleep.</summary>
     private const uint LastSleepTime = 15;
-
-    private static void Check(uint status, string operation)
-    {
-        if (status != 0)
-        {
-            throw Failure(status, operation);
-        }
-    }
-
-    private static Win32Exception Failure(uint status, string operation)
-        => new(unchecked((int)status), $"{operation} failed (status {status}).");
 
     [LibraryImport("powrprof.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.U1)]

@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 
@@ -86,8 +87,6 @@ public static partial class WindowsPower
     /// <summary>Heterogeneous short-running thread scheduling policy setting (SHORTSCHEDPOLICY).</summary>
     public static readonly Guid SettingShortThreadSchedulingPolicy = new("bae08b81-2d5e-4688-ad6a-13243356654b");
 
-    private const uint ErrorFileNotFound = 2;
-    private const uint ErrorInsufficientBuffer = 122;
     private const uint RegDword = 4;
     private const uint CpuSetInformationType = 0;
     private const int CpuSetHeaderBytes = 8;

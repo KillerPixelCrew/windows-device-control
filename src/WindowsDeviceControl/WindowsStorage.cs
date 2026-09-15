@@ -114,14 +114,14 @@ public static class WindowsStorage
             return -1;
         }
 
-        using SafeFileHandle volume = CreateFileW(
+        using SafeFileHandle volume = Kernel32.CreateFile(
             $@"\\.\{char.ToUpperInvariant(letter)}:",
             0,
             FileShareRead | FileShareWrite,
-            IntPtr.Zero,
-            OpenExisting,
             0,
-            IntPtr.Zero);
+            Kernel32.OpenExisting,
+            0,
+            0);
         if (volume.IsInvalid)
         {
             return -1;
@@ -135,8 +135,8 @@ public static class WindowsStorage
         // STORAGE_DEVICE_NUMBER: DEVICE_TYPE DeviceType; ULONG DeviceNumber; ULONG PartitionNumber.
         const int recordSize = 12;
         byte* buffer = stackalloc byte[recordSize];
-        if (!DeviceIoControl(volume, IoctlStorageGetDeviceNumber, IntPtr.Zero, 0, (IntPtr)buffer,
-                recordSize, out uint written, IntPtr.Zero)
+        if (!Kernel32.DeviceIoControl(volume, IoctlStorageGetDeviceNumber, 0, 0, (nint)buffer,
+                recordSize, out uint written, 0)
             || written < recordSize)
         {
             return -1;
@@ -144,26 +144,4 @@ public static class WindowsStorage
 
         return MemoryMarshal.Read<int>(new ReadOnlySpan<byte>(buffer + 4, sizeof(int)));
     }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(
-        string fileName,
-        uint desiredAccess,
-        uint shareMode,
-        IntPtr securityAttributes,
-        uint creationDisposition,
-        uint flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeviceIoControl(
-        SafeFileHandle device,
-        uint controlCode,
-        IntPtr inBuffer,
-        uint inBufferSize,
-        IntPtr outBuffer,
-        uint outBufferSize,
-        out uint bytesReturned,
-        IntPtr overlapped);
 }
