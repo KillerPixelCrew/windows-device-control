@@ -98,7 +98,12 @@ public static partial class CoreAudio
         internal readonly uint PropertyId = propertyId;
     }
 
-    [StructLayout(LayoutKind.Explicit)]
+    // PROPVARIANT is 24 bytes on x64: an 8-byte vt and reserved header plus a 16-byte union, whose
+    // widest arms are DECIMAL and the counted arrays. The two declared fields alone make the managed
+    // struct 16 bytes, and it is blittable, so GetValue writes 24 bytes into whatever 16-byte local
+    // the caller allocated and overwrites the rest of that stack frame. The explicit size is the
+    // whole fix; the trailing bytes are never read here.
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
     private readonly struct PropVariant
     {
         [FieldOffset(0)]
