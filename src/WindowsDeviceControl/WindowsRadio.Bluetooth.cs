@@ -134,7 +134,10 @@ public static partial class WindowsRadio
 
     /// <summary>Starts a live feed of Bluetooth device changes.</summary>
     /// <param name="onChange">Called for each change. Raised on a Windows device-watcher thread,
-    /// not the caller's — marshal to your UI thread before touching UI state.</param>
+    /// not the caller's. Post to your UI thread rather than waiting on it: the callback runs under
+    /// the lock <see cref="StopBluetoothWatch"/> takes, so a synchronous wait on a thread that stops
+    /// the watch deadlocks. Exceptions it throws are swallowed, because an exception escaping a
+    /// WinRT watcher thread terminates the process.</param>
     /// <remarks>
     /// Starting again replaces the previous feed rather than adding a second one, so this is safe
     /// to call on every screen entry. The initial sweep reports everything already present as
@@ -231,7 +234,7 @@ public static partial class WindowsRadio
                 return;
             }
             watch.Records[info.Id] = info;
-            watch.Callback(new BluetoothChange(
+            RaiseBluetoothChange(watch, new BluetoothChange(
                 BluetoothChangeKind.Added,
                 ReadBluetoothDevice(info)));
         }
@@ -250,7 +253,7 @@ public static partial class WindowsRadio
             if (watch.Records.TryGetValue(update.Id, out var info))
             {
                 info.Update(update);
-                watch.Callback(new BluetoothChange(
+                RaiseBluetoothChange(watch, new BluetoothChange(
                     BluetoothChangeKind.Updated,
                     ReadBluetoothDevice(info)));
                 return;
@@ -268,7 +271,7 @@ public static partial class WindowsRadio
                     return;
                 }
                 watch.Records[resolved.Id] = resolved;
-                watch.Callback(new BluetoothChange(
+                RaiseBluetoothChange(watch, new BluetoothChange(
                     BluetoothChangeKind.Updated,
                     ReadBluetoothDevice(resolved)));
             }
@@ -290,8 +293,22 @@ public static partial class WindowsRadio
                 return;
             }
             watch.Records.Remove(update.Id);
-            watch.Callback(new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
+            RaiseBluetoothChange(watch, new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
                 update.Id, string.Empty, false, false, false, string.Empty)));
+        }
+    }
+
+    // Callers hold BluetoothWatchLock. An exception escaping a WinRT DeviceWatcher thread ends the
+    // process, and a consumer that posts to a dispatcher that is shutting down throws exactly then.
+    private static void RaiseBluetoothChange(BluetoothWatch watch, BluetoothChange change)
+    {
+        try
+        {
+            watch.Callback(change);
+        }
+        catch
+        {
+            // Documented on StartBluetoothWatch: consumer exceptions are swallowed.
         }
     }
 
@@ -301,7 +318,7 @@ public static partial class WindowsRadio
         {
             if (ReferenceEquals(_bluetoothWatch, watch))
             {
-                watch.Callback(change);
+                RaiseBluetoothChange(watch, change);
             }
         }
     }
