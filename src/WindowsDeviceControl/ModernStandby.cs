@@ -112,6 +112,12 @@ public static partial class ModernStandby
     private const uint SetWakeEnabled = 0x00000001;
     private const uint ClearWakeEnabled = 0x00000002;
 
+    // DevicePowerOpen/DevicePowerClose open and close one process-global device list. Without a
+    // gate, one caller's close can pull the list out from under another's enumeration, which reads
+    // as an empty snapshot (and a restore that silently does nothing) or a mid-restore throw.
+    // Reentrant, so a restore can hold it across its own enumerate-then-write calls.
+    private static readonly object WakeDeviceGate = new();
+
     /// <summary>Bounded buffer for one device description; Windows names are far below this.</summary>
     private const uint MaximumNameBytes = 4096;
 
@@ -171,6 +177,14 @@ public static partial class ModernStandby
     /// <returns>The actionable wake sources present on the machine.</returns>
     public static IReadOnlyList<WakeDevice> EnumerateWakeDevices()
     {
+        lock (WakeDeviceGate)
+        {
+            return EnumerateWakeDevicesCore();
+        }
+    }
+
+    private static IReadOnlyList<WakeDevice> EnumerateWakeDevicesCore()
+    {
         if (!DevicePowerOpen(0))
         {
             throw Failure((uint)Marshal.GetLastWin32Error(), "DevicePowerOpen");
@@ -221,26 +235,31 @@ public static partial class ModernStandby
     public static bool TrySetWakeArmed(string name, bool armed)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        foreach (WakeDevice device in EnumerateWakeDevices())
+        // Held across the programmability re-read and the write, so the check still describes the
+        // device when the write lands.
+        lock (WakeDeviceGate)
         {
-            if (!string.Equals(device.Name, name, StringComparison.Ordinal))
+            foreach (WakeDevice device in EnumerateWakeDevicesCore())
             {
-                continue;
-            }
-            if (device.Control != WakeDeviceControl.Programmable)
-            {
-                return false;
-            }
-            if (device.Armed == armed)
-            {
+                if (!string.Equals(device.Name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (device.Control != WakeDeviceControl.Programmable)
+                {
+                    return false;
+                }
+                if (device.Armed == armed)
+                {
+                    return true;
+                }
+                Check(
+                    DevicePowerSetDeviceState(name, armed ? SetWakeEnabled : ClearWakeEnabled, 0),
+                    "DevicePowerSetDeviceState");
                 return true;
             }
-            Check(
-                DevicePowerSetDeviceState(name, armed ? SetWakeEnabled : ClearWakeEnabled, 0),
-                "DevicePowerSetDeviceState");
-            return true;
+            return false;
         }
-        return false;
     }
 
     /// <summary>Captures the current arming so it can be restored later.</summary>
@@ -270,9 +289,12 @@ public static partial class ModernStandby
     public static void RestoreWakeDevices(WakeDeviceSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        foreach ((string name, bool armed) in RestorePlan(EnumerateWakeDevices(), snapshot))
+        lock (WakeDeviceGate)
         {
-            TrySetWakeArmed(name, armed);
+            foreach ((string name, bool armed) in RestorePlan(EnumerateWakeDevicesCore(), snapshot))
+            {
+                TrySetWakeArmed(name, armed);
+            }
         }
     }
 
