@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Runtime.InteropServices;
 
@@ -36,7 +37,19 @@ public static partial class DisplayModes
         ArgumentNullException.ThrowIfNull(target);
         lock (Gate)
         {
-            var path = Find(target);
+            // Find walks every active path, and one unreadable target (Miracast, indirect,
+            // virtual) throws out of that walk even when it is not the target being read. The
+            // contract above is null for an unreadable target, not an exception for every read;
+            // DisplayLayouts.Observe catches per target for the same reason.
+            ActiveDisplayPath? path;
+            try
+            {
+                path = Find(target);
+            }
+            catch (Win32Exception)
+            {
+                return null;
+            }
             if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current)) { return null; }
             HashSet<DisplayMode> supported = [];
             for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
@@ -48,7 +61,16 @@ public static partial class DisplayModes
                 mode.Fields = ModeFields;
                 if (Change(path.SourceName, ref mode, 2) == 0) { supported.Add(projected); }
             }
-            if (!SameRoute(path, Find(target))) { return null; }
+            ActiveDisplayPath? after;
+            try
+            {
+                after = Find(target);
+            }
+            catch (Win32Exception)
+            {
+                return null;
+            }
+            if (!SameRoute(path, after)) { return null; }
             return new(path, Project(current), supported.OrderBy(mode => mode.Width)
                 .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
         }
