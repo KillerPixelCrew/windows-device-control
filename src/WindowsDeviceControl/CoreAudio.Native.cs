@@ -16,16 +16,19 @@ public static partial class CoreAudio
     private static IMMDeviceEnumerator? _enumerator;
 
     /// <summary>The process-wide device enumerator, created on first use.</summary>
-    /// <remarks>MMDeviceEnumerator is free-threaded. It is created on a multithreaded-apartment
-    /// thread, so a first call from a UI thread cannot tie it to that thread's message loop. A
-    /// failed creation is not remembered: the next call tries again, as a fresh enumerator per
-    /// call did.</remarks>
+    /// <remarks>
+    ///     MMDeviceEnumerator is free-threaded. It is created on a multithreaded-apartment
+    ///     thread, so a first call from a UI thread cannot tie it to that thread's message loop. A
+    ///     failed creation is not remembered: the next call tries again, as a fresh enumerator per
+    ///     call did.
+    /// </remarks>
     private static IMMDeviceEnumerator Enumerator()
     {
         if (Volatile.Read(ref _enumerator) is { } existing)
         {
             return existing;
         }
+
         lock (EnumeratorGate)
         {
             return _enumerator ??= Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA
@@ -35,10 +38,14 @@ public static partial class CoreAudio
     }
 
     private static IMMDeviceEnumerator CreateEnumerator()
-        => (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
+    {
+        return (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
+    }
 
-    /// <summary>Activates one interface on a device. An activation that succeeds without exposing
-    /// <typeparamref name="T"/> is released and leaves the instance null.</summary>
+    /// <summary>
+    ///     Activates one interface on a device. An activation that succeeds without exposing
+    ///     <typeparamref name="T" /> is released and leaves the instance null.
+    /// </summary>
     private static int Activate<T>(IMMDevice device, Guid interfaceId, out T? instance)
         where T : class
     {
@@ -48,11 +55,14 @@ public static partial class CoreAudio
         {
             Release(activated);
         }
+
         return result;
     }
 
-    /// <summary>Reads one endpoint property, clearing the variant and releasing the store before
-    /// returning.</summary>
+    /// <summary>
+    ///     Reads one endpoint property, clearing the variant and releasing the store before
+    ///     returning.
+    /// </summary>
     private static string? ReadStringProperty(
         IMMDevice endpoint,
         PropertyKey key,
@@ -63,7 +73,8 @@ public static partial class CoreAudio
         try
         {
             return endpoint.OpenPropertyStore(StorageModeRead, out store) >= 0 && store is not null
-                && store.GetValue(ref key, out value) >= 0
+                                                                               && store.GetValue(ref key, out value) >=
+                                                                               0
                 ? read(value)
                 : null;
         }
@@ -93,7 +104,7 @@ public static partial class CoreAudio
     private enum DataFlow
     {
         Render,
-        Capture,
+        Capture
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -111,11 +122,9 @@ public static partial class CoreAudio
     [StructLayout(LayoutKind.Explicit, Size = 24)]
     private readonly struct PropVariant
     {
-        [FieldOffset(0)]
-        private readonly ushort _variantType;
+        [FieldOffset(0)] private readonly ushort _variantType;
 
-        [FieldOffset(8)]
-        private readonly nint _pointerValue;
+        [FieldOffset(8)] private readonly nint _pointerValue;
 
         internal string? StringValue
             => _variantType == 31 && _pointerValue != 0

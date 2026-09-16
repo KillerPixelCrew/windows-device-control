@@ -19,8 +19,7 @@ public sealed class WindowsRadioTests
     [Fact]
     public void InvalidRadioKindIsRejectedBeforeEnumeration()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => WindowsRadio.GetPower((WindowsRadio.RadioKind)int.MaxValue));
+        Assert.Throws<ArgumentOutOfRangeException>(() => WindowsRadio.GetPower((WindowsRadio.RadioKind)int.MaxValue));
     }
 
     [Fact]
@@ -28,7 +27,7 @@ public sealed class WindowsRadioTests
     {
         Assert.Equal(
             WindowsRadio.WifiSecurity.Unsupported,
-            WindowsRadio.ClassifySecurity(secured: true, auth: int.MaxValue));
+            WindowsRadio.ClassifySecurity(true, int.MaxValue));
     }
 
     [Fact]
@@ -38,7 +37,7 @@ public sealed class WindowsRadioTests
         const string xml = "<WLANProfile><SSIDConfig /></WLANProfile>";
         var profiles = new[]
         {
-            new WindowsRadio.SavedProfile("network", target, xml),
+            new WindowsRadio.SavedProfile("network", target, xml)
         };
 
         var mutation = WindowsRadio.FindFreeProfileName(profiles, "network", target);
@@ -54,7 +53,7 @@ public sealed class WindowsRadioTests
         var target = new byte[] { 1, 2, 3 };
         var profiles = new[]
         {
-            new WindowsRadio.SavedProfile("network", null, null),
+            new WindowsRadio.SavedProfile("network", null, null)
         };
 
         var mutation = WindowsRadio.FindFreeProfileName(profiles, "network", target);
@@ -73,8 +72,7 @@ public sealed class WindowsRadioTests
                 $"<profile>{index}</profile>"))
             .ToArray();
 
-        Assert.Throws<InvalidOperationException>(
-            () => WindowsRadio.FindFreeProfileName(profiles, "network", [0]));
+        Assert.Throws<InvalidOperationException>(() => WindowsRadio.FindFreeProfileName(profiles, "network", [0]));
     }
 
     [Fact]
@@ -82,12 +80,12 @@ public sealed class WindowsRadioTests
     {
         var first = Facts(
             WindowsRadio.WifiSecurity.PersonalPsk,
-            authentication: 7,
-            profile: "network");
+            7,
+            "network");
         var second = Facts(
             WindowsRadio.WifiSecurity.Open,
-            authentication: 1,
-            profile: "network 2");
+            1,
+            "network 2");
 
         var merged = WindowsRadio.MergeNetworkFacts(first, second);
 
@@ -101,16 +99,16 @@ public sealed class WindowsRadioTests
     public void ExistingSsidAmbiguityCannotBeResetByLaterObservation()
     {
         var ambiguous = Facts(
-            WindowsRadio.WifiSecurity.PersonalPsk,
-            authentication: 7,
-            profile: "network") with
-        {
-            Ambiguous = true,
-        };
+                WindowsRadio.WifiSecurity.PersonalPsk,
+                7,
+                "network") with
+            {
+                Ambiguous = true
+            };
         var compatible = Facts(
             WindowsRadio.WifiSecurity.PersonalPsk,
-            authentication: 7,
-            profile: "network");
+            7,
+            "network");
 
         var merged = WindowsRadio.MergeNetworkFacts(ambiguous, compatible);
 
@@ -130,21 +128,22 @@ public sealed class WindowsRadioTests
             "le-id",
             new Dictionary<string, object> { [property] = container.ToString("B") });
 
-        Assert.Equal(fromClassic, fromLowEnergy, ignoreCase: true);
+        Assert.Equal(fromClassic, fromLowEnergy, true);
     }
 
     [Fact]
     public void UnknownPairingResponseIsIdempotent()
     {
-        WindowsRadio.RespondToPairing(uint.MaxValue, accept: false, pin: null);
-        WindowsRadio.RespondToPairing(uint.MaxValue, accept: false, pin: null);
+        WindowsRadio.RespondToPairing(uint.MaxValue, false, null);
+        WindowsRadio.RespondToPairing(uint.MaxValue, false, null);
     }
 
     private static WindowsRadio.WifiNetworkFacts Facts(
         WindowsRadio.WifiSecurity security,
         int authentication,
         string profile)
-        => new(
+    {
+        return new WindowsRadio.WifiNetworkFacts(
             "network",
             [1, 2, 3],
             50,
@@ -155,4 +154,5 @@ public sealed class WindowsRadioTests
             false,
             profile,
             false);
+    }
 }

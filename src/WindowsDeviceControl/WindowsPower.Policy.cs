@@ -14,8 +14,8 @@ public static partial class WindowsPower
     /// <returns>The raw Windows policy value in the setting's units.</returns>
     public static uint ReadSetting(Guid scheme, Guid subgroup, Guid setting, bool onBattery)
     {
-        uint status = onBattery
-            ? PowerReadDCValueIndex(0, in scheme, in subgroup, in setting, out uint value)
+        var status = onBattery
+            ? PowerReadDCValueIndex(0, in scheme, in subgroup, in setting, out var value)
             : PowerReadACValueIndex(0, in scheme, in subgroup, in setting, out value);
         Check(status, "Read power setting");
         return value;
@@ -28,20 +28,26 @@ public static partial class WindowsPower
     /// <param name="onBattery">True selects DC; false selects AC.</param>
     /// <param name="value">Raw value in the setting's units.</param>
     public static void WriteSetting(Guid scheme, Guid subgroup, Guid setting, bool onBattery, uint value)
-        => Check(onBattery ? PowerWriteDCValueIndex(0, in scheme, in subgroup, in setting, value)
+    {
+        Check(onBattery
+            ? PowerWriteDCValueIndex(0, in scheme, in subgroup, in setting, value)
             : PowerWriteACValueIndex(0, in scheme, in subgroup, in setting, value), "Write power setting");
+    }
 
     /// <summary>Reads the effective Windows power-mode overlay. Guid.Empty denotes Balanced.</summary>
     /// <returns>The effective overlay identity; native failures throw Win32Exception.</returns>
     public static Guid GetEffectiveMode()
     {
-        Check(PowerGetEffectiveOverlayScheme(out Guid mode), "Read effective power mode");
+        Check(PowerGetEffectiveOverlayScheme(out var mode), "Read effective power mode");
         return mode;
     }
 
     /// <summary>Requests a power-mode overlay once. Read back to confirm application.</summary>
     /// <param name="mode">Overlay identity, or Guid.Empty for Balanced.</param>
-    public static void SetActiveMode(Guid mode) => Check(PowerSetActiveOverlayScheme(mode), "Set power mode");
+    public static void SetActiveMode(Guid mode)
+    {
+        Check(PowerSetActiveOverlayScheme(mode), "Set power mode");
+    }
 
     [LibraryImport("powrprof.dll")]
     private static partial uint PowerGetEffectiveOverlayScheme(out Guid mode);

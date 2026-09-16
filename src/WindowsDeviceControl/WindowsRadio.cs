@@ -1,56 +1,58 @@
-
 namespace WindowsDeviceControl;
 
 /// <summary>Windows radio control: adapter power, Bluetooth discovery and pairing, and Wi-Fi.</summary>
 /// <remarks>
-/// WinRT owns radio power and Bluetooth. Wi-Fi goes through WLANAPI rather than WinRT's
-/// <c>WiFiAdapter</c>, because an unpackaged process cannot declare the <c>wiFiControl</c>
-/// capability WinRT requires — which is why an unpackaged desktop, kiosk or service application
-/// cannot use the WinRT Wi-Fi surface at all.
-/// <para>
-/// Every member is synchronous and safe to call from any thread. Windows itself decides what a
-/// given process may do: <see cref="RequestAccess"/> reports whether radio power may be changed,
-/// and <see cref="GetConsent"/> reports the privacy consent recorded for a capability.
-/// </para>
+///     WinRT owns radio power and Bluetooth. Wi-Fi goes through WLANAPI rather than WinRT's
+///     <c>WiFiAdapter</c>, because an unpackaged process cannot declare the <c>wiFiControl</c>
+///     capability WinRT requires — which is why an unpackaged desktop, kiosk or service application
+///     cannot use the WinRT Wi-Fi surface at all.
+///     <para>
+///         Every member is synchronous and safe to call from any thread. Windows itself decides what a
+///         given process may do: <see cref="RequestAccess" /> reports whether radio power may be changed,
+///         and <see cref="GetConsent" /> reports the privacy consent recorded for a capability.
+///     </para>
 /// </remarks>
 public static partial class WindowsRadio
 {
-    /// <summary>The result of a radio power query.</summary>
-    public enum Power
-    {
-        /// <summary>At least one adapter of this kind is on.</summary>
-        On,
-
-        /// <summary>Every adapter of this kind is off, and can be turned back on.</summary>
-        Off,
-
-        /// <summary>Blocked by the system — typically a hardware switch or airplane mode. Turning
-        /// it on will not succeed until whatever disabled it is reversed.</summary>
-        Disabled,
-
-        /// <summary>Present, but Windows did not report a state this API recognizes.</summary>
-        Unknown,
-
-        /// <summary>No adapter of this kind exists on the machine.</summary>
-        Absent,
-    }
-
     /// <summary>Whether Windows permits radio power changes.</summary>
     public enum Access
     {
         /// <summary>This process may change radio power.</summary>
         Allowed,
 
-        /// <summary>The user has denied radio control to this application in privacy settings.
-        /// No retry will succeed until the user changes that.</summary>
+        /// <summary>
+        ///     The user has denied radio control to this application in privacy settings.
+        ///     No retry will succeed until the user changes that.
+        /// </summary>
         DeniedByUser,
 
-        /// <summary>Policy or device configuration denies radio control to every application —
-        /// commonly a managed or kiosk-provisioned machine.</summary>
+        /// <summary>
+        ///     Policy or device configuration denies radio control to every application —
+        ///     commonly a managed or kiosk-provisioned machine.
+        /// </summary>
         DeniedBySystem,
 
         /// <summary>Windows answered without a reason. Treat as denied, but not permanently.</summary>
-        Unspecified,
+        Unspecified
+    }
+
+    /// <summary>What happened to a device seen by <see cref="StartBluetoothWatch" />.</summary>
+    public enum BluetoothChangeKind
+    {
+        /// <summary>The device appeared.</summary>
+        Added,
+
+        /// <summary>A property of a known device changed — typically its connected state.</summary>
+        Updated,
+
+        /// <summary>The device disappeared. Only its identifier is meaningful.</summary>
+        Removed,
+
+        /// <summary>
+        ///     The initial sweep finished; everything already present has been reported.
+        ///     The watch stays active and keeps reporting later changes.
+        /// </summary>
+        EnumerationCompleted
     }
 
     /// <summary>The privacy consent value reported by the diagnostic registry store.</summary>
@@ -66,41 +68,14 @@ public static partial class WindowsRadio
         Unset,
 
         /// <summary>The consent store could not be read.</summary>
-        Unknown,
-    }
-
-    /// <summary>Which family of radio adapter an operation applies to.</summary>
-    public enum RadioKind
-    {
-        /// <summary>Every Wi-Fi adapter.</summary>
-        WiFi,
-
-        /// <summary>Every Bluetooth adapter.</summary>
-        Bluetooth,
-    }
-
-    /// <summary>What happened to a device seen by <see cref="StartBluetoothWatch"/>.</summary>
-    public enum BluetoothChangeKind
-    {
-        /// <summary>The device appeared.</summary>
-        Added,
-
-        /// <summary>A property of a known device changed — typically its connected state.</summary>
-        Updated,
-
-        /// <summary>The device disappeared. Only its identifier is meaningful.</summary>
-        Removed,
-
-        /// <summary>The initial sweep finished; everything already present has been reported.
-        /// The watch stays active and keeps reporting later changes.</summary>
-        EnumerationCompleted,
+        Unknown
     }
 
     /// <summary>What a pairing ceremony is asking the user to do.</summary>
     /// <remarks>
-    /// The value decides what your UI must show and what
-    /// <see cref="RespondToPairing"/> needs back: only <see cref="ProvidePin"/> requires a PIN
-    /// argument, and the others are answered with accept or reject alone.
+    ///     The value decides what your UI must show and what
+    ///     <see cref="RespondToPairing" /> needs back: only <see cref="ProvidePin" /> requires a PIN
+    ///     argument, and the others are answered with accept or reject alone.
     /// </remarks>
     public enum PairingKind
     {
@@ -117,7 +92,7 @@ public static partial class WindowsRadio
         ConfirmPinMatch,
 
         /// <summary>A ceremony this library does not recognize. Reject it.</summary>
-        Unknown,
+        Unknown
     }
 
     /// <summary>How a pairing attempt ended.</summary>
@@ -132,39 +107,55 @@ public static partial class WindowsRadio
         /// <summary>Cancelled — by your handler rejecting it, or by the user.</summary>
         Cancelled,
 
-        /// <summary>The attempt failed: rejected, timed out, out of connections, or a hardware
-        /// or authentication failure.</summary>
+        /// <summary>
+        ///     The attempt failed: rejected, timed out, out of connections, or a hardware
+        ///     or authentication failure.
+        /// </summary>
         Failed,
 
         /// <summary>Windows refused this process permission to pair.</summary>
         AccessDenied,
 
-        /// <summary>Windows reported a status this library does not classify. Consult
-        /// <see cref="PairingResult.RawStatus"/>.</summary>
+        /// <summary>
+        ///     Windows reported a status this library does not classify. Consult
+        ///     <see cref="PairingResult.RawStatus" />.
+        /// </summary>
         Unknown,
 
         /// <summary>Another pairing attempt for this device is already running.</summary>
-        AlreadyInProgress,
+        AlreadyInProgress
     }
 
-    /// <summary>The security a Wi-Fi network requires to join.</summary>
-    public enum WifiSecurity
+    /// <summary>The result of a radio power query.</summary>
+    public enum Power
     {
-        /// <summary>No authentication.</summary>
-        Open,
+        /// <summary>At least one adapter of this kind is on.</summary>
+        On,
 
-        /// <summary>A pre-shared key — the ordinary home and small-office network.</summary>
-        PersonalPsk,
+        /// <summary>Every adapter of this kind is off, and can be turned back on.</summary>
+        Off,
 
-        /// <summary>802.1X enterprise authentication. This library does not build enterprise
-        /// profiles; join these with a profile provisioned by other means.</summary>
-        Enterprise,
+        /// <summary>
+        ///     Blocked by the system — typically a hardware switch or airplane mode. Turning
+        ///     it on will not succeed until whatever disabled it is reversed.
+        /// </summary>
+        Disabled,
 
-        /// <summary>Opportunistic Wireless Encryption: no passphrase, but encrypted.</summary>
-        EnhancedOpen,
+        /// <summary>Present, but Windows did not report a state this API recognizes.</summary>
+        Unknown,
 
-        /// <summary>An authentication algorithm this library cannot build a profile for.</summary>
-        Unsupported,
+        /// <summary>No adapter of this kind exists on the machine.</summary>
+        Absent
+    }
+
+    /// <summary>Which family of radio adapter an operation applies to.</summary>
+    public enum RadioKind
+    {
+        /// <summary>Every Wi-Fi adapter.</summary>
+        WiFi,
+
+        /// <summary>Every Bluetooth adapter.</summary>
+        Bluetooth
     }
 
     /// <summary>The Wi-Fi adapter's connection state.</summary>
@@ -180,57 +171,99 @@ public static partial class WindowsRadio
         Disconnected,
 
         /// <summary>No adapter, or a state this library does not recognize.</summary>
-        Unknown,
+        Unknown
     }
 
-    /// <summary>Why a join attempt failed, reduced to the outcomes a caller acts on
-    /// differently.</summary>
-    /// <remarks>Produced by <see cref="GetReasonVerdict"/> from a raw WLAN reason code. Use
-    /// <see cref="ReasonText"/> when you want Windows' own wording for the specific code.</remarks>
+    /// <summary>
+    ///     Why a join attempt failed, reduced to the outcomes a caller acts on
+    ///     differently.
+    /// </summary>
+    /// <remarks>
+    ///     Produced by <see cref="GetReasonVerdict" /> from a raw WLAN reason code. Use
+    ///     <see cref="ReasonText" /> when you want Windows' own wording for the specific code.
+    /// </remarks>
     public enum WifiFailureKind
     {
         /// <summary>Not a failure — the join succeeded.</summary>
         None,
 
-        /// <summary>The access point rejected the key. This is the one case where re-prompting
-        /// for the passphrase is the right response.</summary>
+        /// <summary>
+        ///     The access point rejected the key. This is the one case where re-prompting
+        ///     for the passphrase is the right response.
+        /// </summary>
         KeyRejected,
 
-        /// <summary>The profile's security settings do not match what the access point offers,
-        /// so the key was never tried. Reported before association completes.</summary>
+        /// <summary>
+        ///     The profile's security settings do not match what the access point offers,
+        ///     so the key was never tried. Reported before association completes.
+        /// </summary>
         SecurityMismatch,
 
-        /// <summary>Association or the connection manager gave up: the network was out of range,
-        /// too weak, or stopped responding. Nothing about the passphrase is implied.</summary>
+        /// <summary>
+        ///     Association or the connection manager gave up: the network was out of range,
+        ///     too weak, or stopped responding. Nothing about the passphrase is implied.
+        /// </summary>
         Unreachable,
 
-        /// <summary>A reason code outside the ranges this library classifies. Show
-        /// <see cref="ReasonText"/> rather than guessing at a cause.</summary>
-        Unknown,
+        /// <summary>
+        ///     A reason code outside the ranges this library classifies. Show
+        ///     <see cref="ReasonText" /> rather than guessing at a cause.
+        /// </summary>
+        Unknown
     }
 
-    /// <summary>What changed, as reported to a <see cref="StartWifiWatch"/> callback.</summary>
-    /// <remarks>Each value says which query is now worth repeating; neither carries the new data
-    /// itself. Windows raises many more notification codes than these, and the rest describe
-    /// internal state transitions that change nothing a caller can observe, so they are dropped
-    /// rather than passed on as callbacks that lead to identical results.</remarks>
+    /// <summary>The security a Wi-Fi network requires to join.</summary>
+    public enum WifiSecurity
+    {
+        /// <summary>No authentication.</summary>
+        Open,
+
+        /// <summary>A pre-shared key — the ordinary home and small-office network.</summary>
+        PersonalPsk,
+
+        /// <summary>
+        ///     802.1X enterprise authentication. This library does not build enterprise
+        ///     profiles; join these with a profile provisioned by other means.
+        /// </summary>
+        Enterprise,
+
+        /// <summary>Opportunistic Wireless Encryption: no passphrase, but encrypted.</summary>
+        EnhancedOpen,
+
+        /// <summary>An authentication algorithm this library cannot build a profile for.</summary>
+        Unsupported
+    }
+
+    /// <summary>What changed, as reported to a <see cref="StartWifiWatch" /> callback.</summary>
+    /// <remarks>
+    ///     Each value says which query is now worth repeating; neither carries the new data
+    ///     itself. Windows raises many more notification codes than these, and the rest describe
+    ///     internal state transitions that change nothing a caller can observe, so they are dropped
+    ///     rather than passed on as callbacks that lead to identical results.
+    /// </remarks>
     public enum WifiWatchEvent
     {
-        /// <summary>A scan finished or the visible-network list changed. Call
-        /// <see cref="ListWifiNetworks"/> for the new results.</summary>
+        /// <summary>
+        ///     A scan finished or the visible-network list changed. Call
+        ///     <see cref="ListWifiNetworks" /> for the new results.
+        /// </summary>
         ScanCompleted,
 
-        /// <summary>The adapter connected or disconnected. Call <see cref="GetWifiStatus"/> for
-        /// the new state. This is also raised when a connection attempt fails.</summary>
-        ConnectionChanged,
+        /// <summary>
+        ///     The adapter connected or disconnected. Call <see cref="GetWifiStatus" /> for
+        ///     the new state. This is also raised when a connection attempt fails.
+        /// </summary>
+        ConnectionChanged
     }
 
     /// <summary>One visible Wi-Fi network.</summary>
     /// <param name="Ssid">The network name. Empty for a hidden network that advertises none.</param>
     /// <param name="Signal">Signal quality, 0 to 100, as Windows reports it.</param>
     /// <param name="Security">What joining it requires.</param>
-    /// <param name="Saved">Whether a profile for it already exists on this machine, in which case
-    /// <see cref="ConnectWifi"/> needs no passphrase.</param>
+    /// <param name="Saved">
+    ///     Whether a profile for it already exists on this machine, in which case
+    ///     <see cref="ConnectWifi" /> needs no passphrase.
+    /// </param>
     /// <param name="Connectable">Whether Windows currently considers it joinable.</param>
     /// <param name="Connected">Whether this is the network the adapter is joined to.</param>
     public readonly record struct WifiNetwork(
@@ -252,10 +285,14 @@ public static partial class WindowsRadio
     /// <param name="Name">The friendly name, for display.</param>
     /// <param name="Paired">Whether the device is already paired with this machine.</param>
     /// <param name="CanPair">Whether Windows considers it pairable right now.</param>
-    /// <param name="Connected">Whether it is currently connected. A device can be paired without
-    /// being connected — a headset that is switched off, for instance.</param>
-    /// <param name="Container">The container identifier, which is what ties this device to its
-    /// audio endpoints in <see cref="CoreAudio.ListBluetoothAudioContainers"/>.</param>
+    /// <param name="Connected">
+    ///     Whether it is currently connected. A device can be paired without
+    ///     being connected — a headset that is switched off, for instance.
+    /// </param>
+    /// <param name="Container">
+    ///     The container identifier, which is what ties this device to its
+    ///     audio endpoints in <see cref="CoreAudio.ListBluetoothAudioContainers" />.
+    /// </param>
     public readonly record struct BluetoothDevice(
         string Id,
         string Name,
@@ -266,14 +303,16 @@ public static partial class WindowsRadio
 
     /// <summary>A Bluetooth discovery change.</summary>
     /// <param name="Kind">What happened to the device.</param>
-    /// <param name="Device">The device it happened to. Only <see cref="BluetoothDevice.Id"/> is
-    /// meaningful when <paramref name="Kind"/> is <see cref="BluetoothChangeKind.Removed"/>, and
-    /// the whole value is default for
-    /// <see cref="BluetoothChangeKind.EnumerationCompleted"/>.</param>
+    /// <param name="Device">
+    ///     The device it happened to. Only <see cref="BluetoothDevice.Id" /> is
+    ///     meaningful when <paramref name="Kind" /> is <see cref="BluetoothChangeKind.Removed" />, and
+    ///     the whole value is default for
+    ///     <see cref="BluetoothChangeKind.EnumerationCompleted" />.
+    /// </param>
     public readonly record struct BluetoothChange(BluetoothChangeKind Kind, BluetoothDevice Device);
 
     /// <summary>A pairing question that must be answered before its deferral expires.</summary>
-    /// <param name="Token">Identifies this question; pass it to <see cref="RespondToPairing"/>.</param>
+    /// <param name="Token">Identifies this question; pass it to <see cref="RespondToPairing" />.</param>
     /// <param name="Kind">What the user is being asked, and therefore what your UI must show.</param>
     /// <param name="Pin">The PIN to display, when the ceremony carries one; otherwise empty.</param>
     /// <param name="DeviceName">The device's friendly name, for your prompt.</param>
@@ -285,7 +324,9 @@ public static partial class WindowsRadio
 
     /// <summary>How a pairing attempt ended.</summary>
     /// <param name="Outcome">The classified result.</param>
-    /// <param name="RawStatus">Windows' own <c>DevicePairingResultStatus</c> value, kept so an
-    /// unclassified outcome can still be diagnosed.</param>
+    /// <param name="RawStatus">
+    ///     Windows' own <c>DevicePairingResultStatus</c> value, kept so an
+    ///     unclassified outcome can still be diagnosed.
+    /// </param>
     public readonly record struct PairingResult(PairingOutcome Outcome, int RawStatus);
 }

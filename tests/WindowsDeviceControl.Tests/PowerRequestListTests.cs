@@ -3,20 +3,22 @@ using Xunit;
 
 namespace WindowsDeviceControl.Tests;
 
-/// <summary>Ports the WakeWatch decoder test suite (same author): the POWER_REQUEST
-/// layout is undocumented, so every structural surprise must decode to null
-/// ("unknown"), never to a plausible-looking wrong result.</summary>
+/// <summary>
+///     Ports the WakeWatch decoder test suite (same author): the POWER_REQUEST
+///     layout is undocumented, so every structural surprise must decode to null
+///     ("unknown"), never to a plausible-looking wrong result.
+/// </summary>
 public sealed class PowerRequestListTests
 {
     private const uint Win11Build = 26200;
 
     // Where the synthetic V4 buffer puts each structure.
-    private const int CountAt = 0;                        // POWER_REQUEST_LIST.Count
-    private const int FirstOffsetAt = 8;                  // POWER_REQUEST_LIST.Offsets[0]
-    private const int Request = 64;                       // POWER_REQUEST
-    private const int Diagnostic = Request + 32;          // DIAGNOSTIC_BUFFER
+    private const int CountAt = 0; // POWER_REQUEST_LIST.Count
+    private const int FirstOffsetAt = 8; // POWER_REQUEST_LIST.Offsets[0]
+    private const int Request = 64; // POWER_REQUEST
+    private const int Diagnostic = Request + 32; // DIAGNOSTIC_BUFFER
     private const int NameString = Diagnostic + 64;
-    private const int ReasonContext = Diagnostic + 128;   // COUNTED_REASON_CONTEXT_RELATIVE
+    private const int ReasonContext = Diagnostic + 128; // COUNTED_REASON_CONTEXT_RELATIVE
     private const int ReasonString = ReasonContext + 32;
 
     /// <summary>Builds a synthetic V4 buffer with one process request holding DISPLAY.</summary>
@@ -26,13 +28,13 @@ public sealed class PowerRequestListTests
         BitConverter.GetBytes(1UL).CopyTo(b, CountAt);
         BitConverter.GetBytes((ulong)Request).CopyTo(b, FirstOffsetAt);
 
-        BitConverter.GetBytes(0x3Fu).CopyTo(b, Request);      // SupportedRequestMask
-        BitConverter.GetBytes(1u).CopyTo(b, Request + 4);     // DISPLAY = 1
+        BitConverter.GetBytes(0x3Fu).CopyTo(b, Request); // SupportedRequestMask
+        BitConverter.GetBytes(1u).CopyTo(b, Request + 4); // DISPLAY = 1
 
-        BitConverter.GetBytes(120UL).CopyTo(b, Diagnostic);                           // DIAGNOSTIC_BUFFER.Size
-        BitConverter.GetBytes(1u).CopyTo(b, Diagnostic + 8);                          // CallerType = process
+        BitConverter.GetBytes(120UL).CopyTo(b, Diagnostic); // DIAGNOSTIC_BUFFER.Size
+        BitConverter.GetBytes(1u).CopyTo(b, Diagnostic + 8); // CallerType = process
         BitConverter.GetBytes((ulong)(NameString - Diagnostic)).CopyTo(b, Diagnostic + 16); // name offset
-        BitConverter.GetBytes(1234u).CopyTo(b, Diagnostic + 24);                      // pid
+        BitConverter.GetBytes(1234u).CopyTo(b, Diagnostic + 24); // pid
 
         WriteUtf16(b, NameString, "a.exe");
         return b;
@@ -76,7 +78,9 @@ public sealed class PowerRequestListTests
     [InlineData(9200u, 9)]
     [InlineData(7601u, 3)]
     public void ModeCountTracksBuild(uint build, int expected)
-        => Assert.Equal(expected, PowerRequestList.ModeCount(build));
+    {
+        Assert.Equal(expected, PowerRequestList.ModeCount(build));
+    }
 
     [Theory]
     [InlineData(0)]
@@ -89,15 +93,17 @@ public sealed class PowerRequestListTests
     [InlineData(100)]
     [InlineData(120)]
     public void TruncatedBufferIsMalformedNotACrash(int cut)
-        => Assert.Null(PowerRequestList.DecodeWithBuild(Synth().AsSpan(0, cut), Win11Build));
+    {
+        Assert.Null(PowerRequestList.DecodeWithBuild(Synth().AsSpan(0, cut), Win11Build));
+    }
 
     [Theory]
-    [InlineData(CountAt, ulong.MaxValue, 8)]      // an absurd request count
-    [InlineData(CountAt, 5000UL, 8)]              // a count beyond the buffer
-    [InlineData(FirstOffsetAt, 100_000UL, 8)]     // a request offset past the end
-    [InlineData(Diagnostic + 8, 7UL, 4)]          // a caller type that does not exist
-    [InlineData(Diagnostic, 0UL, 8)]              // a zero diagnostic size
-    [InlineData(Diagnostic, 10_000_000UL, 8)]     // a diagnostic size beyond the buffer
+    [InlineData(CountAt, ulong.MaxValue, 8)] // an absurd request count
+    [InlineData(CountAt, 5000UL, 8)] // a count beyond the buffer
+    [InlineData(FirstOffsetAt, 100_000UL, 8)] // a request offset past the end
+    [InlineData(Diagnostic + 8, 7UL, 4)] // a caller type that does not exist
+    [InlineData(Diagnostic, 0UL, 8)] // a zero diagnostic size
+    [InlineData(Diagnostic, 10_000_000UL, 8)] // a diagnostic size beyond the buffer
     public void OneImplausibleFieldMakesTheListUnknown(int offset, ulong value, int width)
     {
         var b = Synth();
@@ -133,11 +139,15 @@ public sealed class PowerRequestListTests
 
     [Fact]
     public void EmptyBufferIsMalformed()
-        => Assert.Null(PowerRequestList.DecodeWithBuild(ReadOnlySpan<byte>.Empty, Win11Build));
+    {
+        Assert.Null(PowerRequestList.DecodeWithBuild(ReadOnlySpan<byte>.Empty, Win11Build));
+    }
 
-    /// <summary>Adds a simple-string COUNTED_REASON_CONTEXT_RELATIVE to the synthetic
-    /// buffer: ReasonOffset at DIAGNOSTIC_BUFFER+32, then flags and a string offset
-    /// relative to the context itself.</summary>
+    /// <summary>
+    ///     Adds a simple-string COUNTED_REASON_CONTEXT_RELATIVE to the synthetic
+    ///     buffer: ReasonOffset at DIAGNOSTIC_BUFFER+32, then flags and a string offset
+    ///     relative to the context itself.
+    /// </summary>
     private static byte[] SynthWithReason(string reason, uint flags = 1)
     {
         var b = Synth();
@@ -164,7 +174,7 @@ public sealed class PowerRequestListTests
     public void AReasonContextWithoutTheSimpleStringFlagIsIgnored()
     {
         var entries = PowerRequestList.DecodeWithBuild(
-            SynthWithReason("Steam download", flags: 0), Win11Build);
+            SynthWithReason("Steam download", 0), Win11Build);
 
         Assert.NotNull(entries);
         Assert.Null(entries![0].Reason);

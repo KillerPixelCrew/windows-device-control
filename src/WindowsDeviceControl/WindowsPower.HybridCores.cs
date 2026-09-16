@@ -32,7 +32,7 @@ public enum HybridSchedulingPolicy : uint
     PreferEfficientProcessors = 4,
 
     /// <summary>Windows chooses the placement.</summary>
-    Automatic = 5,
+    Automatic = 5
 }
 
 /// <summary>One processor efficiency class reported by Windows CPU set information.</summary>
@@ -72,10 +72,19 @@ public sealed record HybridCoreSupport(
 /// <param name="Threads">SCHEDPOLICY value applied to ordinary threads.</param>
 /// <param name="ShortThreads">SHORTSCHEDPOLICY value applied to short-running threads.</param>
 public sealed record HybridCoreState(
-    uint HeterogeneousPolicy, HybridSchedulingPolicy Threads, HybridSchedulingPolicy ShortThreads);
+    uint HeterogeneousPolicy,
+    HybridSchedulingPolicy Threads,
+    HybridSchedulingPolicy ShortThreads);
 
 public static partial class WindowsPower
 {
+    private const uint RegDword = 4;
+    private const uint CpuSetInformationType = 0;
+    private const int CpuSetHeaderBytes = 8;
+    private const int CpuSetEntryBytes = 32;
+    private const uint MaximumCpuSetBytes = 1 << 20;
+    private const uint MaximumPossibleValues = 64;
+
     /// <summary>Processor power settings subgroup (SUB_PROCESSOR).</summary>
     public static readonly Guid SubgroupProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
 
@@ -88,18 +97,11 @@ public static partial class WindowsPower
     /// <summary>Heterogeneous short-running thread scheduling policy setting (SHORTSCHEDPOLICY).</summary>
     public static readonly Guid SettingShortThreadSchedulingPolicy = new("bae08b81-2d5e-4688-ad6a-13243356654b");
 
-    private const uint RegDword = 4;
-    private const uint CpuSetInformationType = 0;
-    private const int CpuSetHeaderBytes = 8;
-    private const int CpuSetEntryBytes = 32;
-    private const uint MaximumCpuSetBytes = 1 << 20;
-    private const uint MaximumPossibleValues = 64;
-
     /// <summary>Reports the machine's efficiency classes and whether one scheme exposes hybrid policy.</summary>
     /// <remarks>
     ///     Reads Windows CPU set information and the scheme's stored policy values. Offer hybrid core
-    ///     controls only when <see cref="HybridCoreSupport.Hybrid"/> and
-    ///     <see cref="HybridCoreSupport.Configurable"/> are both true. The published value lists are what
+    ///     controls only when <see cref="HybridCoreSupport.Hybrid" /> and
+    ///     <see cref="HybridCoreSupport.Configurable" /> are both true. The published value lists are what
     ///     this Windows build accepts; a build that publishes none returns empty lists rather than an
     ///     invented range.
     /// </remarks>
@@ -107,11 +109,11 @@ public static partial class WindowsPower
     /// <returns>Observed hardware classes and per-scheme configurability.</returns>
     public static HybridCoreSupport QueryHybridCores(Guid scheme)
     {
-        IReadOnlyList<HybridCoreClass> classes = ParseCpuSets(ReadCpuSetInformation());
-        bool configurable = CanRead(scheme, SettingHeterogeneousPolicy)
-            && CanRead(scheme, SettingThreadSchedulingPolicy)
-            && CanRead(scheme, SettingShortThreadSchedulingPolicy);
-        return new(classes, configurable,
+        var classes = ParseCpuSets(ReadCpuSetInformation());
+        var configurable = CanRead(scheme, SettingHeterogeneousPolicy)
+                           && CanRead(scheme, SettingThreadSchedulingPolicy)
+                           && CanRead(scheme, SettingShortThreadSchedulingPolicy);
+        return new HybridCoreSupport(classes, configurable,
             PossibleValues(SettingHeterogeneousPolicy),
             PossiblePolicies(SettingThreadSchedulingPolicy),
             PossiblePolicies(SettingShortThreadSchedulingPolicy));
@@ -122,33 +124,41 @@ public static partial class WindowsPower
     /// <param name="scheme">Power scheme identity.</param>
     /// <param name="onBattery">True selects the DC values; false selects AC.</param>
     /// <returns>The stored values, with unnamed policy numbers preserved.</returns>
-    public static HybridCoreState ReadHybridCores(Guid scheme, bool onBattery) => new(
-        ReadSetting(scheme, SubgroupProcessor, SettingHeterogeneousPolicy, onBattery),
-        (HybridSchedulingPolicy)ReadSetting(scheme, SubgroupProcessor, SettingThreadSchedulingPolicy, onBattery),
-        (HybridSchedulingPolicy)ReadSetting(scheme, SubgroupProcessor, SettingShortThreadSchedulingPolicy, onBattery));
+    public static HybridCoreState ReadHybridCores(Guid scheme, bool onBattery)
+    {
+        return new HybridCoreState(
+            ReadSetting(scheme, SubgroupProcessor, SettingHeterogeneousPolicy, onBattery),
+            (HybridSchedulingPolicy)ReadSetting(scheme, SubgroupProcessor, SettingThreadSchedulingPolicy, onBattery),
+            (HybridSchedulingPolicy)ReadSetting(scheme, SubgroupProcessor, SettingShortThreadSchedulingPolicy,
+                onBattery));
+    }
 
     /// <summary>Writes the three hybrid core placement values once, in order.</summary>
     /// <remarks>
     ///     Does not activate the scheme, retry, or roll back: a failure throws with the earlier writes
     ///     already stored, and the caller restores from its own snapshot. Processor policy written to the
-    ///     active scheme takes effect after <see cref="RefreshActiveScheme"/>. Confirm with
-    ///     <see cref="ReadHybridCores"/>.
+    ///     active scheme takes effect after <see cref="RefreshActiveScheme" />. Confirm with
+    ///     <see cref="ReadHybridCores" />.
     /// </remarks>
     /// <param name="scheme">Power scheme identity.</param>
     /// <param name="onBattery">True selects DC; false selects AC.</param>
     /// <param name="state">Values to store.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="state"/> is null.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="state" /> is null.</exception>
     public static void WriteHybridCores(Guid scheme, bool onBattery, HybridCoreState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         WriteSetting(scheme, SubgroupProcessor, SettingHeterogeneousPolicy, onBattery, state.HeterogeneousPolicy);
         WriteSetting(scheme, SubgroupProcessor, SettingThreadSchedulingPolicy, onBattery, (uint)state.Threads);
-        WriteSetting(scheme, SubgroupProcessor, SettingShortThreadSchedulingPolicy, onBattery, (uint)state.ShortThreads);
+        WriteSetting(scheme, SubgroupProcessor, SettingShortThreadSchedulingPolicy, onBattery,
+            (uint)state.ShortThreads);
     }
 
     /// <summary>Re-activates the current scheme so stored policy values take effect.</summary>
     /// <remarks>Windows applies processor policy on scheme activation, not on the write itself.</remarks>
-    public static void RefreshActiveScheme() => SetActiveScheme(GetActiveScheme());
+    public static void RefreshActiveScheme()
+    {
+        SetActiveScheme(GetActiveScheme());
+    }
 
     /// <summary>Reads one published value for a setting, or null past the end of the enumeration.</summary>
     /// <param name="subgroup">Policy subgroup identity.</param>
@@ -158,13 +168,14 @@ public static partial class WindowsPower
     public static uint? ReadPossibleValue(Guid subgroup, Guid setting, uint index)
     {
         uint size = sizeof(uint);
-        uint status = PowerReadPossibleValue(0, in subgroup, in setting, out uint type, index, out uint value, ref size);
+        var status = PowerReadPossibleValue(0, in subgroup, in setting, out var type, index, out var value, ref size);
         // Past the last published value, and for a setting that publishes none, Windows reports the
         // value as missing. A value too large for a DWORD is not an index enumeration either.
         if (status is ErrorFileNotFound or ErrorNoMoreItems or ErrorMoreData)
         {
             return null;
         }
+
         Check(status, "PowerReadPossibleValue");
         return type == RegDword && size == sizeof(uint) ? value : null;
     }
@@ -172,35 +183,43 @@ public static partial class WindowsPower
     internal static IReadOnlyList<HybridCoreClass> ParseCpuSets(ReadOnlySpan<byte> buffer)
     {
         Dictionary<byte, (int Logical, HashSet<int> Cores)> classes = [];
-        int offset = 0;
+        var offset = 0;
         while (offset + CpuSetHeaderBytes <= buffer.Length)
         {
-            ReadOnlySpan<byte> entry = buffer[offset..];
-            uint size = BinaryPrimitives.ReadUInt32LittleEndian(entry);
-            uint type = BinaryPrimitives.ReadUInt32LittleEndian(entry[4..]);
+            var entry = buffer[offset..];
+            var size = BinaryPrimitives.ReadUInt32LittleEndian(entry);
+            var type = BinaryPrimitives.ReadUInt32LittleEndian(entry[4..]);
             if (size < CpuSetHeaderBytes || size > (uint)entry.Length)
             {
                 throw Failure(ErrorInvalidData, "GetSystemCpuSetInformation");
             }
+
             if (type == CpuSetInformationType)
             {
                 if (size < CpuSetEntryBytes)
                 {
                     throw Failure(ErrorInvalidData, "GetSystemCpuSetInformation");
                 }
-                int core = (BinaryPrimitives.ReadUInt16LittleEndian(entry[12..]) << 8) | entry[15];
-                byte efficiency = entry[18];
+
+                var core = (BinaryPrimitives.ReadUInt16LittleEndian(entry[12..]) << 8) | entry[15];
+                var efficiency = entry[18];
                 if (!classes.TryGetValue(efficiency, out var observed))
                 {
                     observed = (0, []);
                 }
+
                 observed.Cores.Add(core);
                 classes[efficiency] = (observed.Logical + 1, observed.Cores);
             }
+
             offset += (int)size;
         }
-        return [.. classes.OrderBy(entry => entry.Key)
-            .Select(entry => new HybridCoreClass(entry.Key, entry.Value.Cores.Count, entry.Value.Logical))];
+
+        return
+        [
+            .. classes.OrderBy(entry => entry.Key)
+                .Select(entry => new HybridCoreClass(entry.Key, entry.Value.Cores.Count, entry.Value.Logical))
+        ];
     }
 
     private static bool CanRead(Guid scheme, Guid setting)
@@ -226,29 +245,35 @@ public static partial class WindowsPower
             {
                 break;
             }
+
             values.Add(value);
         }
+
         return values;
     }
 
     private static List<HybridSchedulingPolicy> PossiblePolicies(Guid setting)
-        => [.. PossibleValues(setting).Select(value => (HybridSchedulingPolicy)value)];
+    {
+        return [.. PossibleValues(setting).Select(value => (HybridSchedulingPolicy)value)];
+    }
 
     private static unsafe byte[] ReadCpuSetInformation()
     {
-        if (!GetSystemCpuSetInformation(null, 0, out uint required, GetCurrentProcess(), 0))
+        if (!GetSystemCpuSetInformation(null, 0, out var required, GetCurrentProcess(), 0))
         {
-            uint error = (uint)Marshal.GetLastWin32Error();
+            var error = (uint)Marshal.GetLastWin32Error();
             if (error != ErrorInsufficientBuffer)
             {
                 throw Failure(error, "GetSystemCpuSetInformation");
             }
         }
+
         if (required is 0 or > MaximumCpuSetBytes)
         {
             throw Failure(ErrorInvalidData, "GetSystemCpuSetInformation");
         }
-        byte[] buffer = new byte[required];
+
+        var buffer = new byte[required];
         uint written;
         fixed (byte* pointer = buffer)
         {
@@ -257,10 +282,12 @@ public static partial class WindowsPower
                 throw Failure((uint)Marshal.GetLastWin32Error(), "GetSystemCpuSetInformation");
             }
         }
+
         if (written is 0 || written > required)
         {
             throw Failure(ErrorInvalidData, "GetSystemCpuSetInformation");
         }
+
         Array.Resize(ref buffer, (int)written);
         return buffer;
     }

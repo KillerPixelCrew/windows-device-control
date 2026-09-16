@@ -21,8 +21,10 @@ public static unsafe partial class WindowsRadio
     private static long _savedProfileGeneration;
 
     /// <summary>Reads the Wi-Fi adapter's current state and joined network.</summary>
-    /// <returns>The state, signal and network name. On a machine with several adapters this
-    /// reports the one Windows is actually using.</returns>
+    /// <returns>
+    ///     The state, signal and network name. On a machine with several adapters this
+    ///     reports the one Windows is actually using.
+    /// </returns>
     public static WifiStatus GetWifiStatus()
     {
         lock (StatusClientLock)
@@ -42,6 +44,7 @@ public static unsafe partial class WindowsRadio
                 _statusClient = WlanClient.Open();
                 interfaces = _statusClient.Interfaces();
             }
+
             var selected = SelectInterface(interfaces);
             var current = TryCurrentConnection(_statusClient.Handle, selected.Id);
             return new WifiStatus(
@@ -52,29 +55,33 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Asks every Wi-Fi adapter to scan for networks.</summary>
-    /// <remarks>Returns as soon as the request is made, not when scanning finishes — results
-    /// arrive seconds later. Watch for completion with <see cref="StartWifiWatch"/> rather than
-    /// calling <see cref="ListWifiNetworks"/> immediately, which would return the previous
-    /// results.</remarks>
+    /// <remarks>
+    ///     Returns as soon as the request is made, not when scanning finishes — results
+    ///     arrive seconds later. Watch for completion with <see cref="StartWifiWatch" /> rather than
+    ///     calling <see cref="ListWifiNetworks" /> immediately, which would return the previous
+    ///     results.
+    /// </remarks>
     /// <exception cref="InvalidOperationException">No adapter accepted the scan request.</exception>
     public static void RequestWifiScan()
     {
         using var client = WlanClient.Open();
-        ForEachAdapter(client, requireEvery: false,
+        ForEachAdapter(client, false,
             adapter => CheckWlan("WlanScan", WlanScan(client.Handle, in adapter.Id, 0, 0, 0)));
     }
 
     /// <summary>Lists the Wi-Fi networks currently visible.</summary>
     /// <returns>Networks from every adapter, merged by SSID and ordered strongest first.</returns>
-    /// <remarks>Returns the last scan's results rather than scanning — call
-    /// <see cref="RequestWifiScan"/> first for fresh ones. An empty list on a machine that clearly
-    /// has networks nearby usually means location consent is denied; see
-    /// <see cref="GetConsent"/>.</remarks>
+    /// <remarks>
+    ///     Returns the last scan's results rather than scanning — call
+    ///     <see cref="RequestWifiScan" /> first for fresh ones. An empty list on a machine that clearly
+    ///     has networks nearby usually means location consent is denied; see
+    ///     <see cref="GetConsent" />.
+    /// </remarks>
     public static IReadOnlyList<WifiNetwork> ListWifiNetworks()
     {
         using var client = WlanClient.Open();
         var merged = new Dictionary<string, WifiNetworkFacts>(StringComparer.Ordinal);
-        ForEachAdapter(client, requireEvery: false,
+        ForEachAdapter(client, false,
             adapter => MergeNetworks(client.Handle, adapter.Id, merged));
         return merged.Values
             .OrderByDescending(network => network.Signal)
@@ -91,18 +98,22 @@ public static unsafe partial class WindowsRadio
 
     /// <summary>Joins a Wi-Fi network, creating or reusing its profile, and waits for the result.</summary>
     /// <param name="ssid">The network name to join.</param>
-    /// <param name="passphrase">The passphrase, or <see langword="null"/> to use the saved profile
-    /// — which is what <see cref="WifiNetwork.Saved"/> tells you exists. Required for a protected
-    /// network with no saved profile.</param>
-    /// <returns>Zero when joined; otherwise the WLAN reason code. Pass it to
-    /// <see cref="ReasonText"/> for a message and <see cref="GetReasonVerdict"/> to decide whether
-    /// retrying or re-prompting for the passphrase is worthwhile.</returns>
-    /// <exception cref="ArgumentException"><paramref name="ssid"/> is null or empty.</exception>
+    /// <param name="passphrase">
+    ///     The passphrase, or <see langword="null" /> to use the saved profile
+    ///     — which is what <see cref="WifiNetwork.Saved" /> tells you exists. Required for a protected
+    ///     network with no saved profile.
+    /// </param>
+    /// <returns>
+    ///     Zero when joined; otherwise the WLAN reason code. Pass it to
+    ///     <see cref="ReasonText" /> for a message and <see cref="GetReasonVerdict" /> to decide whether
+    ///     retrying or re-prompting for the passphrase is worthwhile.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="ssid" /> is null or empty.</exception>
     /// <remarks>
-    /// Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
-    /// a stored profile before joining a protected network, so one is written first when needed.
-    /// If an existing profile must be overwritten, its exact XML is restored when the connection
-    /// fails; a failed key or security negotiation also removes a newly-created profile.
+    ///     Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
+    ///     a stored profile before joining a protected network, so one is written first when needed.
+    ///     If an existing profile must be overwritten, its exact XML is restored when the connection
+    ///     fails; a failed key or security negotiation also removes a newly-created profile.
     /// </remarks>
     public static uint ConnectWifi(string ssid, string? passphrase)
     {
@@ -126,6 +137,7 @@ public static unsafe partial class WindowsRadio
             throw new InvalidOperationException(
                 "More than one network advertises this display name; it cannot be identified safely.");
         }
+
         if (passphrase is not null && facts.Security != WifiSecurity.PersonalPsk)
         {
             throw new InvalidOperationException(
@@ -133,20 +145,25 @@ public static unsafe partial class WindowsRadio
         }
 
         var targetSsid = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
-        var profiles = ReadProfileSsids(client.Handle, choice.Adapter.Id, failOnListError: true);
+        var profiles = ReadProfileSsids(client.Handle, choice.Adapter.Id, true);
         var profileName = facts.ProfileName;
         ProfileMutation? mutation = null;
 
         // Every failure below rolls the profile back once before it is reported.
         Exception Fail(Exception failure)
-            => CombineFailure(failure, TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+        {
+            return CombineFailure(failure, TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+        }
 
         if (passphrase is not null)
         {
             mutation = FindFreeProfileName(profiles, ssid, targetSsid);
             var flavors = facts.Authentication == Dot11AuthWpaPsk
-                ? new[] { WifiProfile.PskFlavor.WpaTkip, WifiProfile.PskFlavor.Wpa2Aes,
-                    WifiProfile.PskFlavor.Wpa3Transition }
+                ? new[]
+                {
+                    WifiProfile.PskFlavor.WpaTkip, WifiProfile.PskFlavor.Wpa2Aes,
+                    WifiProfile.PskFlavor.Wpa3Transition
+                }
                 : new[] { WifiProfile.PskFlavor.Wpa3Transition, WifiProfile.PskFlavor.Wpa2Aes };
             Exception? last = null;
             foreach (var flavor in flavors)
@@ -163,6 +180,7 @@ public static unsafe partial class WindowsRadio
                     last = ex;
                 }
             }
+
             if (last is not null)
             {
                 var cleanup = TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation);
@@ -172,8 +190,10 @@ public static unsafe partial class WindowsRadio
                 {
                     return reason.ReasonCode;
                 }
+
                 throw CombineFailure(last, cleanup);
             }
+
             profileName = mutation.Value.Name;
         }
         else if (profileName is null)
@@ -185,6 +205,7 @@ public static unsafe partial class WindowsRadio
                         ? "This network's authentication method is not supported."
                         : "This network needs a password and has no saved profile.");
             }
+
             mutation = FindFreeProfileName(profiles, ssid, targetSsid);
             try
             {
@@ -202,12 +223,14 @@ public static unsafe partial class WindowsRadio
                 {
                     return reason.ReasonCode;
                 }
+
                 throw CombineFailure(reason, cleanup);
             }
             catch (Exception ex)
             {
                 throw Fail(ex);
             }
+
             profileName = mutation.Value.Name;
         }
 
@@ -225,6 +248,7 @@ public static unsafe partial class WindowsRadio
         {
             throw Fail(ex);
         }
+
         using (verdict)
         {
             nint profilePointer;
@@ -236,11 +260,12 @@ public static unsafe partial class WindowsRadio
             {
                 throw Fail(ex);
             }
+
             var parameters = new WlanConnectionParameters
             {
                 Mode = WlanConnectionModeProfile,
                 Profile = profilePointer,
-                BssType = Dot11BssTypeInfrastructure,
+                BssType = Dot11BssTypeInfrastructure
             };
             try
             {
@@ -250,16 +275,18 @@ public static unsafe partial class WindowsRadio
                 {
                     throw Fail(WlanFailure("WlanConnect", accepted));
                 }
+
                 if (verdict is null)
                 {
                     if (PollForConnection(
-                        client.Handle,
-                        choice.Adapter.Id,
-                        targetSsid,
-                        ConnectTimeout))
+                            client.Handle,
+                            choice.Adapter.Id,
+                            targetSsid,
+                            ConnectTimeout))
                     {
                         return 0;
                     }
+
                     throw Fail(new TimeoutException(
                         "The Wi-Fi connection attempt did not complete; "
                         + $"WLAN notification registration failed (Win32 {verdictRegistrationStatus})."));
@@ -270,16 +297,18 @@ public static unsafe partial class WindowsRadio
                 {
                     return 0;
                 }
+
                 if (outcome is { } failed)
                 {
                     if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
                     {
                         return 0;
                     }
+
                     var reason = failed.Reason == 0 ? ErrorNotFound : failed.Reason;
                     var kind = GetReasonVerdict(reason);
                     var mustRestore = mutation?.Existed == true
-                        || kind is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch;
+                                      || kind is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch;
                     var cleanup = mustRestore
                         ? TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation)
                         : null;
@@ -289,12 +318,15 @@ public static unsafe partial class WindowsRadio
                             new WlanReasonException(reason, ReasonText(reason)),
                             cleanup);
                     }
+
                     return reason;
                 }
+
                 if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
                 {
                     return 0;
                 }
+
                 throw Fail(new TimeoutException("The Wi-Fi connection attempt did not complete."));
             }
             finally
@@ -305,13 +337,15 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Disconnects every Wi-Fi adapter that is connected or connecting.</summary>
-    /// <remarks>Leaves saved profiles in place, so Windows may reconnect automatically. Use
-    /// <see cref="ForgetWifi"/> to stop that.</remarks>
+    /// <remarks>
+    ///     Leaves saved profiles in place, so Windows may reconnect automatically. Use
+    ///     <see cref="ForgetWifi" /> to stop that.
+    /// </remarks>
     /// <exception cref="Win32Exception">An adapter refused to disconnect.</exception>
     public static void DisconnectWifi()
     {
         using var client = WlanClient.Open();
-        ForEachAdapter(client, requireEvery: true, adapter =>
+        ForEachAdapter(client, true, adapter =>
         {
             if (MapInterfaceState(adapter.State)
                 is WifiConnectionState.Connected or WifiConnectionState.Connecting)
@@ -323,15 +357,17 @@ public static unsafe partial class WindowsRadio
 
     /// <summary>Forgets a network by deleting every saved profile for it.</summary>
     /// <param name="ssid">The network name to forget.</param>
-    /// <remarks>Matches on the SSID inside each profile document rather than on the profile's
-    /// name, so a profile Windows saved under a different name is still removed. Doing nothing
-    /// because no profile matched is success, not an error.</remarks>
+    /// <remarks>
+    ///     Matches on the SSID inside each profile document rather than on the profile's
+    ///     name, so a profile Windows saved under a different name is still removed. Doing nothing
+    ///     because no profile matched is success, not an error.
+    /// </remarks>
     public static void ForgetWifi(string ssid)
     {
         using var client = WlanClient.Open();
         // Deletion is chosen from the SSIDs inside stored profiles, so those are read fresh.
         InvalidateSavedProfiles(null);
-        ForEachAdapter(client, requireEvery: true, adapter =>
+        ForEachAdapter(client, true, adapter =>
         {
             var facts = ReadScanFacts(client.Handle, adapter.Id, ssid);
             if (facts.Ambiguous)
@@ -339,10 +375,11 @@ public static unsafe partial class WindowsRadio
                 throw new InvalidOperationException(
                     "More than one network advertises this display name; it cannot be identified safely.");
             }
+
             var target = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
-            var names = ReadProfileSsids(client.Handle, adapter.Id, failOnListError: true)
+            var names = ReadProfileSsids(client.Handle, adapter.Id, true)
                 .Where(profile => profile.Ssid is { } profileSsid
-                    && profileSsid.AsSpan().SequenceEqual(target))
+                                  && profileSsid.AsSpan().SequenceEqual(target))
                 .Select(profile => profile.Name)
                 .Where(name => name is not null)
                 .Select(name => name!)
@@ -351,6 +388,7 @@ public static unsafe partial class WindowsRadio
             {
                 names.Add(bound);
             }
+
             foreach (var name in names)
             {
                 var status = WlanDeleteProfile(client.Handle, in adapter.Id, name, 0);
@@ -360,9 +398,11 @@ public static unsafe partial class WindowsRadio
         });
     }
 
-    /// <summary>Runs one operation on every WLAN interface. A failure on one interface does not
-    /// stop the others; the last failure is thrown afterwards when every interface had to succeed,
-    /// or when none did.</summary>
+    /// <summary>
+    ///     Runs one operation on every WLAN interface. A failure on one interface does not
+    ///     stop the others; the last failure is thrown afterwards when every interface had to succeed,
+    ///     or when none did.
+    /// </summary>
     private static void ForEachAdapter(
         WlanClient client,
         bool requireEvery,
@@ -382,6 +422,7 @@ public static unsafe partial class WindowsRadio
                 last = ex;
             }
         }
+
         if (last is not null && (requireEvery || !succeeded))
         {
             throw last;
@@ -401,19 +442,25 @@ public static unsafe partial class WindowsRadio
             {
                 return true;
             }
+
             Thread.Sleep(500);
         }
+
         return false;
     }
 
     private static bool IsConnectedTo(nint client, Guid adapter, byte[] targetSsid)
-        => TryCurrentConnection(client, adapter) is { } current
-            && current.RawSsid.AsSpan().SequenceEqual(targetSsid);
+    {
+        return TryCurrentConnection(client, adapter) is { } current
+               && current.RawSsid.AsSpan().SequenceEqual(targetSsid);
+    }
 
     /// <summary>Looks up Windows' own description of a WLAN reason code.</summary>
     /// <param name="code">The reason code to describe.</param>
-    /// <returns>The description in the user's display language, or <c>"Wi-Fi reason code N"</c>
-    /// when Windows has no text for the code. Never empty, so it is always safe to show.</returns>
+    /// <returns>
+    ///     The description in the user's display language, or <c>"Wi-Fi reason code N"</c>
+    ///     when Windows has no text for the code. Never empty, so it is always safe to show.
+    /// </returns>
     public static string ReasonText(uint code)
     {
         Span<char> buffer = stackalloc char[1024];
@@ -425,17 +472,20 @@ public static unsafe partial class WindowsRadio
                 return $"Wi-Fi reason code {code}";
             }
         }
+
         var end = buffer.IndexOf('\0');
         var result = (end >= 0 ? buffer[..end] : buffer).Trim();
         return result.IsEmpty ? $"Wi-Fi reason code {code}" : new string(result);
     }
 
     private static WlanInterfaceInfo SelectInterface(IReadOnlyList<WlanInterfaceInfo> interfaces)
-        => interfaces.FirstOrDefault(adapter =>
-                MapInterfaceState(adapter.State) == WifiConnectionState.Connected) is var connected
-            && connected.Id != Guid.Empty
-                ? connected
-                : interfaces[0];
+    {
+        return interfaces.FirstOrDefault(adapter =>
+                   MapInterfaceState(adapter.State) == WifiConnectionState.Connected) is var connected
+               && connected.Id != Guid.Empty
+            ? connected
+            : interfaces[0];
+    }
 
     private static CurrentConnection? TryCurrentConnection(nint client, Guid adapter)
     {
@@ -451,6 +501,7 @@ public static unsafe partial class WindowsRadio
         {
             return null;
         }
+
         try
         {
             var current = Marshal.PtrToStructure<WlanConnectionAttributes>(data);
@@ -458,6 +509,7 @@ public static unsafe partial class WindowsRadio
             {
                 return null;
             }
+
             var rawSsid = ReadSsidBytes(current.Association.Ssid);
             return new CurrentConnection(
                 Encoding.UTF8.GetString(rawSsid),
@@ -484,7 +536,8 @@ public static unsafe partial class WindowsRadio
         {
             return;
         }
-        var savedSsids = ReadProfileSsids(client, adapter, failOnListError: false)
+
+        var savedSsids = ReadProfileSsids(client, adapter, false)
             .Where(profile => profile.Ssid is not null)
             .Select(profile => Convert.ToHexString(profile.Ssid!))
             .ToHashSet(StringComparer.Ordinal);
@@ -495,6 +548,7 @@ public static unsafe partial class WindowsRadio
             {
                 continue;
             }
+
             var raw = network.RawSsid;
             var key = Convert.ToHexString(raw);
             var saved = network.ProfileName is not null || savedSsids.Contains(key);
@@ -520,10 +574,12 @@ public static unsafe partial class WindowsRadio
         }
     }
 
-    /// <summary>Reads and decodes one adapter's available networks. Failure handling stays with
-    /// the caller: a failed status comes back with an empty list, and
-    /// <paramref name="rejection"/> decides whether an oversized count throws or is cut to the
-    /// bound.</summary>
+    /// <summary>
+    ///     Reads and decodes one adapter's available networks. Failure handling stays with
+    ///     the caller: a failed status comes back with an empty list, and
+    ///     <paramref name="rejection" /> decides whether an oversized count throws or is cut to the
+    ///     bound.
+    /// </summary>
     private static uint ReadAvailableNetworks(
         nint client,
         Guid adapter,
@@ -536,6 +592,7 @@ public static unsafe partial class WindowsRadio
         {
             return status;
         }
+
         try
         {
             networks = ReadWlanList(list, 4096, rejection, static (WlanAvailableNetwork item) =>
@@ -556,6 +613,7 @@ public static unsafe partial class WindowsRadio
         {
             WlanFreeMemory(list);
         }
+
         return status;
     }
 
@@ -580,7 +638,7 @@ public static unsafe partial class WindowsRadio
                 (false, true, true) => 3,
                 (true, false, _) => 2,
                 (false, true, false) => 1,
-                _ => 0,
+                _ => 0
             };
             if (rank > bestRank)
             {
@@ -588,6 +646,7 @@ public static unsafe partial class WindowsRadio
                 best = new InterfaceChoice(adapter, facts);
             }
         }
+
         var selected = best ?? new InterfaceChoice(interfaces[0], WifiNetworkFacts.Empty(ssid));
         var visibleObservations = observations.Where(item => item.RawSsid.Length > 0).ToArray();
         if (visibleObservations.Any(item => item.Ambiguous)
@@ -595,9 +654,9 @@ public static unsafe partial class WindowsRadio
                 !item.RawSsid.AsSpan().SequenceEqual(visibleObservations[0].RawSsid)
                 || item.Security != visibleObservations[0].Security
                 || item.Authentication != visibleObservations[0].Authentication
-                || visibleObservations[0].ProfileName is { Length: > 0 } firstProfile
+                || (visibleObservations[0].ProfileName is { Length: > 0 } firstProfile
                     && item.ProfileName is { Length: > 0 } itemProfile
-                    && !string.Equals(firstProfile, itemProfile, StringComparison.Ordinal)))
+                    && !string.Equals(firstProfile, itemProfile, StringComparison.Ordinal))))
         {
             selected = selected with
             {
@@ -607,56 +666,60 @@ public static unsafe partial class WindowsRadio
                     Security = WifiSecurity.Unsupported,
                     Authentication = 0,
                     Connectable = false,
-                    ProfileName = null,
-                },
+                    ProfileName = null
+                }
             };
         }
+
         return selected;
     }
 
     private static WifiNetworkFacts ReadScanFacts(nint client, Guid adapter, string ssid)
     {
         var facts = WifiNetworkFacts.Empty(ssid);
-        ReadAvailableNetworks(client, adapter, rejection: null, out var networks);
+        ReadAvailableNetworks(client, adapter, null, out var networks);
         foreach (var network in networks)
         {
             if (!string.Equals(network.Ssid, ssid, StringComparison.Ordinal))
             {
                 continue;
             }
+
             var raw = network.RawSsid;
             var profileName = network.ProfileName;
             var sameRaw = facts.RawSsid.Length == 0
-                || facts.RawSsid.AsSpan().SequenceEqual(raw);
+                          || facts.RawSsid.AsSpan().SequenceEqual(raw);
             var conflictingIdentity = facts.RawSsid.Length > 0
-                && (!sameRaw
-                    || facts.Security != network.Security
-                    || facts.Authentication != network.Authentication
-                    || facts.ProfileName is { Length: > 0 } existingProfile
-                        && profileName is { Length: > 0 }
-                        && !string.Equals(
-                            existingProfile,
-                            profileName,
-                            StringComparison.Ordinal));
+                                      && (!sameRaw
+                                          || facts.Security != network.Security
+                                          || facts.Authentication != network.Authentication
+                                          || (facts.ProfileName is { Length: > 0 } existingProfile
+                                              && profileName is { Length: > 0 }
+                                              && !string.Equals(
+                                                  existingProfile,
+                                                  profileName,
+                                                  StringComparison.Ordinal)));
             facts = facts with
             {
                 RawSsid = facts.RawSsid.Length == 0 ? raw : facts.RawSsid,
                 Ambiguous = facts.Ambiguous || conflictingIdentity,
                 Security = conflictingIdentity ? WifiSecurity.Unsupported : network.Security,
                 Authentication = conflictingIdentity ? 0 : network.Authentication,
-                ProfileName = conflictingIdentity ? null : profileName ?? facts.ProfileName,
+                ProfileName = conflictingIdentity ? null : profileName ?? facts.ProfileName
             };
         }
+
         if (facts.ProfileName is null)
         {
             var target = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
             facts = facts with
             {
-                ProfileName = ReadProfileSsids(client, adapter, failOnListError: false)
+                ProfileName = ReadProfileSsids(client, adapter, false)
                     .FirstOrDefault(profile => profile.Ssid is { } profileSsid
-                        && profileSsid.AsSpan().SequenceEqual(target)).Name,
+                                               && profileSsid.AsSpan().SequenceEqual(target)).Name
             };
         }
+
         return facts;
     }
 
@@ -672,16 +735,19 @@ public static unsafe partial class WindowsRadio
             {
                 throw WlanFailure("WlanGetProfileList", status);
             }
+
             return [];
         }
+
         if (list == 0)
         {
             return [];
         }
+
         string[] names;
         try
         {
-            names = ReadWlanList(list, 4096, rejection: null,
+            names = ReadWlanList(list, 4096, null,
                 static (WlanProfileInfo record) => NativeText.ReadFixed(record.Name, 256));
         }
         finally
@@ -697,8 +763,10 @@ public static unsafe partial class WindowsRadio
                 InvalidateSavedProfiles(adapter);
                 SavedProfileNames[adapter] = names;
             }
+
             generation = _savedProfileGeneration;
         }
+
         var profiles = new List<SavedProfile>(names.Length);
         foreach (var name in names)
         {
@@ -706,16 +774,19 @@ public static unsafe partial class WindowsRadio
             {
                 continue;
             }
+
             SavedProfile? cached;
             lock (SavedProfileLock)
             {
                 cached = SavedProfiles.TryGetValue((adapter, name), out var entry) ? entry : null;
             }
+
             if (cached is { } known)
             {
                 profiles.Add(known);
                 continue;
             }
+
             var xml = TryReadProfileXml(client, adapter, name);
             var profile = new SavedProfile(name, xml is null ? null : WifiProfile.TryReadSsid(xml), xml);
             // Unreadable XML is not remembered, so it is asked for again on the next read.
@@ -729,15 +800,21 @@ public static unsafe partial class WindowsRadio
                     }
                 }
             }
+
             profiles.Add(profile);
         }
+
         return profiles;
     }
 
-    /// <summary>Forgets the parsed profiles of one adapter, or of every adapter when null, and
-    /// stops reads already in progress from storing what they found.</summary>
-    /// <remarks>A cached profile stays valid while its adapter's profile-name list is unchanged and
-    /// this library has not written or deleted a profile since.</remarks>
+    /// <summary>
+    ///     Forgets the parsed profiles of one adapter, or of every adapter when null, and
+    ///     stops reads already in progress from storing what they found.
+    /// </summary>
+    /// <remarks>
+    ///     A cached profile stays valid while its adapter's profile-name list is unchanged and
+    ///     this library has not written or deleted a profile since.
+    /// </remarks>
     private static void InvalidateSavedProfiles(Guid? adapter)
     {
         lock (SavedProfileLock)
@@ -749,6 +826,7 @@ public static unsafe partial class WindowsRadio
                 SavedProfileNames.Clear();
                 return;
             }
+
             SavedProfileNames.Remove(only);
             foreach (var key in SavedProfiles.Keys.Where(key => key.Adapter == only).ToArray())
             {
@@ -764,6 +842,7 @@ public static unsafe partial class WindowsRadio
         {
             return null;
         }
+
         try
         {
             return Marshal.PtrToStringUni(xml);
@@ -782,6 +861,7 @@ public static unsafe partial class WindowsRadio
         {
             return;
         }
+
         throw reason != 0
             ? new WlanReasonException(reason, $"WlanSetProfile failed: {ReasonText(reason)}")
             : WlanFailure("WlanSetProfile", status);
@@ -796,6 +876,7 @@ public static unsafe partial class WindowsRadio
         {
             return;
         }
+
         if (authored.Existed)
         {
             if (authored.PreviousXml is null)
@@ -803,9 +884,11 @@ public static unsafe partial class WindowsRadio
                 throw new InvalidOperationException(
                     $"The previous Wi-Fi profile '{authored.Name}' was not available for rollback.");
             }
+
             SetProfile(client, adapter, authored.PreviousXml);
             return;
         }
+
         var status = WlanDeleteProfile(client, in adapter, authored.Name, 0);
         InvalidateSavedProfiles(adapter);
         if (status is not ErrorSuccess and not ErrorNotFound)
@@ -831,7 +914,9 @@ public static unsafe partial class WindowsRadio
     }
 
     private static Exception CombineFailure(Exception failure, Exception? cleanupFailure)
-        => cleanupFailure is null ? failure : new AggregateException(failure, cleanupFailure);
+    {
+        return cleanupFailure is null ? failure : new AggregateException(failure, cleanupFailure);
+    }
 
     private readonly record struct CurrentConnection(string Ssid, byte[] RawSsid, int Signal);
 

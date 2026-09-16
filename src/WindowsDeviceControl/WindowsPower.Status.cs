@@ -9,8 +9,13 @@ namespace WindowsDeviceControl;
 /// <param name="SystemStatusFlag">Whether Windows battery saver is enabled.</param>
 /// <param name="BatteryLifeTime">Estimated seconds remaining, or uint.MaxValue when unknown.</param>
 /// <param name="BatteryFullLifeTime">Estimated full-charge seconds, or uint.MaxValue when unknown.</param>
-public readonly record struct WindowsPowerStatus(byte ACLineStatus, byte BatteryFlag, byte BatteryLifePercent,
-    byte SystemStatusFlag, uint BatteryLifeTime, uint BatteryFullLifeTime);
+public readonly record struct WindowsPowerStatus(
+    byte ACLineStatus,
+    byte BatteryFlag,
+    byte BatteryLifePercent,
+    byte SystemStatusFlag,
+    uint BatteryLifeTime,
+    uint BatteryFullLifeTime);
 
 public static partial class WindowsPower
 {
@@ -19,11 +24,15 @@ public static partial class WindowsPower
     /// <returns>False when Windows cannot provide a status snapshot.</returns>
     public static bool TryGetStatus(out WindowsPowerStatus status)
     {
-        bool success = GetSystemPowerStatus(out NativePowerStatus native);
-        status = new(native.ACLineStatus, native.BatteryFlag, native.BatteryLifePercent,
+        var success = GetSystemPowerStatus(out var native);
+        status = new WindowsPowerStatus(native.ACLineStatus, native.BatteryFlag, native.BatteryLifePercent,
             native.SystemStatusFlag, native.BatteryLifeTime, native.BatteryFullLifeTime);
         return success;
     }
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSystemPowerStatus(out NativePowerStatus status);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePowerStatus
@@ -35,8 +44,4 @@ public static partial class WindowsPower
         internal uint BatteryLifeTime;
         internal uint BatteryFullLifeTime;
     }
-
-    [LibraryImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetSystemPowerStatus(out NativePowerStatus status);
 }

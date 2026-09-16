@@ -27,7 +27,7 @@
          omits the rest, which is exactly the state that produces a half-filled IntelliSense
          tooltip. Both are errors here so the surface cannot regress. -->
     <WarningsAsErrors>$(WarningsAsErrors);CS1573;CS1591</WarningsAsErrors>
-    <NoWarn />
+    <NoWarn/>
     <!-- Emit the parameter names in the reference assembly too, so consumers see them even when
          only the compiled library is available. -->
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
@@ -47,8 +47,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
-    <InternalsVisibleTo Include="WindowsDeviceControl.Tests" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false"/>
+    <InternalsVisibleTo Include="WindowsDeviceControl.Tests"/>
   </ItemGroup>
 
 </Project>

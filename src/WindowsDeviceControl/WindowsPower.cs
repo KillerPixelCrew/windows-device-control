@@ -17,16 +17,18 @@ public static partial class WindowsPower
     public static Guid? EnumerateScheme(uint index)
     {
         uint size = 16;
-        uint status = PowerEnumerate(0, 0, 0, AccessScheme, index, out Guid id, ref size);
+        var status = PowerEnumerate(0, 0, 0, AccessScheme, index, out var id, ref size);
         if (status == ErrorNoMoreItems)
         {
             return null;
         }
+
         Check(status, "PowerEnumerate");
         if (size != 16 || id == Guid.Empty)
         {
             throw Failure(ErrorInvalidData, "PowerEnumerate");
         }
+
         return id;
     }
 
@@ -34,7 +36,11 @@ public static partial class WindowsPower
     internal static List<Guid> EnumerateSchemes()
     {
         List<Guid> schemes = [];
-        for (uint index = 0; EnumerateScheme(index) is { } scheme; index++) { schemes.Add(scheme); }
+        for (uint index = 0; EnumerateScheme(index) is { } scheme; index++)
+        {
+            schemes.Add(scheme);
+        }
+
         return schemes;
     }
 
@@ -43,30 +49,35 @@ public static partial class WindowsPower
     public static unsafe string ReadSchemeName(Guid id)
     {
         uint size = 0;
-        uint status = PowerReadFriendlyName(0, in id, 0, 0, 0, ref size);
+        var status = PowerReadFriendlyName(0, in id, 0, 0, 0, ref size);
         if (status != ErrorMoreData)
         {
             Check(status, "PowerReadFriendlyName");
         }
+
         // A rename can grow the buffer between reads. Retry reads only, with a bounded allocation.
-        for (int attempt = 0; attempt < 3; attempt++)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
             if (size < 2 || size > MaximumNameBytes || size % 2 != 0)
             {
                 throw Failure(ErrorInvalidData, "PowerReadFriendlyName");
             }
-            byte[] buffer = new byte[size];
+
+            var buffer = new byte[size];
             fixed (byte* pointer = buffer)
             {
                 status = PowerReadFriendlyName(0, in id, 0, 0, (nint)pointer, ref size);
             }
+
             if (status == ErrorMoreData)
             {
                 continue;
             }
+
             Check(status, "PowerReadFriendlyName");
             return DecodeName(buffer, size, id);
         }
+
         throw Failure(ErrorMoreData, "PowerReadFriendlyName");
     }
 
@@ -77,14 +88,15 @@ public static partial class WindowsPower
         {
             throw Failure(ErrorInvalidData, "PowerReadFriendlyName");
         }
-        string name = Encoding.Unicode.GetString(buffer, 0, (int)size - 2);
+
+        var name = Encoding.Unicode.GetString(buffer, 0, (int)size - 2);
         return string.IsNullOrWhiteSpace(name) ? id.ToString("D") : name;
     }
 
     /// <summary>Reads the active scheme and releases the native allocation on every outcome.</summary>
     public static Guid GetActiveScheme()
     {
-        uint status = PowerGetActiveScheme(0, out nint pointer);
+        var status = PowerGetActiveScheme(0, out var pointer);
         try
         {
             Check(status, "PowerGetActiveScheme");
@@ -92,11 +104,13 @@ public static partial class WindowsPower
             {
                 throw Failure(ErrorInvalidData, "PowerGetActiveScheme");
             }
-            Guid id = Marshal.PtrToStructure<Guid>(pointer);
+
+            var id = Marshal.PtrToStructure<Guid>(pointer);
             if (id == Guid.Empty)
             {
                 throw Failure(ErrorInvalidData, "PowerGetActiveScheme");
             }
+
             return id;
         }
         finally
@@ -110,7 +124,10 @@ public static partial class WindowsPower
 
     /// <summary>Requests a scheme once; failures throw Win32Exception. Read back to confirm.</summary>
     /// <param name="id">Installed scheme identity.</param>
-    public static void SetActiveScheme(Guid id) => Check(PowerSetActiveScheme(0, in id), "PowerSetActiveScheme");
+    public static void SetActiveScheme(Guid id)
+    {
+        Check(PowerSetActiveScheme(0, in id), "PowerSetActiveScheme");
+    }
 
     [LibraryImport("powrprof.dll")]
     private static partial uint PowerGetActiveScheme(nint userRootPowerKey, out nint activePolicyGuid);

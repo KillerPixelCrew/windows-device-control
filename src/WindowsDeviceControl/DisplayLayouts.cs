@@ -15,18 +15,22 @@ public sealed record DisplayRefresh(uint Numerator, uint Denominator)
     /// <summary>Let Windows pick the rate for the requested mode.</summary>
     public static DisplayRefresh Default { get; } = new(0, 0);
 
-    /// <summary>Builds a whole-hertz rate.</summary>
-    /// <param name="hertz">Refresh rate in hertz.</param>
-    /// <returns>The rate as a rational.</returns>
-    public static DisplayRefresh FromHertz(int hertz) =>
-        hertz <= 0 ? Default : new((uint)hertz, 1);
-
     /// <summary>The rate in hertz, or zero when Windows is to choose.</summary>
     public double Hertz => Denominator == 0 ? 0 : (double)Numerator / Denominator;
 
+    /// <summary>Builds a whole-hertz rate.</summary>
+    /// <param name="hertz">Refresh rate in hertz.</param>
+    /// <returns>The rate as a rational.</returns>
+    public static DisplayRefresh FromHertz(int hertz)
+    {
+        return hertz <= 0 ? Default : new DisplayRefresh((uint)hertz, 1);
+    }
+
     /// <inheritdoc />
-    public override string ToString() =>
-        Denominator == 0 ? "default" : Hertz.ToString("0.###", CultureInfo.InvariantCulture) + " Hz";
+    public override string ToString()
+    {
+        return Denominator == 0 ? "default" : Hertz.ToString("0.###", CultureInfo.InvariantCulture) + " Hz";
+    }
 }
 
 /// <summary>One display in a layout. The output at (0,0) is the primary display, as it is in Windows.</summary>
@@ -35,13 +39,20 @@ public sealed record DisplayRefresh(uint Numerator, uint Denominator)
 /// <param name="Y">Desktop y position of its top-left corner.</param>
 /// <param name="Width">Horizontal resolution in pixels.</param>
 /// <param name="Height">Vertical resolution in pixels.</param>
-/// <param name="Refresh">Refresh rate, or <see cref="DisplayRefresh.Default"/>.</param>
+/// <param name="Refresh">Refresh rate, or <see cref="DisplayRefresh.Default" />.</param>
 /// <param name="Rotation">Raw DISPLAYCONFIG_ROTATION value; 1 is landscape.</param>
 /// <param name="DpiPercent">Scaling percentage to apply, or null to leave it alone.</param>
 /// <param name="Hdr">Advanced colour state to apply, or null to leave it alone.</param>
 public sealed record DisplayLayoutOutput(
-    DisplayTargetIdentity Target, int X, int Y, int Width, int Height, DisplayRefresh Refresh,
-    uint Rotation = 1, int? DpiPercent = null, bool? Hdr = null)
+    DisplayTargetIdentity Target,
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    DisplayRefresh Refresh,
+    uint Rotation = 1,
+    int? DpiPercent = null,
+    bool? Hdr = null)
 {
     /// <summary>Whether this output is the primary display.</summary>
     public bool IsPrimary => X == 0 && Y == 0;
@@ -57,31 +68,43 @@ public sealed record DisplayLayout(IReadOnlyList<DisplayLayoutOutput> Outputs);
 /// <param name="Active">Whether it is part of the current desktop.</param>
 /// <param name="Current">Its current placement and mode, when it is active.</param>
 public sealed record DisplayTargetObservation(
-    DisplayTargetIdentity Target, bool Available, bool Active, DisplayLayoutOutput? Current);
+    DisplayTargetIdentity Target,
+    bool Available,
+    bool Active,
+    DisplayLayoutOutput? Current);
 
 /// <summary>Every monitor the adapter can see, plus a fingerprint of that observation.</summary>
 /// <param name="Targets">One entry per known monitor.</param>
-/// <param name="Fingerprint">Stable text that changes whenever the observation changes. Two equal
-/// fingerprints a moment apart are what a caller waits for before acting on an arrival.</param>
+/// <param name="Fingerprint">
+///     Stable text that changes whenever the observation changes. Two equal
+///     fingerprints a moment apart are what a caller waits for before acting on an arrival.
+/// </param>
 /// <param name="CapturedAt">When the observation completed.</param>
 public sealed record DisplayArrangement(
-    IReadOnlyList<DisplayTargetObservation> Targets, string Fingerprint, DateTimeOffset CapturedAt);
+    IReadOnlyList<DisplayTargetObservation> Targets,
+    string Fingerprint,
+    DateTimeOffset CapturedAt);
 
 /// <summary>How a layout application ended.</summary>
 public enum DisplayLayoutOutcome
 {
     /// <summary>Applied and confirmed by readback.</summary>
     Applied,
+
     /// <summary>The arrangement already matched; nothing was written.</summary>
     AlreadyActive,
+
     /// <summary>One or more requested monitors are not connected. A waiting state, not a failure.</summary>
     TargetsAbsent,
+
     /// <summary>The layout itself does not describe a usable desktop.</summary>
     Invalid,
+
     /// <summary>Windows refused the configuration before anything changed.</summary>
     Rejected,
+
     /// <summary>Windows accepted it but the readback did not match. Rolled back once, never retried.</summary>
-    Unconfirmed,
+    Unconfirmed
 }
 
 /// <summary>Result of validating or applying a layout.</summary>
@@ -105,17 +128,18 @@ public sealed record DisplayLayoutResult(
     public bool Applied => Outcome is DisplayLayoutOutcome.Applied or DisplayLayoutOutcome.AlreadyActive;
 }
 
-/// <summary>Captures and applies complete desktop arrangements by value.
-///
-/// <see cref="DisplayTopology"/> replays a captured native configuration, which is enough to restore
-/// what was there and nothing else. This is the editable form: which monitors are on, which is
-/// primary, where each sits, its mode, its scaling and its advanced colour state, all as values a
-/// person can be shown and change. Nobody hand-authors a <c>DISPLAYCONFIG_*</c> record.</summary>
+/// <summary>
+///     Captures and applies complete desktop arrangements by value.
+///     <see cref="DisplayTopology" /> replays a captured native configuration, which is enough to restore
+///     what was there and nothing else. This is the editable form: which monitors are on, which is
+///     primary, where each sits, its mode, its scaling and its advanced colour state, all as values a
+///     person can be shown and change. Nobody hand-authors a <c>DISPLAYCONFIG_*</c> record.
+/// </summary>
 /// <remarks>
-/// These calls block on display drivers; run them on a worker. Applying rearranges or blanks
-/// displays. A requested monitor that is not connected is reported as absent rather than thrown, so
-/// a caller can wait for it. An unconfirmed application gets exactly one rollback and is never
-/// retried automatically.
+///     These calls block on display drivers; run them on a worker. Applying rearranges or blanks
+///     displays. A requested monitor that is not connected is reported as absent rather than thrown, so
+///     a caller can wait for it. An unconfirmed application gets exactly one rollback and is never
+///     retried automatically.
 /// </remarks>
 public static class DisplayLayouts
 {
@@ -127,43 +151,67 @@ public static class DisplayLayouts
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
     /// <returns>The observation and its fingerprint.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
-    public static DisplayArrangement Observe() => Observe([], out _);
+    public static DisplayArrangement Observe()
+    {
+        return Observe([], out _);
+    }
 
-    /// <summary>Observes every monitor, remembering target identities in <paramref name="read"/> and
-    /// returning the paths the observation came from, so a caller can plan on the same query.</summary>
+    /// <summary>
+    ///     Observes every monitor, remembering target identities in <paramref name="read" /> and
+    ///     returning the paths the observation came from, so a caller can plan on the same query.
+    /// </summary>
     internal static DisplayArrangement Observe(
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, out DisplayTopology.PathInfo[] paths)
     {
-        (paths, DisplayTopology.ModeInfo[] modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
+        (paths, var modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
         List<DisplayTargetObservation> targets = [];
-        foreach (DisplayTopology.PathInfo path in paths)
+        foreach (var path in paths)
         {
             DisplayTargetIdentity identity;
-            try { identity = DisplayTopology.ReadTarget(path, read); }
+            try
+            {
+                identity = DisplayTopology.ReadTarget(path, read);
+            }
             // One unreadable target must not hide the rest: a monitor can drop out between the
             // query and the name read, and the caller is often waiting for a different one.
-            catch (Win32Exception) { continue; }
-            bool active = (path.Flags & PathActiveFlag) != 0;
-            if (targets.Exists(other => other.Target.Matches(identity) && (other.Active || !active))) { continue; }
+            catch (Win32Exception)
+            {
+                continue;
+            }
+
+            var active = (path.Flags & PathActiveFlag) != 0;
+            if (targets.Exists(other => other.Target.Matches(identity) && (other.Active || !active)))
+            {
+                continue;
+            }
+
             targets.RemoveAll(other => other.Target.Matches(identity));
-            targets.Add(new(identity, path.TargetInfo.TargetAvailable != 0, active,
+            targets.Add(new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
                 active ? ReadOutput(path, modes, identity) : null));
         }
-        return new(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
+
+        return new DisplayArrangement(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
     }
 
     /// <summary>Captures the current desktop as an editable layout.</summary>
     /// <returns>The active displays, their placement, modes, scaling and advanced colour state.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
-    public static DisplayLayout Capture() => new(
-        [.. Observe().Targets.Where(target => target is { Active: true, Current: not null })
-            .Select(target => target.Current!)]);
+    public static DisplayLayout Capture()
+    {
+        return new DisplayLayout(
+        [
+            .. Observe().Targets.Where(target => target is { Active: true, Current: not null })
+                .Select(target => target.Current!)
+        ]);
+    }
 
-    /// <summary>Why this layout could never describe a desktop, or null when it could.
-    ///
-    /// Pure, and it touches no display, so an editor can refuse a layout as it is typed and a
-    /// stored layout can be checked while the monitors it names are unplugged. <see
-    /// cref="Validate"/> answers the separate question of whether Windows would accept it now.
+    /// <summary>
+    ///     Why this layout could never describe a desktop, or null when it could.
+    ///     Pure, and it touches no display, so an editor can refuse a layout as it is typed and a
+    ///     stored layout can be checked while the monitors it names are unplugged.
+    ///     <see
+    ///         cref="Validate" />
+    ///     answers the separate question of whether Windows would accept it now.
     /// </summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>A user-facing reason, or null when the layout is well formed.</returns>
@@ -173,13 +221,14 @@ public static class DisplayLayouts
         return DisplayLayoutPlanner.Describe(layout);
     }
 
-    /// <summary>Reads a profile captured by <see cref="DisplayTopology.CaptureProfile"/> back as an
-    /// editable layout.
-    ///
-    /// A profile is a native configuration meant to be replayed, not read; this is the one-way trip
-    /// out of that form, for callers migrating stored profiles to layouts. Scaling and advanced
-    /// colour are left unset because the profile never recorded them, and reading them now would
-    /// describe today's desktop rather than the captured one.</summary>
+    /// <summary>
+    ///     Reads a profile captured by <see cref="DisplayTopology.CaptureProfile" /> back as an
+    ///     editable layout.
+    ///     A profile is a native configuration meant to be replayed, not read; this is the one-way trip
+    ///     out of that form, for callers migrating stored profiles to layouts. Scaling and advanced
+    ///     colour are left unset because the profile never recorded them, and reading them now would
+    ///     describe today's desktop rather than the captured one.
+    /// </summary>
     /// <param name="profile">A previously captured profile.</param>
     /// <returns>The layout, or null when the profile cannot be read as one.</returns>
     public static DisplayLayout? FromProfile(DisplayProfile profile)
@@ -192,23 +241,43 @@ public static class DisplayLayouts
             paths = DisplayTopology.Decode<DisplayTopology.PathInfo>(profile.PathData);
             modes = DisplayTopology.Decode<DisplayTopology.ModeInfo>(profile.ModeData);
         }
-        catch (ArgumentException) { return null; }
-        if (paths.Length != profile.Targets.Count) { return null; }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+
+        if (paths.Length != profile.Targets.Count)
+        {
+            return null;
+        }
 
         List<DisplayLayoutOutput> outputs = [];
-        for (int index = 0; index < paths.Length; index++)
+        for (var index = 0; index < paths.Length; index++)
         {
-            DisplayTopology.PathInfo path = paths[index];
-            if ((path.Flags & PathActiveFlag) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length) { continue; }
-            DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
-            if (mode.InfoType != SourceModeType) { continue; }
-            DisplayTargetIdentity identity = profile.Targets[index];
-            if (outputs.Exists(other => other.Target.Matches(identity))) { continue; }
-            DisplayTopology.SourceMode source = mode.Mode.Source;
-            outputs.Add(new(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
-                new(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
+            var path = paths[index];
+            if ((path.Flags & PathActiveFlag) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length)
+            {
+                continue;
+            }
+
+            var mode = modes[path.SourceInfo.ModeInfoIdx];
+            if (mode.InfoType != SourceModeType)
+            {
+                continue;
+            }
+
+            var identity = profile.Targets[index];
+            if (outputs.Exists(other => other.Target.Matches(identity)))
+            {
+                continue;
+            }
+
+            var source = mode.Mode.Source;
+            outputs.Add(new DisplayLayoutOutput(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
+                new DisplayRefresh(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
                 path.TargetInfo.Rotation));
         }
+
         DisplayLayout layout = new(outputs);
         return Describe(layout) is null ? layout : null;
     }
@@ -216,19 +285,25 @@ public static class DisplayLayouts
     /// <summary>Checks a layout against Windows without changing anything.</summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>Invalid, TargetsAbsent, Rejected, or Applied meaning "would apply".</returns>
-    public static DisplayLayoutResult Validate(DisplayLayout layout) => Run(layout, apply: false);
+    public static DisplayLayoutResult Validate(DisplayLayout layout)
+    {
+        return Run(layout, false);
+    }
 
     /// <summary>Applies a layout and confirms it by readback.</summary>
     /// <param name="layout">The layout to apply.</param>
     /// <returns>What happened, including any rollback.</returns>
-    public static DisplayLayoutResult Apply(DisplayLayout layout) => Run(layout, apply: true);
+    public static DisplayLayoutResult Apply(DisplayLayout layout)
+    {
+        return Run(layout, true);
+    }
 
     private static DisplayLayoutResult Run(DisplayLayout layout, bool apply)
     {
         ArgumentNullException.ThrowIfNull(layout);
         if (DisplayLayoutPlanner.Describe(layout) is { } invalid)
         {
-            return new(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], invalid);
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], invalid);
         }
 
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read = [];
@@ -240,16 +315,18 @@ public static class DisplayLayouts
         }
         catch (Win32Exception ex)
         {
-            return new(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
                 DisplayTopology.Bound("The current display configuration could not be read: " + ex.Message));
         }
 
         IReadOnlyList<DisplayTargetIdentity> absent =
-            [.. layout.Outputs.Select(output => output.Target)
-                .Where(target => !arrangement.Targets.Any(other => other.Available && target.Matches(other.Target)))];
+        [
+            .. layout.Outputs.Select(output => output.Target)
+                .Where(target => !arrangement.Targets.Any(other => other.Available && target.Matches(other.Target)))
+        ];
         if (absent.Count != 0)
         {
-            return new(DisplayLayoutOutcome.TargetsAbsent, absent, 0, false, false, [],
+            return new DisplayLayoutResult(DisplayLayoutOutcome.TargetsAbsent, absent, 0, false, false, [],
                 "Waiting for " + string.Join(", ", absent.Select(Describe)) + ".");
         }
 
@@ -264,22 +341,26 @@ public static class DisplayLayouts
         DisplayTopology.ModeInfo[] plannedModes;
         try
         {
-            (planned, plannedModes) = DisplayLayoutPlanner.Plan(paths, layout, path => DisplayTopology.ReadTarget(path, read));
+            (planned, plannedModes) =
+                DisplayLayoutPlanner.Plan(paths, layout, path => DisplayTopology.ReadTarget(path, read));
         }
         catch (InvalidOperationException ex)
         {
-            return new(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], DisplayTopology.Bound(ex.Message));
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Invalid, [], 0, false, false, [],
+                DisplayTopology.Bound(ex.Message));
         }
 
-        int status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcValidate);
+        var status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcValidate);
         if (status != 0)
         {
-            return new(DisplayLayoutOutcome.Rejected, [], status, false, false, [],
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], status, false, false, [],
                 $"Windows rejected this layout during validation (status {status}).");
         }
+
         if (!apply)
         {
-            return new(DisplayLayoutOutcome.Applied, [], 0, false, false, [], "The layout is valid for this hardware.");
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Applied, [], 0, false, false, [],
+                "The layout is valid for this hardware.");
         }
 
         DisplayTopology.NativeSnapshot rollback;
@@ -291,65 +372,81 @@ public static class DisplayLayouts
         }
         catch (Win32Exception ex)
         {
-            return new(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
                 "The current arrangement could not be captured for rollback; nothing was applied.");
         }
 
-        status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
+        status = DisplayTopology.Supply(planned, plannedModes,
+            DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
         if (status == 0 && Confirm(layout))
         {
             return ApplyPerTarget(layout, DisplayLayoutOutcome.Applied, [], "Layout applied and confirmed.");
         }
 
-        int rollbackStatus = DisplayTopology.Supply(rollback.Paths, rollback.Modes,
+        var rollbackStatus = DisplayTopology.Supply(rollback.Paths, rollback.Modes,
             DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
         if (rollbackStatus == 0)
         {
             // Scaling and colour follow the topology back, so the desktop is left as it was found.
-            foreach (DisplayLayoutOutput output in rollbackLayout.Outputs) { ApplyOutputExtras(output); }
+            foreach (var output in rollbackLayout.Outputs)
+            {
+                ApplyOutputExtras(output);
+            }
         }
-        return new(DisplayLayoutOutcome.Unconfirmed, [], status, true, rollbackStatus == 0, [],
+
+        return new DisplayLayoutResult(DisplayLayoutOutcome.Unconfirmed, [], status, true, rollbackStatus == 0, [],
             rollbackStatus == 0
                 ? "The layout was not confirmed; the previous arrangement was restored."
                 : $"The layout was not confirmed and the rollback failed with status {rollbackStatus}.");
     }
 
-    /// <summary>Applies the per-display settings that are not part of the topology. A refusal here
-    /// is a warning: the desktop is already arranged, and undoing that would be worse.</summary>
+    /// <summary>
+    ///     Applies the per-display settings that are not part of the topology. A refusal here
+    ///     is a warning: the desktop is already arranged, and undoing that would be worse.
+    /// </summary>
     private static DisplayLayoutResult ApplyPerTarget(
         DisplayLayout layout, DisplayLayoutOutcome outcome, IReadOnlyList<DisplayTargetIdentity> absent, string detail)
     {
         List<string> warnings = [];
-        foreach (DisplayLayoutOutput output in layout.Outputs)
+        foreach (var output in layout.Outputs)
         {
             warnings.AddRange(ApplyOutputExtras(output));
         }
-        return new(outcome, absent, 0, false, false, warnings, detail);
+
+        return new DisplayLayoutResult(outcome, absent, 0, false, false, warnings, detail);
     }
 
     private static IReadOnlyList<string> ApplyOutputExtras(DisplayLayoutOutput output)
     {
         List<string> warnings = [];
-        if (output.Hdr is { } hdr && !DisplayColor.TrySetHdr(output.Target, hdr, out string colourDetail))
+        if (output.Hdr is { } hdr && !DisplayColor.TrySetHdr(output.Target, hdr, out var colourDetail))
         {
             warnings.Add($"{Describe(output.Target)}: {colourDetail}");
         }
-        if (output.DpiPercent is { } percent && !DisplayScaling.TrySet(output.Target, percent, out string scaleDetail))
+
+        if (output.DpiPercent is { } percent && !DisplayScaling.TrySet(output.Target, percent, out var scaleDetail))
         {
             warnings.Add($"{Describe(output.Target)}: {scaleDetail}");
         }
+
         return warnings;
     }
 
-    /// <summary>Whether the current arrangement already is this layout, within the tolerance a
-    /// captured rational refresh needs.</summary>
+    /// <summary>
+    ///     Whether the current arrangement already is this layout, within the tolerance a
+    ///     captured rational refresh needs.
+    /// </summary>
     internal static bool Matches(DisplayArrangement arrangement, DisplayLayout layout)
     {
         var active = arrangement.Targets.Where(target => target is { Active: true, Current: not null }).ToArray();
-        if (active.Length != layout.Outputs.Count) { return false; }
-        foreach (DisplayLayoutOutput output in layout.Outputs)
+        if (active.Length != layout.Outputs.Count)
         {
-            DisplayTargetObservation? match = active.FirstOrDefault(target => output.Target.Matches(target.Target));
+            return false;
+        }
+
+        foreach (var output in layout.Outputs)
+        {
+            var match = active.FirstOrDefault(target => output.Target.Matches(target.Target));
             if (match?.Current is not { } current
                 || current.X != output.X || current.Y != output.Y
                 || current.Width != output.Width || current.Height != output.Height
@@ -358,60 +455,94 @@ public static class DisplayLayouts
                 return false;
             }
         }
+
         return true;
     }
 
-    /// <summary>A requested rate of "default" matches whatever is running; otherwise the readback
-    /// must land within half a hertz, because the adapter reports the exact rational it chose.</summary>
-    internal static bool SameRefresh(DisplayRefresh observed, DisplayRefresh requested) =>
-        requested.Denominator == 0 || Math.Abs(observed.Hertz - requested.Hertz) < 0.5;
+    /// <summary>
+    ///     A requested rate of "default" matches whatever is running; otherwise the readback
+    ///     must land within half a hertz, because the adapter reports the exact rational it chose.
+    /// </summary>
+    internal static bool SameRefresh(DisplayRefresh observed, DisplayRefresh requested)
+    {
+        return requested.Denominator == 0 || Math.Abs(observed.Hertz - requested.Hertz) < 0.5;
+    }
 
     private static bool Confirm(DisplayLayout layout)
     {
-        try { return Matches(Observe(), layout); }
-        catch (Win32Exception) { return false; }
+        try
+        {
+            return Matches(Observe(), layout);
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
     }
 
-    /// <summary>Stable text for one observation. Sorted by identity so two equal observations of a
-    /// settled topology produce the same string.</summary>
+    /// <summary>
+    ///     Stable text for one observation. Sorted by identity so two equal observations of a
+    ///     settled topology produce the same string.
+    /// </summary>
     internal static string Fingerprint(IEnumerable<DisplayTargetObservation> targets)
     {
         StringBuilder text = new();
-        foreach (DisplayTargetObservation target in targets
-            .OrderBy(target => Key(target.Target), StringComparer.OrdinalIgnoreCase))
+        foreach (var target in targets
+                     .OrderBy(target => Key(target.Target), StringComparer.OrdinalIgnoreCase))
         {
             text.Append(Key(target.Target)).Append(target.Available ? "|available" : "|absent")
                 .Append(target.Active ? "|active" : "|off");
             if (target.Current is { } current)
             {
                 text.Append(CultureInfo.InvariantCulture, $"|{current.X},{current.Y},{current.Width}x{current.Height}")
-                    .Append(CultureInfo.InvariantCulture, $"@{current.Refresh.Numerator}/{current.Refresh.Denominator}");
+                    .Append(CultureInfo.InvariantCulture,
+                        $"@{current.Refresh.Numerator}/{current.Refresh.Denominator}");
             }
+
             text.Append(';');
         }
+
         return text.ToString();
     }
 
-    private static string Key(DisplayTargetIdentity target) => target.DevicePath.Length != 0
-        ? target.DevicePath
-        : $"{target.EdidManufacturerId}-{target.EdidProductCodeId}-{target.FriendlyName}";
+    private static string Key(DisplayTargetIdentity target)
+    {
+        return target.DevicePath.Length != 0
+            ? target.DevicePath
+            : $"{target.EdidManufacturerId}-{target.EdidProductCodeId}-{target.FriendlyName}";
+    }
 
-    private static string Describe(DisplayTargetIdentity target) =>
-        target.FriendlyName.Length != 0 ? target.FriendlyName : Key(target);
+    private static string Describe(DisplayTargetIdentity target)
+    {
+        return target.FriendlyName.Length != 0 ? target.FriendlyName : Key(target);
+    }
 
     private static DisplayLayoutOutput? ReadOutput(
         DisplayTopology.PathInfo path, DisplayTopology.ModeInfo[] modes, DisplayTargetIdentity identity)
     {
-        if (path.SourceInfo.ModeInfoIdx >= modes.Length) { return null; }
-        DisplayTopology.ModeInfo mode = modes[path.SourceInfo.ModeInfoIdx];
-        if (mode.InfoType != SourceModeType) { return null; }
-        DisplayTopology.SourceMode source = mode.Mode.Source;
+        if (path.SourceInfo.ModeInfoIdx >= modes.Length)
+        {
+            return null;
+        }
+
+        var mode = modes[path.SourceInfo.ModeInfoIdx];
+        if (mode.InfoType != SourceModeType)
+        {
+            return null;
+        }
+
+        var source = mode.Mode.Source;
         // The active path already names this display's source and target, so the scaling and colour
         // reads use it instead of finding the display again.
-        return new(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
-            new(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
+        return new DisplayLayoutOutput(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
+            new DisplayRefresh(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
             path.TargetInfo.Rotation,
-            DisplayScaling.TryRead(path.SourceInfo.AdapterId, path.SourceInfo.Id, out int percent, out _, out _) ? percent : null,
-            DisplayColor.TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out bool enabled, out bool supported) && supported ? enabled : null);
+            DisplayScaling.TryRead(path.SourceInfo.AdapterId, path.SourceInfo.Id, out var percent, out _, out _)
+                ? percent
+                : null,
+            DisplayColor.TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out var enabled, out var supported) &&
+            supported
+                ? enabled
+                : null);
     }
 }

@@ -11,8 +11,14 @@ namespace WindowsDeviceControl;
 /// <param name="AdapterLowPart">Current adapter LUID low part. This coordinate may change after hotplug.</param>
 /// <param name="AdapterHighPart">Current adapter LUID high part. This coordinate may change after hotplug.</param>
 /// <param name="TargetId">Current CCD target identifier. This coordinate may change after hotplug.</param>
-public sealed record DisplayTargetIdentity(string DevicePath, ushort? EdidManufacturerId,
-    ushort? EdidProductCodeId, string FriendlyName, uint AdapterLowPart, int AdapterHighPart, uint TargetId)
+public sealed record DisplayTargetIdentity(
+    string DevicePath,
+    ushort? EdidManufacturerId,
+    ushort? EdidProductCodeId,
+    string FriendlyName,
+    uint AdapterLowPart,
+    int AdapterHighPart,
+    uint TargetId)
 {
     /// <summary>Returns whether this saved identity describes the same physical monitor observation.</summary>
     /// <param name="other">Current observation to compare.</param>
@@ -21,9 +27,14 @@ public sealed record DisplayTargetIdentity(string DevicePath, ushort? EdidManufa
     {
         ArgumentNullException.ThrowIfNull(other);
         if (DevicePath.Length != 0 || other.DevicePath.Length != 0)
-        { return DevicePath.Length != 0 && string.Equals(DevicePath, other.DevicePath, StringComparison.OrdinalIgnoreCase); }
+        {
+            return DevicePath.Length != 0 &&
+                   string.Equals(DevicePath, other.DevicePath, StringComparison.OrdinalIgnoreCase);
+        }
+
         return EdidManufacturerId.HasValue && EdidProductCodeId.HasValue
-            && EdidManufacturerId == other.EdidManufacturerId && EdidProductCodeId == other.EdidProductCodeId;
+                                           && EdidManufacturerId == other.EdidManufacturerId &&
+                                           EdidProductCodeId == other.EdidProductCodeId;
     }
 }
 
@@ -33,8 +44,12 @@ public sealed record DisplayTargetIdentity(string DevicePath, ushort? EdidManufa
 /// <param name="OutputTechnology">Raw DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY value.</param>
 /// <param name="RefreshNumerator">Current path refresh numerator.</param>
 /// <param name="RefreshDenominator">Current path refresh denominator.</param>
-public sealed record ActiveDisplayPath(DisplayTargetIdentity Target, string SourceName, uint OutputTechnology,
-    uint RefreshNumerator, uint RefreshDenominator);
+public sealed record ActiveDisplayPath(
+    DisplayTargetIdentity Target,
+    string SourceName,
+    uint OutputTechnology,
+    uint RefreshNumerator,
+    uint RefreshDenominator);
 
 /// <summary>A detached observation of the active CCD topology.</summary>
 /// <param name="Paths">Active paths in Windows priority order.</param>
@@ -46,8 +61,11 @@ public sealed record DisplayTopologySnapshot(IReadOnlyList<ActiveDisplayPath> Pa
 /// <param name="Targets">Stable target identities in path order.</param>
 /// <param name="PathData">Blittable DISPLAYCONFIG_PATH_INFO records without process pointers.</param>
 /// <param name="ModeData">Blittable DISPLAYCONFIG_MODE_INFO records without process pointers.</param>
-public sealed record DisplayProfile(int FormatVersion, IReadOnlyList<DisplayTargetIdentity> Targets,
-    IReadOnlyList<byte[]> PathData, IReadOnlyList<byte[]> ModeData);
+public sealed record DisplayProfile(
+    int FormatVersion,
+    IReadOnlyList<DisplayTargetIdentity> Targets,
+    IReadOnlyList<byte[]> PathData,
+    IReadOnlyList<byte[]> ModeData);
 
 /// <summary>Result of validating or applying a display profile.</summary>
 /// <param name="Applied">Whether the requested profile was applied and confirmed active.</param>
@@ -55,14 +73,19 @@ public sealed record DisplayProfile(int FormatVersion, IReadOnlyList<DisplayTarg
 /// <param name="RollbackAttempted">Whether failure triggered restoration of the captured topology.</param>
 /// <param name="RollbackSucceeded">Whether rollback returned success.</param>
 /// <param name="Detail">Bounded diagnostic suitable for a log or UI.</param>
-public sealed record DisplayProfileResult(bool Applied, int NativeStatus, bool RollbackAttempted,
-    bool RollbackSucceeded, string Detail);
+public sealed record DisplayProfileResult(
+    bool Applied,
+    int NativeStatus,
+    bool RollbackAttempted,
+    bool RollbackSucceeded,
+    string Detail);
 
 /// <summary>Result of waiting for a saved display identity.</summary>
 public enum DisplayWaitOutcome
 {
     /// <summary>A matching monitor satisfying the requested active/available wait was observed.</summary>
     Present,
+
     /// <summary>The deadline elapsed without a matching active monitor.</summary>
-    TimedOut,
+    TimedOut
 }

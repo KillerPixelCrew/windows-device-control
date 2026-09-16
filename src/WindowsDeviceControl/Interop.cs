@@ -2,8 +2,8 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Microsoft.Win32.SafeHandles;
 using Windows.Foundation;
+using Microsoft.Win32.SafeHandles;
 
 namespace WindowsDeviceControl;
 
@@ -30,7 +30,9 @@ internal static class Win32Error
 
     /// <summary>The exception for one failed operation, carrying the native code unchanged.</summary>
     internal static Win32Exception Failure(uint status, string operation)
-        => new(unchecked((int)status), $"{operation} failed (status {status}).");
+    {
+        return new Win32Exception(unchecked((int)status), $"{operation} failed (status {status}).");
+    }
 
     /// <summary>Throws the preserved WLAN failure for a non-zero status.</summary>
     internal static void CheckWlan(string operation, uint status)
@@ -41,9 +43,11 @@ internal static class Win32Error
         }
     }
 
-    /// <summary>The WLAN form of <see cref="Failure"/>, which keeps its own message wording.</summary>
+    /// <summary>The WLAN form of <see cref="Failure" />, which keeps its own message wording.</summary>
     internal static Win32Exception WlanFailure(string operation, uint status)
-        => new(unchecked((int)status), $"{operation} failed (Win32 {status}).");
+    {
+        return new Win32Exception(unchecked((int)status), $"{operation} failed (Win32 {status}).");
+    }
 }
 
 /// <summary>The kernel32 device calls shared by the backlight and storage readers.</summary>
@@ -73,11 +77,12 @@ internal static unsafe class NativeText
     /// <returns>The string up to its terminator or capacity.</returns>
     internal static string ReadFixed(char* value, int capacity)
     {
-        int length = 0;
+        var length = 0;
         while (length < capacity && value[length] != '\0')
         {
             length++;
         }
+
         return new string(value, 0, length);
     }
 }
@@ -87,9 +92,13 @@ internal static class WinRt
 {
     /// <summary>Waits for a WinRT operation on the calling thread.</summary>
     internal static T WaitWinRt<T>(this IAsyncOperation<T> operation)
-        => operation.AsTask().GetAwaiter().GetResult();
+    {
+        return operation.AsTask().GetAwaiter().GetResult();
+    }
 
     /// <summary>Waits for a WinRT operation on the calling thread, cancelling it with the token.</summary>
     internal static T WaitWinRt<T>(this IAsyncOperation<T> operation, CancellationToken cancellationToken)
-        => operation.AsTask(cancellationToken).GetAwaiter().GetResult();
+    {
+        return operation.AsTask(cancellationToken).GetAwaiter().GetResult();
+    }
 }

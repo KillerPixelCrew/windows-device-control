@@ -12,10 +12,13 @@ public static partial class CoreAudio
 
     private static readonly Guid DeviceTopologyId =
         new("2A07407E-6497-4A18-9787-32F79BD0D98F");
+
     private static readonly Guid KsControlId =
         new("28F54685-06FD-11D2-B27A-00A0C9223196");
+
     private static readonly Guid BluetoothAudioPropertySet =
         new("7FA06C40-B8F6-4C7E-8556-E8C33A12E54D");
+
     private static readonly PropertyKey DeviceContainerIdKey = new(
         new Guid("8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C"),
         2);
@@ -23,17 +26,12 @@ public static partial class CoreAudio
     /// <summary>Both flows a device container can expose endpoints in.</summary>
     private static readonly DataFlow[] EndpointFlows = [DataFlow.Render, DataFlow.Capture];
 
-    /// <summary>One device container that exposes Core Audio endpoints.</summary>
-    /// <param name="Container">The container identifier, which is what ties an audio endpoint back
-    /// to the Bluetooth device it belongs to.</param>
-    /// <param name="Active">Whether the container currently has an active endpoint — that is,
-    /// whether the device is connected rather than merely paired.</param>
-    public readonly record struct BluetoothAudioContainer(string Container, bool Active);
-
     /// <summary>Lists every audio endpoint container, including disconnected Bluetooth devices.</summary>
-    /// <returns>One entry per container. A paired but disconnected Bluetooth headset appears with
-    /// <see cref="BluetoothAudioContainer.Active"/> false, which is how you offer to reconnect
-    /// it.</returns>
+    /// <returns>
+    ///     One entry per container. A paired but disconnected Bluetooth headset appears with
+    ///     <see cref="BluetoothAudioContainer.Active" /> false, which is how you offer to reconnect
+    ///     it.
+    /// </returns>
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
         var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -42,9 +40,10 @@ public static partial class CoreAudio
             if (TryReadContainer(endpoint) is { } container)
             {
                 var active = endpoint.GetState(out var state) >= 0
-                    && state == DeviceStateActive;
+                             && state == DeviceStateActive;
                 groups[container] = groups.GetValueOrDefault(container) || active;
             }
+
             return false;
         });
         return groups.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
@@ -54,12 +53,16 @@ public static partial class CoreAudio
     }
 
     /// <summary>Connects or disconnects one paired Bluetooth audio device.</summary>
-    /// <param name="containerId">The container identifier from
-    /// <see cref="ListBluetoothAudioContainers"/>.</param>
+    /// <param name="containerId">
+    ///     The container identifier from
+    ///     <see cref="ListBluetoothAudioContainers" />.
+    /// </param>
     /// <param name="connect">True to connect, false to disconnect.</param>
-    /// <remarks>The request is made to the audio endpoint's device topology; the device may take a
-    /// moment to appear or disappear afterwards, so re-read the container list rather than assuming
-    /// the change is immediate.</remarks>
+    /// <remarks>
+    ///     The request is made to the audio endpoint's device topology; the device may take a
+    ///     moment to appear or disappear afterwards, so re-read the container list rather than assuming
+    ///     the change is immediate.
+    /// </remarks>
     public static void SetBluetoothAudioConnection(string containerId, bool connect)
     {
         ArgumentException.ThrowIfNullOrEmpty(containerId);
@@ -73,6 +76,7 @@ public static partial class CoreAudio
             {
                 return false;
             }
+
             matched = true;
             try
             {
@@ -89,6 +93,7 @@ public static partial class CoreAudio
         {
             return;
         }
+
         throw last ?? new InvalidOperationException(matched
             ? "No endpoint accepted the Bluetooth audio request."
             : "The Bluetooth device has no audio endpoint.");
@@ -109,6 +114,7 @@ public static partial class CoreAudio
                 {
                     continue;
                 }
+
                 Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
                 for (var index = 0u; index < count; index++)
                 {
@@ -116,7 +122,7 @@ public static partial class CoreAudio
                     try
                     {
                         if (collection.Item(index, out endpoint) >= 0 && endpoint is not null
-                            && visit(endpoint))
+                                                                      && visit(endpoint))
                         {
                             return true;
                         }
@@ -132,11 +138,14 @@ public static partial class CoreAudio
                 Release(collection);
             }
         }
+
         return false;
     }
 
     private static string? TryReadContainer(IMMDevice endpoint)
-        => ReadStringProperty(endpoint, DeviceContainerIdKey, static value => value.GuidValue?.ToString("D"));
+    {
+        return ReadStringProperty(endpoint, DeviceContainerIdKey, static value => value.GuidValue?.ToString("D"));
+    }
 
     private static void SendBluetoothAudioOneShot(
         IMMDeviceEnumerator enumerator,
@@ -154,31 +163,36 @@ public static partial class CoreAudio
             {
                 throw new InvalidCastException("The endpoint does not expose IDeviceTopology.");
             }
+
             Marshal.ThrowExceptionForHR(topology.GetConnector(0, out connector));
             if (connector is null)
             {
                 throw new InvalidOperationException("The endpoint has no topology connector.");
             }
+
             Marshal.ThrowExceptionForHR(connector.GetDeviceIdConnectedTo(out var adapterId));
             if (string.IsNullOrEmpty(adapterId))
             {
                 throw new InvalidOperationException("The endpoint connector has no adapter device.");
             }
+
             Marshal.ThrowExceptionForHR(enumerator.GetDevice(adapterId, out adapter));
             if (adapter is null)
             {
                 throw new InvalidOperationException("The audio adapter could not be opened.");
             }
+
             Marshal.ThrowExceptionForHR(Activate(adapter, KsControlId, out control));
             if (control is null)
             {
                 throw new InvalidCastException("The audio adapter does not expose IKsControl.");
             }
+
             var property = new KsProperty
             {
                 Set = BluetoothAudioPropertySet,
                 Id = connect ? 0u : 1u,
-                Flags = KsPropertyTypeGet,
+                Flags = KsPropertyTypeGet
             };
             Marshal.ThrowExceptionForHR(control.KsProperty(
                 ref property,
@@ -195,4 +209,15 @@ public static partial class CoreAudio
             Release(topology);
         }
     }
+
+    /// <summary>One device container that exposes Core Audio endpoints.</summary>
+    /// <param name="Container">
+    ///     The container identifier, which is what ties an audio endpoint back
+    ///     to the Bluetooth device it belongs to.
+    /// </param>
+    /// <param name="Active">
+    ///     Whether the container currently has an active endpoint — that is,
+    ///     whether the device is connected rather than merely paired.
+    /// </param>
+    public readonly record struct BluetoothAudioContainer(string Container, bool Active);
 }

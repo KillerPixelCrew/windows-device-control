@@ -17,7 +17,7 @@ public enum WakeDeviceControl
     ///     Wake-capable, but Windows does not offer it as programmable. Firmware or the OS owns it;
     ///     report it and leave it alone.
     /// </summary>
-    Fixed,
+    Fixed
 }
 
 /// <summary>One device Windows reports as able to wake the machine from Modern Standby.</summary>
@@ -69,54 +69,24 @@ public sealed record ModernStandbySupport(
 /// </summary>
 /// <remarks>
 ///     Policy-neutral on purpose. There is no "disable every wake source" call and no stored state:
-///     a caller names one device at a time, persists <see cref="CaptureWakeDevices"/> before it
-///     changes anything, and keeps that snapshot until <see cref="RestoreWakeDevices"/> succeeds.
+///     a caller names one device at a time, persists <see cref="CaptureWakeDevices" /> before it
+///     changes anything, and keeps that snapshot until <see cref="RestoreWakeDevices" /> succeeds.
 ///     <para>
-///     The power button, sleep button and lid are reported by <see cref="Query"/> and are not part
-///     of the device list this class writes to, so no call here can take away a recovery wake path.
-///     Software wake sources are ordinary power settings; the GUIDs are exposed here and read and
-///     written through <see cref="WindowsPower.ReadSetting"/> and
-///     <see cref="WindowsPower.WriteSetting"/>.
+///         The power button, sleep button and lid are reported by <see cref="Query" /> and are not part
+///         of the device list this class writes to, so no call here can take away a recovery wake path.
+///         Software wake sources are ordinary power settings; the GUIDs are exposed here and read and
+///         written through <see cref="WindowsPower.ReadSetting" /> and
+///         <see cref="WindowsPower.WriteSetting" />.
 ///     </para>
-///     Changing device wake state needs elevation. Native failures throw <see cref="Win32Exception"/>.
+///     Changing device wake state needs elevation. Native failures throw <see cref="Win32Exception" />.
 /// </remarks>
 public static partial class ModernStandby
 {
-    /// <summary>Sleep settings subgroup (SUB_SLEEP).</summary>
-    public static readonly Guid SubgroupSleep = new("238c9fa8-0aad-41ed-83f4-97be242c8f20");
-
-    /// <summary>The subgroup for settings that belong to no subgroup (SUB_NONE).</summary>
-    public static readonly Guid SubgroupNone = new("fea3413e-7e05-4911-9a71-700331f1c294");
-
-    /// <summary>Allow wake timers (RTCWAKE), under <see cref="SubgroupSleep"/>.</summary>
-    public static readonly Guid SettingAllowWakeTimers = new("bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d");
-
-    /// <summary>Allow away mode (AWAYMODE), under <see cref="SubgroupSleep"/>.</summary>
-    public static readonly Guid SettingAllowAwayMode = new("25dfa149-5dd1-4736-b5ab-e8a37b5b8187");
-
-    /// <summary>Unattended sleep timeout (UNATTENDSLEEP), under <see cref="SubgroupSleep"/>.</summary>
-    public static readonly Guid SettingUnattendedSleepTimeout =
-        new("7bc4a2f9-d8fc-4469-b07b-33eb785aaca0");
-
-    /// <summary>Network connectivity in standby (CONNECTIVITYINSTANDBY), under <see cref="SubgroupNone"/>.</summary>
-    public static readonly Guid SettingConnectivityInStandby =
-        new("f15576e8-98b7-4186-b944-eafa664402d9");
-
-    /// <summary>Disconnected standby mode (DISCONNECTEDSTANDBYMODE), under <see cref="SubgroupNone"/>.</summary>
-    public static readonly Guid SettingDisconnectedStandby =
-        new("68afb2d9-ee95-47a8-8f50-4115088073b1");
-
     private const uint FilterDevicesPresent = 0x20000000;
     private const uint FilterWakeEnabled = 0x08000000;
     private const uint FilterWakeProgrammable = 0x04000000;
     private const uint SetWakeEnabled = 0x00000001;
     private const uint ClearWakeEnabled = 0x00000002;
-
-    // DevicePowerOpen/DevicePowerClose open and close one process-global device list. Without a
-    // gate, one caller's close can pull the list out from under another's enumeration, which reads
-    // as an empty snapshot (and a restore that silently does nothing) or a mid-restore throw.
-    // Reentrant, so a restore can hold it across its own enumerate-then-write calls.
-    private static readonly object WakeDeviceGate = new();
 
     /// <summary>Bounded buffer for one device description; Windows names are far below this.</summary>
     private const uint MaximumNameBytes = 4096;
@@ -129,15 +99,54 @@ public static partial class ModernStandby
     private const int OffsetAoAc = 20;
     private const int OffsetAoAcConnectivity = 23;
 
+    private const uint MaximumDevices = 4096;
+
+    /// <summary>POWER_INFORMATION_LEVEL.LastWakeTime; interrupt time at the last wake.</summary>
+    private const uint LastWakeTime = 14;
+
+    /// <summary>POWER_INFORMATION_LEVEL.LastSleepTime; interrupt time at the last sleep.</summary>
+    private const uint LastSleepTime = 15;
+
+    /// <summary>Sleep settings subgroup (SUB_SLEEP).</summary>
+    public static readonly Guid SubgroupSleep = new("238c9fa8-0aad-41ed-83f4-97be242c8f20");
+
+    /// <summary>The subgroup for settings that belong to no subgroup (SUB_NONE).</summary>
+    public static readonly Guid SubgroupNone = new("fea3413e-7e05-4911-9a71-700331f1c294");
+
+    /// <summary>Allow wake timers (RTCWAKE), under <see cref="SubgroupSleep" />.</summary>
+    public static readonly Guid SettingAllowWakeTimers = new("bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d");
+
+    /// <summary>Allow away mode (AWAYMODE), under <see cref="SubgroupSleep" />.</summary>
+    public static readonly Guid SettingAllowAwayMode = new("25dfa149-5dd1-4736-b5ab-e8a37b5b8187");
+
+    /// <summary>Unattended sleep timeout (UNATTENDSLEEP), under <see cref="SubgroupSleep" />.</summary>
+    public static readonly Guid SettingUnattendedSleepTimeout =
+        new("7bc4a2f9-d8fc-4469-b07b-33eb785aaca0");
+
+    /// <summary>Network connectivity in standby (CONNECTIVITYINSTANDBY), under <see cref="SubgroupNone" />.</summary>
+    public static readonly Guid SettingConnectivityInStandby =
+        new("f15576e8-98b7-4186-b944-eafa664402d9");
+
+    /// <summary>Disconnected standby mode (DISCONNECTEDSTANDBYMODE), under <see cref="SubgroupNone" />.</summary>
+    public static readonly Guid SettingDisconnectedStandby =
+        new("68afb2d9-ee95-47a8-8f50-4115088073b1");
+
+    // DevicePowerOpen/DevicePowerClose open and close one process-global device list. Without a
+    // gate, one caller's close can pull the list out from under another's enumeration, which reads
+    // as an empty snapshot (and a restore that silently does nothing) or a mid-restore throw.
+    // Reentrant, so a restore can hold it across its own enumerate-then-write calls.
+    private static readonly object WakeDeviceGate = new();
+
     /// <summary>Reads what the machine supports. Native failures throw Win32Exception.</summary>
     /// <returns>Modern Standby support and the mandatory wake paths this machine has.</returns>
     public static ModernStandbySupport Query()
     {
-        byte[] buffer = new byte[CapabilitiesBytes];
+        var buffer = new byte[CapabilitiesBytes];
         if (!GetPwrCapabilities(buffer))
         {
             throw Failure((uint)Marshal.GetLastWin32Error(), "GetPwrCapabilities");
         }
+
         return ReadCapabilities(buffer);
     }
 
@@ -150,7 +159,10 @@ public static partial class ModernStandby
     ///     it on the resume notification rather than caching it.
     /// </remarks>
     /// <returns>True when the last resume was unattended.</returns>
-    public static bool WasLastResumeUnattended() => IsSystemResumeAutomatic();
+    public static bool WasLastResumeUnattended()
+    {
+        return IsSystemResumeAutomatic();
+    }
 
     /// <summary>Reads the interrupt-time marks around the last standby.</summary>
     /// <remarks>
@@ -160,18 +172,23 @@ public static partial class ModernStandby
     ///     what woke the machine: Windows exposes no documented call for that.
     /// </remarks>
     /// <returns>The last sleep and wake marks and the current interrupt time.</returns>
-    public static StandbyTiming ReadStandbyTiming() => new(
-        ReadInterruptTime(LastSleepTime),
-        ReadInterruptTime(LastWakeTime),
-        QueryInterruptTimeNow());
+    public static StandbyTiming ReadStandbyTiming()
+    {
+        return new StandbyTiming(
+            ReadInterruptTime(LastSleepTime),
+            ReadInterruptTime(LastWakeTime),
+            QueryInterruptTimeNow());
+    }
 
-    /// <summary>Enumerates the wake sources a caller can act on: those armed, and those Windows
-    /// reports as programmable.</summary>
+    /// <summary>
+    ///     Enumerates the wake sources a caller can act on: those armed, and those Windows
+    ///     reports as programmable.
+    /// </summary>
     /// <remarks>
     ///     Not every device that merely supports waking from S0 — that set is most of the HID and
     ///     Bluetooth endpoints on a handheld, none of which Windows offers for change, and listing
     ///     them would bury the few that matter. A device that is armed but not programmable comes
-    ///     back as <see cref="WakeDeviceControl.Fixed"/>: visible, reportable, never written to.
+    ///     back as <see cref="WakeDeviceControl.Fixed" />: visible, reportable, never written to.
     ///     Ordered by name so two reads are comparable.
     /// </remarks>
     /// <returns>The actionable wake sources present on the machine.</returns>
@@ -189,31 +206,37 @@ public static partial class ModernStandby
         {
             throw Failure((uint)Marshal.GetLastWin32Error(), "DevicePowerOpen");
         }
+
         try
         {
-            byte[] buffer = new byte[MaximumNameBytes];
+            var buffer = new byte[MaximumNameBytes];
             HashSet<string> programmable = new(
                 Enumerate(FilterDevicesPresent | FilterWakeProgrammable, buffer), StringComparer.Ordinal);
             HashSet<string> armed = new(
                 Enumerate(FilterDevicesPresent | FilterWakeEnabled, buffer), StringComparer.Ordinal);
 
             List<string> names = [.. programmable];
-            foreach (string name in armed)
+            foreach (var name in armed)
             {
-                if (!programmable.Contains(name)) { names.Add(name); }
+                if (!programmable.Contains(name))
+                {
+                    names.Add(name);
+                }
             }
+
             names.Sort(StringComparer.Ordinal);
 
             List<WakeDevice> devices = [];
-            foreach (string name in names)
+            foreach (var name in names)
             {
-                devices.Add(new(
+                devices.Add(new WakeDevice(
                     name,
                     armed.Contains(name),
                     programmable.Contains(name)
                         ? WakeDeviceControl.Programmable
                         : WakeDeviceControl.Fixed));
             }
+
             return devices;
         }
         finally
@@ -228,10 +251,10 @@ public static partial class ModernStandby
     ///     that became firmware-managed since it was enumerated is refused rather than written to.
     ///     Idempotent: a device already in the requested state is left alone and reported as done.
     /// </remarks>
-    /// <param name="name">The device description from <see cref="EnumerateWakeDevices"/>.</param>
+    /// <param name="name">The device description from <see cref="EnumerateWakeDevices" />.</param>
     /// <param name="armed">True to let the device wake the machine.</param>
     /// <returns>False when Windows does not offer that device as programmable, or it is absent.</returns>
-    /// <exception cref="ArgumentException"><paramref name="name"/> is empty.</exception>
+    /// <exception cref="ArgumentException"><paramref name="name" /> is empty.</exception>
     public static bool TrySetWakeArmed(string name, bool armed)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -239,25 +262,29 @@ public static partial class ModernStandby
         // device when the write lands.
         lock (WakeDeviceGate)
         {
-            foreach (WakeDevice device in EnumerateWakeDevicesCore())
+            foreach (var device in EnumerateWakeDevicesCore())
             {
                 if (!string.Equals(device.Name, name, StringComparison.Ordinal))
                 {
                     continue;
                 }
+
                 if (device.Control != WakeDeviceControl.Programmable)
                 {
                     return false;
                 }
+
                 if (device.Armed == armed)
                 {
                     return true;
                 }
+
                 Check(
                     DevicePowerSetDeviceState(name, armed ? SetWakeEnabled : ClearWakeEnabled, 0),
                     "DevicePowerSetDeviceState");
                 return true;
             }
+
             return false;
         }
     }
@@ -269,12 +296,16 @@ public static partial class ModernStandby
     {
         List<string> known = [];
         List<string> armed = [];
-        foreach (WakeDevice device in EnumerateWakeDevices())
+        foreach (var device in EnumerateWakeDevices())
         {
             known.Add(device.Name);
-            if (device.Armed) { armed.Add(device.Name); }
+            if (device.Armed)
+            {
+                armed.Add(device.Name);
+            }
         }
-        return new(known, armed);
+
+        return new WakeDeviceSnapshot(known, armed);
     }
 
     /// <summary>Puts the arming back the way a snapshot recorded it.</summary>
@@ -284,14 +315,14 @@ public static partial class ModernStandby
     ///     restore. Idempotent, and a device that is no longer programmable is skipped rather than
     ///     failing the rest.
     /// </remarks>
-    /// <param name="snapshot">A snapshot from <see cref="CaptureWakeDevices"/>.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> is null.</exception>
+    /// <param name="snapshot">A snapshot from <see cref="CaptureWakeDevices" />.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="snapshot" /> is null.</exception>
     public static void RestoreWakeDevices(WakeDeviceSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         lock (WakeDeviceGate)
         {
-            foreach ((string name, bool armed) in RestorePlan(EnumerateWakeDevicesCore(), snapshot))
+            foreach (var (name, armed) in RestorePlan(EnumerateWakeDevicesCore(), snapshot))
             {
                 TrySetWakeArmed(name, armed);
             }
@@ -304,15 +335,20 @@ public static partial class ModernStandby
         HashSet<string> known = new(snapshot.Known, StringComparer.Ordinal);
         HashSet<string> armed = new(snapshot.Armed, StringComparer.Ordinal);
         List<(string, bool)> writes = [];
-        foreach (WakeDevice device in current)
+        foreach (var device in current)
         {
             if (device.Control != WakeDeviceControl.Programmable || !known.Contains(device.Name))
             {
                 continue;
             }
-            bool wanted = armed.Contains(device.Name);
-            if (wanted != device.Armed) { writes.Add((device.Name, wanted)); }
+
+            var wanted = armed.Contains(device.Name);
+            if (wanted != device.Armed)
+            {
+                writes.Add((device.Name, wanted));
+            }
         }
+
         return writes;
     }
 
@@ -322,7 +358,8 @@ public static partial class ModernStandby
         {
             throw Failure(ErrorInvalidData, "GetPwrCapabilities");
         }
-        return new(
+
+        return new ModernStandbySupport(
             buffer[OffsetAoAc] != 0,
             buffer[OffsetAoAcConnectivity] != 0,
             buffer[OffsetWakeAlarm] != 0,
@@ -337,19 +374,21 @@ public static partial class ModernStandby
     /// </summary>
     internal static string DecodeDeviceName(byte[] buffer)
     {
-        for (int end = 0; end + 1 < buffer.Length; end += 2)
+        for (var end = 0; end + 1 < buffer.Length; end += 2)
         {
             if (buffer[end] != 0 || buffer[end + 1] != 0)
             {
                 continue;
             }
-            string name = Encoding.Unicode.GetString(buffer, 0, end);
+
+            var name = Encoding.Unicode.GetString(buffer, 0, end);
             // A name is this API's device identity. An empty or unterminated one names nothing, and
             // guessing at it would hand the caller something to write to that it cannot address.
             return string.IsNullOrWhiteSpace(name)
                 ? throw Failure(ErrorInvalidData, "DevicePowerEnumDevices")
                 : name;
         }
+
         throw Failure(ErrorInvalidData, "DevicePowerEnumDevices");
     }
 
@@ -357,18 +396,19 @@ public static partial class ModernStandby
     internal static TimeSpan ReadInterruptTime(uint level)
     {
         ulong ticks = 0;
-        uint status = CallNtPowerInformation(level, 0, 0, ref ticks, sizeof(ulong));
+        var status = CallNtPowerInformation(level, 0, 0, ref ticks, sizeof(ulong));
         if (status != 0)
         {
             // NTSTATUS, not a Win32 code: preserved as-is rather than mapped to an invented one.
             throw Failure(status, "CallNtPowerInformation");
         }
+
         return TimeSpan.FromTicks(checked((long)ticks));
     }
 
     private static TimeSpan QueryInterruptTimeNow()
     {
-        QueryInterruptTime(out ulong ticks);
+        QueryInterruptTime(out var ticks);
         return TimeSpan.FromTicks(checked((long)ticks));
     }
 
@@ -380,7 +420,7 @@ public static partial class ModernStandby
             // Cleared rather than reallocated, so a shorter name still ends at the zero padding a
             // fresh buffer would have given it.
             Array.Clear(buffer);
-            uint size = MaximumNameBytes;
+            var size = MaximumNameBytes;
             if (DevicePowerEnumDevices(index, interpretation, 0, buffer, ref size))
             {
                 names.Add(DecodeDeviceName(buffer));
@@ -390,23 +430,17 @@ public static partial class ModernStandby
             // The end of the list and a real failure both return FALSE, and only the error code
             // separates them. Treating every FALSE as the end would report a partial device list as
             // a complete one, which is the answer a caller cannot detect.
-            uint error = (uint)Marshal.GetLastWin32Error();
+            var error = (uint)Marshal.GetLastWin32Error();
             if (error is ErrorNoMoreItems)
             {
                 return names;
             }
+
             throw Failure(error, "DevicePowerEnumDevices");
         }
+
         return names;
     }
-
-    private const uint MaximumDevices = 4096;
-
-    /// <summary>POWER_INFORMATION_LEVEL.LastWakeTime; interrupt time at the last wake.</summary>
-    private const uint LastWakeTime = 14;
-
-    /// <summary>POWER_INFORMATION_LEVEL.LastSleepTime; interrupt time at the last sleep.</summary>
-    private const uint LastSleepTime = 15;
 
     [LibraryImport("powrprof.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.U1)]

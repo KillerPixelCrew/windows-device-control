@@ -16,7 +16,9 @@ public sealed record DisplayMode(int Width, int Height, int RefreshHz);
 /// <param name="Path">Target identity and source route.</param>
 /// <param name="Current">Current mode.</param>
 /// <param name="Supported">Driver modes passing validation at observation time.</param>
-public sealed record DisplayModeSnapshot(ActiveDisplayPath Path, DisplayMode Current,
+public sealed record DisplayModeSnapshot(
+    ActiveDisplayPath Path,
+    DisplayMode Current,
     IReadOnlyList<DisplayMode> Supported);
 
 /// <summary>A mode of the primary display, including its colour depth.</summary>
@@ -27,14 +29,20 @@ public sealed record DisplayModeSnapshot(ActiveDisplayPath Path, DisplayMode Cur
 public readonly record struct PrimaryDisplayMode(int Width, int Height, int RefreshHz, int BitsPerPixel);
 
 /// <summary>Enumerates and applies validated modes to an explicitly identified active display.</summary>
-/// <remarks>Calls block on display drivers; use a worker thread. No registry settings are persisted.
-/// Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
-/// not prove physical visibility. An unconfirmed write gets one rollback to the captured mode,
-/// only while the original route remains present; callers must not automatically retry.</remarks>
+/// <remarks>
+///     Calls block on display drivers; use a worker thread. No registry settings are persisted.
+///     Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
+///     not prove physical visibility. An unconfirmed write gets one rollback to the captured mode,
+///     only while the original route remains present; callers must not automatically retry.
+/// </remarks>
 public static partial class DisplayModes
 {
-    private static readonly object Gate = new();
     private const uint ModeFields = 0x00040000 | 0x00080000 | 0x00100000 | 0x00400000;
+
+    // Width, height and frequency only: a transient primary-display change keeps the colour depth.
+    private const uint PrimaryModeFields = 0x00080000 | 0x00100000 | 0x00400000;
+    private const uint ChangeTest = 2;
+    private static readonly object Gate = new();
 
     /// <summary>Reads current and supported modes from a fresh topology observation.</summary>
     /// <param name="target">Active target to query.</param>
@@ -57,17 +65,34 @@ public static partial class DisplayModes
             {
                 return null;
             }
-            if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current)) { return null; }
+
+            if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current))
+            {
+                return null;
+            }
+
             HashSet<DisplayMode> supported = [];
             for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
             {
-                if (mode.Width == 0 || mode.Height == 0 || mode.Frequency < 2 || mode.Bits != current.Bits) { continue; }
+                if (mode.Width == 0 || mode.Height == 0 || mode.Frequency < 2 || mode.Bits != current.Bits)
+                {
+                    continue;
+                }
+
                 // The driver lists a width, height and rate once per variant; one passing test offers it.
                 var projected = Project(mode);
-                if (supported.Contains(projected)) { continue; }
+                if (supported.Contains(projected))
+                {
+                    continue;
+                }
+
                 mode.Fields = ModeFields;
-                if (Change(path.SourceName, ref mode, 2) == 0) { supported.Add(projected); }
+                if (Change(path.SourceName, ref mode, 2) == 0)
+                {
+                    supported.Add(projected);
+                }
             }
+
             ActiveDisplayPath? after;
             try
             {
@@ -77,8 +102,13 @@ public static partial class DisplayModes
             {
                 return null;
             }
-            if (!SameRoute(path, after)) { return null; }
-            return new(path, Project(current), supported.OrderBy(mode => mode.Width)
+
+            if (!SameRoute(path, after))
+            {
+                return null;
+            }
+
+            return new DisplayModeSnapshot(path, Project(current), supported.OrderBy(mode => mode.Width)
                 .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
         }
     }
@@ -95,42 +125,64 @@ public static partial class DisplayModes
         {
             var path = Find(observation.Path.Target);
             if (!SameRoute(observation.Path, path) || !observation.Supported.Contains(requested))
-            { return new(false, -2, false, false, "Display changed or the selected mode was not offered. Refresh and select again."); }
+            {
+                return new DisplayProfileResult(false, -2, false, false,
+                    "Display changed or the selected mode was not offered. Refresh and select again.");
+            }
+
             if (!ReadNative(path!.SourceName, uint.MaxValue, out var original))
-            { return new(false, -2, false, false, "Current display mode is unavailable."); }
+            {
+                return new DisplayProfileResult(false, -2, false, false, "Current display mode is unavailable.");
+            }
+
             for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
             {
-                if (Project(mode) != requested || mode.Bits != original.Bits) { continue; }
+                if (Project(mode) != requested || mode.Bits != original.Bits)
+                {
+                    continue;
+                }
+
                 mode.Fields = ModeFields;
-                int test = Change(path.SourceName, ref mode, 2);
-                if (test != 0) { return new(false, test, false, false, "The display rejected mode validation."); }
+                var test = Change(path.SourceName, ref mode, 2);
+                if (test != 0)
+                {
+                    return new DisplayProfileResult(false, test, false, false, "The display rejected mode validation.");
+                }
+
                 if (!SameRoute(path, Find(path.Target)))
-                { return new(false, -2, false, false, "Display route changed before application."); }
-                int status = Change(path.SourceName, ref mode, 0);
-                bool same = SameRoute(path, Find(path.Target));
+                {
+                    return new DisplayProfileResult(false, -2, false, false,
+                        "Display route changed before application.");
+                }
+
+                var status = Change(path.SourceName, ref mode, 0);
+                var same = SameRoute(path, Find(path.Target));
                 if (status == 0 && same && ReadNative(path.SourceName, uint.MaxValue, out var readback)
                     && Project(readback) == requested)
-                { return new(true, 0, false, false, "Display mode confirmed."); }
+                {
+                    return new DisplayProfileResult(true, 0, false, false, "Display mode confirmed.");
+                }
+
                 original.Fields = ModeFields;
-                bool rollback = same && Change(path.SourceName, ref original, 0) == 0
-                    && ReadNative(path.SourceName, uint.MaxValue, out var restored) && Project(restored) == Project(original);
-                return new(false, status, same, rollback, rollback
+                var rollback = same && Change(path.SourceName, ref original, 0) == 0
+                                    && ReadNative(path.SourceName, uint.MaxValue, out var restored) &&
+                                    Project(restored) == Project(original);
+                return new DisplayProfileResult(false, status, same, rollback, rollback
                     ? "Mode was not confirmed; the original mode was restored."
                     : "Mode was not confirmed; display recovery could not be verified.");
             }
-            return new(false, -2, false, false, "The selected mode is no longer advertised.");
+
+            return new DisplayProfileResult(false, -2, false, false, "The selected mode is no longer advertised.");
         }
     }
 
-    // Width, height and frequency only: a transient primary-display change keeps the colour depth.
-    private const uint PrimaryModeFields = 0x00080000 | 0x00100000 | 0x00400000;
-    private const uint ChangeTest = 2;
-
     /// <summary>Reads the primary display's current mode.</summary>
     /// <returns>The mode, or null when the display cannot be read.</returns>
-    /// <remarks>The primary-display calls share this type's gate with <see cref="Apply"/>, so a
-    /// transient change and a validated per-target change can never interleave their read and
-    /// write.</remarks>
+    /// <remarks>
+    ///     The primary-display calls share this type's gate with <see cref="Apply" />, so a
+    ///     transient change and a validated per-target change can never interleave their read and
+    ///     write.
+    /// </remarks>
     public static PrimaryDisplayMode? ReadPrimaryMode()
     {
         lock (Gate)
@@ -140,8 +192,10 @@ public static partial class DisplayModes
     }
 
     /// <summary>Lists every mode the driver enumerates for the primary display.</summary>
-    /// <returns>The enumerated modes in driver order, duplicates included. An enumerated mode is a
-    /// claim, not a promise; test it with <see cref="TestPrimaryMode"/>.</returns>
+    /// <returns>
+    ///     The enumerated modes in driver order, duplicates included. An enumerated mode is a
+    ///     claim, not a promise; test it with <see cref="TestPrimaryMode" />.
+    /// </returns>
     public static IReadOnlyList<PrimaryDisplayMode> EnumeratePrimaryModes()
     {
         lock (Gate)
@@ -151,6 +205,7 @@ public static partial class DisplayModes
             {
                 modes.Add(ProjectPrimary(mode));
             }
+
             return modes;
         }
     }
@@ -173,8 +228,10 @@ public static partial class DisplayModes
     /// <param name="height">Height in pixels.</param>
     /// <param name="refreshHz">Refresh rate in hertz.</param>
     /// <returns>The <c>ChangeDisplaySettingsEx</c> status: zero on success.</returns>
-    /// <remarks>No <c>CDS_UPDATEREGISTRY</c>: exit, a crash or a reboot restores the user's saved
-    /// configuration. The colour depth is carried over from the current mode.</remarks>
+    /// <remarks>
+    ///     No <c>CDS_UPDATEREGISTRY</c>: exit, a crash or a reboot restores the user's saved
+    ///     configuration. The colour depth is carried over from the current mode.
+    /// </remarks>
     public static int ApplyPrimaryModeTransient(int width, int height, int refreshHz)
     {
         lock (Gate)
@@ -189,6 +246,7 @@ public static partial class DisplayModes
         {
             return -2;
         }
+
         mode.Fields = PrimaryModeFields;
         mode.Width = checked((uint)width);
         mode.Height = checked((uint)height);
@@ -196,26 +254,48 @@ public static partial class DisplayModes
         return Change(null, ref mode, flags);
     }
 
-    private static PrimaryDisplayMode ProjectPrimary(NativeMode mode) =>
-        new((int)mode.Width, (int)mode.Height, (int)mode.Frequency, (int)mode.Bits);
+    private static PrimaryDisplayMode ProjectPrimary(NativeMode mode)
+    {
+        return new PrimaryDisplayMode((int)mode.Width, (int)mode.Height, (int)mode.Frequency, (int)mode.Bits);
+    }
 
     private static ActiveDisplayPath? Find(DisplayTargetIdentity target)
     {
         var paths = DisplayTopology.CaptureActive().Paths;
         var matches = paths.Where(path => target.Matches(path.Target)).ToArray();
         return matches.Length == 1 && paths.Count(path => path.SourceName == matches[0].SourceName) == 1
-            ? matches[0] : null;
+            ? matches[0]
+            : null;
     }
 
-    private static bool SameRoute(ActiveDisplayPath expected, ActiveDisplayPath? current) =>
-        current is not null && expected.Target == current.Target && expected.SourceName == current.SourceName;
+    private static bool SameRoute(ActiveDisplayPath expected, ActiveDisplayPath? current)
+    {
+        return current is not null && expected.Target == current.Target && expected.SourceName == current.SourceName;
+    }
 
-    private static DisplayMode Project(NativeMode mode) => new((int)mode.Width, (int)mode.Height, (int)mode.Frequency);
+    private static DisplayMode Project(NativeMode mode)
+    {
+        return new DisplayMode((int)mode.Width, (int)mode.Height, (int)mode.Frequency);
+    }
+
     private static bool ReadNative(string? source, uint index, out NativeMode mode)
     {
-        mode = new() { Size = 220 };
+        mode = new NativeMode { Size = 220 };
         return EnumDisplaySettingsEx(source, index, ref mode, 0);
     }
+
+    [LibraryImport("user32.dll", EntryPoint = "EnumDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool EnumDisplaySettingsEx(string? source, uint index, ref NativeMode mode, uint flags);
+
+    private static int Change(string? source, ref NativeMode mode, uint flags)
+    {
+        return ChangeDisplaySettingsEx(source, ref mode, 0, flags, 0);
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "ChangeDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int ChangeDisplaySettingsEx(string? source, ref NativeMode mode, nint window, uint flags,
+        nint parameter);
 
     [StructLayout(LayoutKind.Explicit, Size = 220)]
     private struct NativeMode
@@ -227,14 +307,4 @@ public static partial class DisplayModes
         [FieldOffset(176)] internal uint Height;
         [FieldOffset(184)] internal uint Frequency;
     }
-
-    [LibraryImport("user32.dll", EntryPoint = "EnumDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool EnumDisplaySettingsEx(string? source, uint index, ref NativeMode mode, uint flags);
-
-    private static int Change(string? source, ref NativeMode mode, uint flags) =>
-        ChangeDisplaySettingsEx(source, ref mode, 0, flags, 0);
-
-    [LibraryImport("user32.dll", EntryPoint = "ChangeDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int ChangeDisplaySettingsEx(string? source, ref NativeMode mode, nint window, uint flags, nint parameter);
 }

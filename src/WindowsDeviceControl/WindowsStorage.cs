@@ -64,7 +64,7 @@ public static class WindowsStorage
             return volumes;
         }
 
-        foreach (DriveInfo drive in drives)
+        foreach (var drive in drives)
         {
             if (drive.Name.Length == 0)
             {
@@ -73,7 +73,7 @@ public static class WindowsStorage
 
             try
             {
-                bool ready = drive.IsReady;
+                var ready = drive.IsReady;
                 volumes.Add(new StorageVolume(
                     drive.Name,
                     DiskNumberFor(drive.Name[0]),
@@ -83,7 +83,7 @@ public static class WindowsStorage
                     ready));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                or DriveNotFoundException)
+                                           or DriveNotFoundException)
             {
                 // Not a volume this caller can act on, so not one worth reporting.
             }
@@ -95,8 +95,10 @@ public static class WindowsStorage
     /// <summary>The physical disk one mounted volume lives on.</summary>
     /// <param name="mountPath">The volume's mount path, for example <c>D:\</c> or <c>D:</c>.</param>
     /// <returns>The disk number, or -1 when Windows would not say.</returns>
-    public static int DiskNumberFor(string mountPath) =>
-        string.IsNullOrEmpty(mountPath) ? -1 : DiskNumberFor(mountPath[0]);
+    public static int DiskNumberFor(string mountPath)
+    {
+        return string.IsNullOrEmpty(mountPath) ? -1 : DiskNumberFor(mountPath[0]);
+    }
 
     /// <summary>The physical disk one drive letter lives on.</summary>
     /// <param name="letter">The drive letter, with or without case.</param>
@@ -114,7 +116,7 @@ public static class WindowsStorage
             return -1;
         }
 
-        using SafeFileHandle volume = Kernel32.CreateFile(
+        using var volume = Kernel32.CreateFile(
             $@"\\.\{char.ToUpperInvariant(letter)}:",
             0,
             FileShareRead | FileShareWrite,
@@ -134,9 +136,9 @@ public static class WindowsStorage
     {
         // STORAGE_DEVICE_NUMBER: DEVICE_TYPE DeviceType; ULONG DeviceNumber; ULONG PartitionNumber.
         const int recordSize = 12;
-        byte* buffer = stackalloc byte[recordSize];
+        var buffer = stackalloc byte[recordSize];
         if (!Kernel32.DeviceIoControl(volume, IoctlStorageGetDeviceNumber, 0, 0, (nint)buffer,
-                recordSize, out uint written, 0)
+                recordSize, out var written, 0)
             || written < recordSize)
         {
             return -1;

@@ -13,14 +13,18 @@ public sealed class DisplayTopologyTests
     [InlineData(284u, 568u)]
     [InlineData(4096u, 8192u)]
     public void PossibleRouteCountsCanExceedTheNumberOfDisplays(uint paths, uint modes)
-        => DisplayTopology.ValidateBufferCounts(paths, modes);
+    {
+        DisplayTopology.ValidateBufferCounts(paths, modes);
+    }
 
     [Theory]
     [InlineData(4097u, 8192u)]
     [InlineData(4096u, 8193u)]
     [InlineData(uint.MaxValue, uint.MaxValue)]
     public void ExcessiveRouteBuffersAreStillRefusedBeforeAllocation(uint paths, uint modes)
-        => Assert.Throws<InvalidOperationException>(() => DisplayTopology.ValidateBufferCounts(paths, modes));
+    {
+        Assert.Throws<InvalidOperationException>(() => DisplayTopology.ValidateBufferCounts(paths, modes));
+    }
 
     [Fact]
     public void TheNativeModeRecordKeepsItsDocumentedLayout()
@@ -37,7 +41,7 @@ public sealed class DisplayTopologyTests
     [Fact]
     public async Task AvailableWaitRejectsInvalidDeadlineAndCancelsBeforeNativeQuery()
     {
-        DisplayTargetIdentity target = Target("display", "TV", 0);
+        var target = Target("display", "TV", 0);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             DisplayTopology.WaitForAvailableAsync(target, TimeSpan.Zero));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>

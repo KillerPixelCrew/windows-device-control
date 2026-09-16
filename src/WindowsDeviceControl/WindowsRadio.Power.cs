@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using Microsoft.Win32;
 using Windows.Devices.Radios;
+using Microsoft.Win32;
 
 namespace WindowsDeviceControl;
 
@@ -15,10 +15,14 @@ public static partial class WindowsRadio
 
     /// <summary>Reads the combined power state of every adapter of one kind.</summary>
     /// <param name="kind">Which radio family to read.</param>
-    /// <returns>The aggregate state; <see cref="Power.Absent"/> when the machine has no such
-    /// adapter.</returns>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a defined
-    /// <see cref="RadioKind"/> value.</exception>
+    /// <returns>
+    ///     The aggregate state; <see cref="Power.Absent" /> when the machine has no such
+    ///     adapter.
+    /// </returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     <paramref name="kind" /> is not a defined
+    ///     <see cref="RadioKind" /> value.
+    /// </exception>
     public static Power GetPower(RadioKind kind)
     {
         var radios = GetRadios(kind, out var states);
@@ -27,26 +31,38 @@ public static partial class WindowsRadio
         {
             power = Prefer(power, MapPower(states?[index] ?? radios[index].State));
         }
+
         return power;
     }
 
     /// <summary>Asks Windows whether this process may change radio power.</summary>
     /// <returns>Whether radio control is permitted, and if not, why.</returns>
-    /// <remarks>Called for you by <see cref="SetPower"/>. Call it directly to decide whether to
-    /// show a radio toggle at all — a denied toggle that silently does nothing is worse than an
-    /// absent one.</remarks>
-    public static Access RequestAccess() => MapAccess(
-        Radio.RequestAccessAsync().WaitWinRt());
+    /// <remarks>
+    ///     Called for you by <see cref="SetPower" />. Call it directly to decide whether to
+    ///     show a radio toggle at all — a denied toggle that silently does nothing is worse than an
+    ///     absent one.
+    /// </remarks>
+    public static Access RequestAccess()
+    {
+        return MapAccess(
+            Radio.RequestAccessAsync().WaitWinRt());
+    }
 
     /// <summary>Turns every adapter of one kind on or off.</summary>
     /// <param name="kind">Which radio family to change.</param>
     /// <param name="on">True to turn the radios on, false to turn them off.</param>
-    /// <returns><see cref="Access.Allowed"/> when the change was permitted; otherwise why Windows
-    /// refused. A refusal is reported, not thrown.</returns>
-    /// <exception cref="InvalidOperationException">The machine has no adapter of this kind, or no
-    /// adapter accepted the requested state.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a defined
-    /// <see cref="RadioKind"/> value.</exception>
+    /// <returns>
+    ///     <see cref="Access.Allowed" /> when the change was permitted; otherwise why Windows
+    ///     refused. A refusal is reported, not thrown.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    ///     The machine has no adapter of this kind, or no
+    ///     adapter accepted the requested state.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     <paramref name="kind" /> is not a defined
+    ///     <see cref="RadioKind" /> value.
+    /// </exception>
     public static Access SetPower(RadioKind kind, bool on)
     {
         ValidateRadioKind(kind);
@@ -55,11 +71,13 @@ public static partial class WindowsRadio
         {
             return access;
         }
+
         var radios = GetRadios(kind, out _);
         if (radios.Count == 0)
         {
             throw new InvalidOperationException("Windows reported no radio of the requested kind.");
         }
+
         Access? refusal = null;
         Exception? lastFailure = null;
         foreach (var radio in radios)
@@ -78,32 +96,41 @@ public static partial class WindowsRadio
                 lastFailure = ex;
             }
         }
+
         if (lastFailure is not null)
         {
             throw new InvalidOperationException(
                 "At least one radio did not accept the requested power state.", lastFailure);
         }
+
         return refusal ?? Access.Allowed;
     }
 
     /// <summary>Reads the privacy consent recorded for a capability.</summary>
-    /// <param name="capability">The capability name, as the privacy store spells it — for example
-    /// <c>location</c> or <c>radios</c>.</param>
+    /// <param name="capability">
+    ///     The capability name, as the privacy store spells it — for example
+    ///     <c>location</c> or <c>radios</c>.
+    /// </param>
     /// <returns>The user-scope and machine-scope consent values.</returns>
     /// <remarks>
-    /// Diagnostic only: the owning API remains the authority on what is permitted, and this can
-    /// disagree with it. It exists to answer "why did enumeration return nothing" — on a
-    /// provisioned kiosk or signage machine, location consent is commonly off, and Wi-Fi
-    /// enumeration then returns an empty list rather than an error.
+    ///     Diagnostic only: the owning API remains the authority on what is permitted, and this can
+    ///     disagree with it. It exists to answer "why did enumeration return nothing" — on a
+    ///     provisioned kiosk or signage machine, location consent is commonly off, and Wi-Fi
+    ///     enumeration then returns an empty list rather than an error.
     /// </remarks>
-    public static (Consent User, Consent Machine) GetConsent(string capability) => (
-        ReadConsent(Registry.CurrentUser, capability),
-        ReadConsent(Registry.LocalMachine, capability));
+    public static (Consent User, Consent Machine) GetConsent(string capability)
+    {
+        return (
+            ReadConsent(Registry.CurrentUser, capability),
+            ReadConsent(Registry.LocalMachine, capability));
+    }
 
     /// <summary>The adapters of one kind, from a briefly cached enumeration.</summary>
     /// <param name="kind">Which radio family to return.</param>
-    /// <param name="states">When the cached list was reused, the state each returned adapter
-    /// reported while the cache was checked; null after a fresh enumeration.</param>
+    /// <param name="states">
+    ///     When the cached list was reused, the state each returned adapter
+    ///     reported while the cache was checked; null after a fresh enumeration.
+    /// </param>
     private static IReadOnlyList<Radio> GetRadios(RadioKind kind, out RadioState[]? states)
     {
         ValidateRadioKind(kind);
@@ -124,6 +151,7 @@ public static partial class WindowsRadio
                 observed = null;
             }
         }
+
         // Fully qualified: this type declares its own RadioKind, so the WinRT one needs naming.
         var expected = kind == RadioKind.WiFi
             ? Windows.Devices.Radios.RadioKind.WiFi
@@ -138,6 +166,7 @@ public static partial class WindowsRadio
                 kindStates?.Add(observed![index]);
             }
         }
+
         states = kindStates?.ToArray();
         return radios;
     }
@@ -166,6 +195,7 @@ public static partial class WindowsRadio
                 return false;
             }
         }
+
         states = read;
         return true;
     }
@@ -173,9 +203,9 @@ public static partial class WindowsRadio
     /// <summary>Reduces several adapters' power states to the one a caller should act on.</summary>
     /// <param name="states">The individual adapter states.</param>
     /// <returns>
-    /// The state that represents the group: any adapter on means on, and a machine-wide block is
-    /// reported ahead of a merely-off adapter, so a caller does not offer to enable a radio that
-    /// airplane mode or a hardware switch will refuse.
+    ///     The state that represents the group: any adapter on means on, and a machine-wide block is
+    ///     reported ahead of a merely-off adapter, so a caller does not offer to enable a radio that
+    ///     airplane mode or a hardware switch will refuse.
     /// </returns>
     public static Power AggregatePower(IEnumerable<Power> states)
     {
@@ -185,38 +215,52 @@ public static partial class WindowsRadio
         {
             power = Prefer(power, state);
         }
+
         return power;
     }
 
-    /// <summary>The state that represents both: On, then Disabled, Off and Unknown. Any other value
-    /// counts as no adapter.</summary>
+    /// <summary>
+    ///     The state that represents both: On, then Disabled, Off and Unknown. Any other value
+    ///     counts as no adapter.
+    /// </summary>
     private static Power Prefer(Power current, Power candidate)
-        => Rank(candidate) < Rank(current) ? candidate : current;
-
-    private static int Rank(Power state) => state switch
     {
-        Power.On => 0,
-        Power.Disabled => 1,
-        Power.Off => 2,
-        Power.Unknown => 3,
-        _ => 4,
-    };
+        return Rank(candidate) < Rank(current) ? candidate : current;
+    }
 
-    private static Power MapPower(RadioState state) => state switch
+    private static int Rank(Power state)
     {
-        RadioState.On => Power.On,
-        RadioState.Off => Power.Off,
-        RadioState.Disabled => Power.Disabled,
-        _ => Power.Unknown,
-    };
+        return state switch
+        {
+            Power.On => 0,
+            Power.Disabled => 1,
+            Power.Off => 2,
+            Power.Unknown => 3,
+            _ => 4
+        };
+    }
 
-    private static Access MapAccess(RadioAccessStatus status) => status switch
+    private static Power MapPower(RadioState state)
     {
-        RadioAccessStatus.Allowed => Access.Allowed,
-        RadioAccessStatus.DeniedByUser => Access.DeniedByUser,
-        RadioAccessStatus.DeniedBySystem => Access.DeniedBySystem,
-        _ => Access.Unspecified,
-    };
+        return state switch
+        {
+            RadioState.On => Power.On,
+            RadioState.Off => Power.Off,
+            RadioState.Disabled => Power.Disabled,
+            _ => Power.Unknown
+        };
+    }
+
+    private static Access MapAccess(RadioAccessStatus status)
+    {
+        return status switch
+        {
+            RadioAccessStatus.Allowed => Access.Allowed,
+            RadioAccessStatus.DeniedByUser => Access.DeniedByUser,
+            RadioAccessStatus.DeniedBySystem => Access.DeniedBySystem,
+            _ => Access.Unspecified
+        };
+    }
 
     private static Consent ReadConsent(RegistryKey root, string capability)
     {
@@ -224,11 +268,12 @@ public static partial class WindowsRadio
         {
             using var key = root.OpenSubKey(
                 $"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{capability}",
-                writable: false);
+                false);
             if (key is null)
             {
                 return Consent.Unset;
             }
+
             return key.GetValue("Value") switch
             {
                 string value when value.Trim().Equals("Allow", StringComparison.OrdinalIgnoreCase)
@@ -237,7 +282,7 @@ public static partial class WindowsRadio
                     => Consent.Deny,
                 string value when string.IsNullOrWhiteSpace(value) => Consent.Unset,
                 null => Consent.Unset,
-                _ => Consent.Unknown,
+                _ => Consent.Unknown
             };
         }
         catch

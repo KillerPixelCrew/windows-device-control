@@ -4,12 +4,13 @@ using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
 
-/// <summary>Reads and writes one display's Windows scaling percentage.
-///
-/// Windows stores scaling as a step relative to the value it recommends for that display, not as a
-/// percentage, and the available steps differ per display. The undocumented CCD packets are the
-/// only way to reach it without a user opening the Settings app, so the relative step is converted
-/// to and from a percentage here and callers work in percentages alone.</summary>
+/// <summary>
+///     Reads and writes one display's Windows scaling percentage.
+///     Windows stores scaling as a step relative to the value it recommends for that display, not as a
+///     percentage, and the available steps differ per display. The undocumented CCD packets are the
+///     only way to reach it without a user opening the Settings app, so the relative step is converted
+///     to and from a percentage here and callers work in percentages alone.
+/// </summary>
 public static partial class DisplayScaling
 {
     private const int GetDpiScale = -3;
@@ -26,8 +27,8 @@ public static partial class DisplayScaling
     {
         ArgumentNullException.ThrowIfNull(target);
         percent = 0;
-        return TryFindSource(target, out DisplayTopology.Luid adapter, out uint source)
-            && TryRead(adapter, source, out percent, out _, out _);
+        return TryFindSource(target, out var adapter, out var source)
+               && TryRead(adapter, source, out percent, out _, out _);
     }
 
     /// <summary>Reads the scaling percentages a display supports.</summary>
@@ -40,8 +41,8 @@ public static partial class DisplayScaling
     {
         ArgumentNullException.ThrowIfNull(target);
         current = recommended = maximum = 0;
-        return TryFindSource(target, out DisplayTopology.Luid adapter, out uint source)
-            && TryRead(adapter, source, out current, out recommended, out maximum);
+        return TryFindSource(target, out var adapter, out var source)
+               && TryRead(adapter, source, out current, out recommended, out maximum);
     }
 
     /// <summary>Sets a display's scaling percentage and confirms it by readback.</summary>
@@ -53,37 +54,48 @@ public static partial class DisplayScaling
     {
         ArgumentNullException.ThrowIfNull(target);
         detail = "";
-        if (!TryFindSource(target, out DisplayTopology.Luid adapter, out uint source))
+        if (!TryFindSource(target, out var adapter, out var source))
         {
             detail = "the display is not active, so its scaling was left alone";
             return false;
         }
-        if (!TryRead(adapter, source, out int current, out int recommended, out int maximum))
+
+        if (!TryRead(adapter, source, out var current, out var recommended, out var maximum))
         {
             detail = "its scaling could not be read";
             return false;
         }
-        int wanted = Snap(Math.Min(percent, maximum));
-        if (wanted == current) { return true; }
 
-        int index = Array.IndexOf(Steps, wanted);
-        int recommendedIndex = Array.IndexOf(Steps, recommended);
+        var wanted = Snap(Math.Min(percent, maximum));
+        if (wanted == current)
+        {
+            return true;
+        }
+
+        var index = Array.IndexOf(Steps, wanted);
+        var recommendedIndex = Array.IndexOf(Steps, recommended);
         if (index < 0 || recommendedIndex < 0)
         {
             detail = $"{percent}% is not a scaling step this display offers";
             return false;
         }
+
         DpiScaleSet packet = new()
         {
             Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
-            ScaleRelative = index - recommendedIndex,
+            ScaleRelative = index - recommendedIndex
         };
         if (DisplayConfigSetDeviceInfo(ref packet) != 0)
         {
             detail = $"Windows refused the {wanted}% scaling change";
             return false;
         }
-        if (TryRead(adapter, source, out int readback, out _, out _) && readback == wanted) { return true; }
+
+        if (TryRead(adapter, source, out var readback, out _, out _) && readback == wanted)
+        {
+            return true;
+        }
+
         detail = "the scaling change was not confirmed";
         return false;
     }
@@ -91,7 +103,10 @@ public static partial class DisplayScaling
     /// <summary>Snaps a percentage to the nearest step Windows offers.</summary>
     /// <param name="percent">Requested percentage.</param>
     /// <returns>The nearest supported step.</returns>
-    public static int Snap(int percent) => Steps.MinBy(step => Math.Abs(step - percent));
+    public static int Snap(int percent)
+    {
+        return Steps.MinBy(step => Math.Abs(step - percent));
+    }
 
     internal static bool TryRead(
         DisplayTopology.Luid adapter, uint source, out int current, out int recommended, out int maximum)
@@ -99,31 +114,44 @@ public static partial class DisplayScaling
         current = recommended = maximum = 0;
         DpiScaleGet packet = new()
         {
-            Header = DisplayTopology.Header<DpiScaleGet>(GetDpiScale, adapter, source),
+            Header = DisplayTopology.Header<DpiScaleGet>(GetDpiScale, adapter, source)
         };
-        if (DisplayConfigGetDeviceInfo(ref packet) != 0) { return false; }
-        int relative = Math.Clamp(packet.CurrentScaleRelative, packet.MinScaleRelative, packet.MaxScaleRelative);
-        int recommendedIndex = Math.Abs(packet.MinScaleRelative);
+        if (DisplayConfigGetDeviceInfo(ref packet) != 0)
+        {
+            return false;
+        }
+
+        var relative = Math.Clamp(packet.CurrentScaleRelative, packet.MinScaleRelative, packet.MaxScaleRelative);
+        var recommendedIndex = Math.Abs(packet.MinScaleRelative);
         if (recommendedIndex + packet.MaxScaleRelative + 1 > Steps.Length
             || recommendedIndex + relative < 0 || recommendedIndex + relative >= Steps.Length)
         {
             return false;
         }
+
         current = Steps[recommendedIndex + relative];
         recommended = Steps[recommendedIndex];
         maximum = Steps[recommendedIndex + packet.MaxScaleRelative];
         return true;
     }
 
-    /// <summary>Finds the CCD source currently driving one monitor, taken from the same path that
-    /// matched it. Scaling is a property of the source, so an inactive monitor has none.</summary>
+    /// <summary>
+    ///     Finds the CCD source currently driving one monitor, taken from the same path that
+    ///     matched it. Scaling is a property of the source, so an inactive monitor has none.
+    /// </summary>
     private static bool TryFindSource(DisplayTargetIdentity target, out DisplayTopology.Luid adapter, out uint source)
     {
-        bool found = DisplayTopology.TryFindActive(target, out DisplayTopology.PathInfo path);
+        var found = DisplayTopology.TryFindActive(target, out var path);
         adapter = path.SourceInfo.AdapterId;
         source = path.SourceInfo.Id;
         return found;
     }
+
+    [LibraryImport("user32.dll")]
+    private static partial int DisplayConfigGetDeviceInfo(ref DpiScaleGet packet);
+
+    [LibraryImport("user32.dll")]
+    private static partial int DisplayConfigSetDeviceInfo(ref DpiScaleSet packet);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DpiScaleGet
@@ -140,7 +168,4 @@ public static partial class DisplayScaling
         public DisplayTopology.DeviceInfoHeader Header;
         public int ScaleRelative;
     }
-
-    [LibraryImport("user32.dll")] private static partial int DisplayConfigGetDeviceInfo(ref DpiScaleGet packet);
-    [LibraryImport("user32.dll")] private static partial int DisplayConfigSetDeviceInfo(ref DpiScaleSet packet);
 }

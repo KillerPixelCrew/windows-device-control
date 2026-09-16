@@ -17,7 +17,7 @@ public sealed class WindowsPowerTests
     [InlineData("省電力")]
     public void DecodesLocalizedUtf16NamesUsingTheReturnedByteCount(string name)
     {
-        byte[] bytes = Encoding.Unicode.GetBytes(name + "\0ignored padding");
+        var bytes = Encoding.Unicode.GetBytes(name + "\0ignored padding");
         Assert.Equal(name, WindowsPower.DecodeName(bytes, (uint)(name.Length + 1) * 2, Custom));
     }
 
@@ -29,13 +29,15 @@ public sealed class WindowsPowerTests
     [InlineData(10)]
     public void RejectsMalformedNameLengthsOrMissingTerminators(uint size)
     {
-        byte[] bytes = Encoding.Unicode.GetBytes("abc\0");
+        var bytes = Encoding.Unicode.GetBytes("abc\0");
         AssertInvalidData(() => WindowsPower.DecodeName(bytes, size, Custom));
     }
 
     [Fact]
     public void EmptyNameFallsBackToStableGuid()
-        => Assert.Equal(Custom.ToString("D"), WindowsPower.DecodeName([0, 0], 2, Custom));
+    {
+        Assert.Equal(Custom.ToString("D"), WindowsPower.DecodeName([0, 0], 2, Custom));
+    }
 
     [Theory]
     [InlineData(WindowsPowerAction.Shutdown, "/s /t 0")]
@@ -55,10 +57,13 @@ public sealed class WindowsPowerTests
     {
         CancellationToken cancelled = new(true);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => WindowsPower.SuspendAsync(false, cancelled));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => WindowsPower.RequestActionAsync(WindowsPowerAction.Restart, cancelled));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            WindowsPower.RequestActionAsync(WindowsPowerAction.Restart, cancelled));
     }
 
     [Fact]
-    public void UnknownActionIsRejectedBeforeDispatch() =>
+    public void UnknownActionIsRejectedBeforeDispatch()
+    {
         Assert.Throws<ArgumentOutOfRangeException>(() => WindowsPower.ActionStartInfo((WindowsPowerAction)100));
+    }
 }

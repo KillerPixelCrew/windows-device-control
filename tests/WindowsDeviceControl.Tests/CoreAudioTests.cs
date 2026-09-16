@@ -15,7 +15,7 @@ public sealed class CoreAudioTests
         {
             [CoreAudio.AudioRole.Console] = "old-console",
             [CoreAudio.AudioRole.Multimedia] = "old-media",
-            [CoreAudio.AudioRole.Communications] = "old-comms",
+            [CoreAudio.AudioRole.Communications] = "old-comms"
         };
         var calls = new List<(string Id, CoreAudio.AudioRole Role)>();
 
@@ -29,6 +29,7 @@ public sealed class CoreAudioTests
                 {
                     return applyFailure;
                 }
+
                 return id == "old-media" ? rollbackFailure : 0;
             },
             out var roleResults);
@@ -41,7 +42,7 @@ public sealed class CoreAudioTests
                 ("target", CoreAudio.AudioRole.Multimedia),
                 ("target", CoreAudio.AudioRole.Communications),
                 ("old-media", CoreAudio.AudioRole.Multimedia),
-                ("old-console", CoreAudio.AudioRole.Console),
+                ("old-console", CoreAudio.AudioRole.Console)
             },
             calls);
         Assert.Equal(0, roleResults.Single(item => item.Role == CoreAudio.AudioRole.Console)
@@ -60,7 +61,7 @@ public sealed class CoreAudioTests
             new("z", "Same", false),
             new("b", "beta", false),
             new("a", "Alpha", false),
-            new("default", "Zulu", true),
+            new("default", "Zulu", true)
         };
 
         endpoints.Sort(CoreAudio.CompareEndpoints);

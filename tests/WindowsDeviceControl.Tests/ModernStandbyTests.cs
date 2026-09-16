@@ -9,47 +9,87 @@ public sealed class ModernStandbyTests
 {
     private const int CapabilitiesBytes = 76;
 
+    public static TheoryData<WakeDevice[], WakeDeviceSnapshot, (string Name, bool Armed)[]> RestoreCases => new()
+    {
+        // Only the device whose arming actually moved is written.
+        {
+            [
+                new WakeDevice("Sensors", true, WakeDeviceControl.Programmable),
+                new WakeDevice("Wi-Fi", true, WakeDeviceControl.Programmable)
+            ],
+            new WakeDeviceSnapshot(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
+            [("Sensors", false)]
+        },
+        // Restoring an unchanged machine writes nothing.
+        {
+            [
+                new WakeDevice("Sensors", false, WakeDeviceControl.Programmable),
+                new WakeDevice("Wi-Fi", true, WakeDeviceControl.Programmable)
+            ],
+            new WakeDeviceSnapshot(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
+            []
+        },
+        // A device that appeared after the snapshot has no prior state, and inventing one would be a
+        // change dressed as a restore.
+        {
+            [new WakeDevice("Dock", true, WakeDeviceControl.Programmable)],
+            new WakeDeviceSnapshot(["Wi-Fi"], ["Wi-Fi"]),
+            []
+        },
+        // A device that is no longer programmable is skipped rather than failing the restore.
+        {
+            [
+                new WakeDevice("Firmware timer", true, WakeDeviceControl.Fixed),
+                new WakeDevice("Wi-Fi", true, WakeDeviceControl.Programmable)
+            ],
+            new WakeDeviceSnapshot(["Firmware timer", "Wi-Fi"], []),
+            [("Wi-Fi", false)]
+        }
+    };
+
     [Fact]
     public void CapabilitiesAreReadFromTheirDocumentedOffsets()
     {
-        byte[] buffer = new byte[CapabilitiesBytes];
-        buffer[0] = 1;  // PowerButtonPresent
-        buffer[2] = 1;  // LidPresent
+        var buffer = new byte[CapabilitiesBytes];
+        buffer[0] = 1; // PowerButtonPresent
+        buffer[2] = 1; // LidPresent
         buffer[19] = 1; // WakeAlarmPresent
         buffer[20] = 1; // AoAc
 
         Assert.Equal(
             new ModernStandbySupport(
-                LowPowerIdle: true,
-                ConnectedStandby: false,
-                WakeAlarm: true,
-                PowerButton: true,
-                SleepButton: false,
-                Lid: true),
+                true,
+                false,
+                true,
+                true,
+                false,
+                true),
             ModernStandby.ReadCapabilities(buffer));
     }
 
     [Fact]
     public void ConnectedStandbyIsItsOwnFieldRatherThanImpliedByModernStandby()
     {
-        byte[] buffer = new byte[CapabilitiesBytes];
+        var buffer = new byte[CapabilitiesBytes];
         buffer[23] = 1; // AoAcConnectivitySupported without AoAc
 
-        ModernStandbySupport support = ModernStandby.ReadCapabilities(buffer);
+        var support = ModernStandby.ReadCapabilities(buffer);
         Assert.False(support.LowPowerIdle);
         Assert.True(support.ConnectedStandby);
     }
 
     [Fact]
     public void ATruncatedCapabilityStructureIsRefused()
-        => AssertInvalidData(() => ModernStandby.ReadCapabilities(new byte[CapabilitiesBytes - 1]));
+    {
+        AssertInvalidData(() => ModernStandby.ReadCapabilities(new byte[CapabilitiesBytes - 1]));
+    }
 
     [Fact]
     public void ADeviceNameEndsAtItsTerminatorRatherThanAtTheBufferSize()
     {
         // Windows leaves the size argument at the buffer size it was handed, so the terminator is
         // the only length there is. A name read to the buffer's end would carry 4 KB of padding.
-        byte[] buffer = new byte[4096];
+        var buffer = new byte[4096];
         Encoding.Unicode.GetBytes("Intel(R) Wi-Fi 7 BE201 320MHz").CopyTo(buffer, 0);
 
         Assert.Equal("Intel(R) Wi-Fi 7 BE201 320MHz", ModernStandby.DecodeDeviceName(buffer));
@@ -57,14 +97,16 @@ public sealed class ModernStandbyTests
 
     [Fact]
     public void ANameWithNoTerminatorInTheBufferIsRefused()
-        => AssertInvalidData(() => ModernStandby.DecodeDeviceName(Encoding.Unicode.GetBytes("USB4")));
+    {
+        AssertInvalidData(() => ModernStandby.DecodeDeviceName(Encoding.Unicode.GetBytes("USB4")));
+    }
 
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
     public void AnEmptyNameIsRefusedBecauseItNamesNoDevice(string name)
     {
-        byte[] buffer = new byte[64];
+        var buffer = new byte[64];
         Encoding.Unicode.GetBytes(name).CopyTo(buffer, 0);
 
         AssertInvalidData(() => ModernStandby.DecodeDeviceName(buffer));
@@ -74,36 +116,9 @@ public sealed class ModernStandbyTests
     [MemberData(nameof(RestoreCases))]
     public void RestoreWritesOnlyObservedProgrammableDevicesWhoseArmingMoved(
         WakeDevice[] current, WakeDeviceSnapshot snapshot, (string Name, bool Armed)[] expected)
-        => Assert.Equal(expected, ModernStandby.RestorePlan(current, snapshot));
-
-    public static TheoryData<WakeDevice[], WakeDeviceSnapshot, (string Name, bool Armed)[]> RestoreCases => new()
     {
-        // Only the device whose arming actually moved is written.
-        {
-            [new("Sensors", true, WakeDeviceControl.Programmable), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
-            new(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
-            [("Sensors", false)]
-        },
-        // Restoring an unchanged machine writes nothing.
-        {
-            [new("Sensors", false, WakeDeviceControl.Programmable), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
-            new(["Sensors", "Wi-Fi"], ["Wi-Fi"]),
-            []
-        },
-        // A device that appeared after the snapshot has no prior state, and inventing one would be a
-        // change dressed as a restore.
-        {
-            [new("Dock", true, WakeDeviceControl.Programmable)],
-            new(["Wi-Fi"], ["Wi-Fi"]),
-            []
-        },
-        // A device that is no longer programmable is skipped rather than failing the restore.
-        {
-            [new("Firmware timer", true, WakeDeviceControl.Fixed), new("Wi-Fi", true, WakeDeviceControl.Programmable)],
-            new(["Firmware timer", "Wi-Fi"], []),
-            [("Wi-Fi", false)]
-        },
-    };
+        Assert.Equal(expected, ModernStandby.RestorePlan(current, snapshot));
+    }
 
     [Fact]
     public void TheSubgroupAndSettingIdentitiesAreTheOnesWindowsPublishes()
@@ -132,7 +147,9 @@ public sealed class ModernStandbyTests
     [InlineData("")]
     [InlineData("  ")]
     public void AnEmptyDeviceNameIsARejectedArgument(string name)
-        => Assert.Throws<ArgumentException>(() => ModernStandby.TrySetWakeArmed(name, armed: true));
+    {
+        Assert.Throws<ArgumentException>(() => ModernStandby.TrySetWakeArmed(name, true));
+    }
 
     [Theory]
     // Asleep from two hours to nine, read at ten.
