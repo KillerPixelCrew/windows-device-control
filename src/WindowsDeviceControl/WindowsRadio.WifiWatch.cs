@@ -152,6 +152,14 @@ public static unsafe partial class WindowsRadio
         {
             try
             {
+                // OnWifiNotification guards the same way. Without it, a null notification pointer
+                // (WLAN delivers one occasionally) throws ArgumentNullException, which the catch
+                // below swallows silently instead of the deliberate early return every other
+                // rejection here takes.
+                if (data == 0)
+                {
+                    return;
+                }
                 var notification = Marshal.PtrToStructure<WlanNotificationData>(data);
                 if (notification.Source != WlanNotificationSourceAcm
                     || notification.InterfaceId != _adapter
