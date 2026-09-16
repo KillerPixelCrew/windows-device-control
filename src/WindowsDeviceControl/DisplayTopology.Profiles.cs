@@ -44,7 +44,10 @@ public static partial class DisplayTopology
             }
             catch (Win32Exception) { }
         }
-        int rollbackStatus = Supply(rollback, SdcApply);
+        // Persist the rollback like the apply above did, so an unconfirmed profile does not leave
+        // the broken topology saved in the CCD database for Windows to replay at the next sign-in
+        // or hotplug. DisplayLayouts' own rollback already does this.
+        int rollbackStatus = Supply(rollback, SdcApply | SaveToDatabase);
         return new(false, status, true, rollbackStatus == 0,
             rollbackStatus == 0 ? "Profile application was not confirmed; the captured topology was restored."
                 : $"Profile application was not confirmed and rollback failed with status {rollbackStatus}.");
