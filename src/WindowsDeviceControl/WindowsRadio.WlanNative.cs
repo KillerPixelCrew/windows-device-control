@@ -135,6 +135,11 @@ public static unsafe partial class WindowsRadio
         internal int DefaultAuthAlgorithm;
         internal int DefaultCipherAlgorithm;
         internal uint Flags;
+
+        // WLAN_AVAILABLE_NETWORK ends dwFlags, dwReserved. Leaving the reserved word out makes the
+        // struct 624 bytes against the native 628, and ReadWlanList strides by Marshal.SizeOf, so
+        // every record after the first would be decoded four bytes per index too early.
+        internal uint Reserved;
     }
 
     [StructLayout(LayoutKind.Sequential)]
