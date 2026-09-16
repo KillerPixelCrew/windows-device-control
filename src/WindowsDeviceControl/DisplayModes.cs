@@ -19,6 +19,13 @@ public sealed record DisplayMode(int Width, int Height, int RefreshHz);
 public sealed record DisplayModeSnapshot(ActiveDisplayPath Path, DisplayMode Current,
     IReadOnlyList<DisplayMode> Supported);
 
+/// <summary>A mode of the primary display, including its colour depth.</summary>
+/// <param name="Width">Horizontal pixel count.</param>
+/// <param name="Height">Vertical pixel count.</param>
+/// <param name="RefreshHz">Refresh rate in hertz.</param>
+/// <param name="BitsPerPixel">Colour depth.</param>
+public readonly record struct PrimaryDisplayMode(int Width, int Height, int RefreshHz, int BitsPerPixel);
+
 /// <summary>Enumerates and applies validated modes to an explicitly identified active display.</summary>
 /// <remarks>Calls block on display drivers; use a worker thread. No registry settings are persisted.
 /// Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
@@ -115,6 +122,83 @@ public static partial class DisplayModes
         }
     }
 
+    // Width, height and frequency only: a transient primary-display change keeps the colour depth.
+    private const uint PrimaryModeFields = 0x00080000 | 0x00100000 | 0x00400000;
+    private const uint ChangeTest = 2;
+
+    /// <summary>Reads the primary display's current mode.</summary>
+    /// <returns>The mode, or null when the display cannot be read.</returns>
+    /// <remarks>The primary-display calls share this type's gate with <see cref="Apply"/>, so a
+    /// transient change and a validated per-target change can never interleave their read and
+    /// write.</remarks>
+    public static PrimaryDisplayMode? ReadPrimaryMode()
+    {
+        lock (Gate)
+        {
+            return ReadNative(null, uint.MaxValue, out var current) ? ProjectPrimary(current) : null;
+        }
+    }
+
+    /// <summary>Lists every mode the driver enumerates for the primary display.</summary>
+    /// <returns>The enumerated modes in driver order, duplicates included. An enumerated mode is a
+    /// claim, not a promise; test it with <see cref="TestPrimaryMode"/>.</returns>
+    public static IReadOnlyList<PrimaryDisplayMode> EnumeratePrimaryModes()
+    {
+        lock (Gate)
+        {
+            List<PrimaryDisplayMode> modes = [];
+            for (uint index = 0; index < 4096 && ReadNative(null, index, out var mode); index++)
+            {
+                modes.Add(ProjectPrimary(mode));
+            }
+            return modes;
+        }
+    }
+
+    /// <summary>Asks the driver whether the primary display would accept a mode. Changes nothing.</summary>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="refreshHz">Refresh rate in hertz.</param>
+    /// <returns>Whether the driver's test accepted the mode.</returns>
+    public static bool TestPrimaryMode(int width, int height, int refreshHz)
+    {
+        lock (Gate)
+        {
+            return ChangePrimary(width, height, refreshHz, ChangeTest) == 0;
+        }
+    }
+
+    /// <summary>Applies a mode to the primary display without persisting it.</summary>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="refreshHz">Refresh rate in hertz.</param>
+    /// <returns>The <c>ChangeDisplaySettingsEx</c> status: zero on success.</returns>
+    /// <remarks>No <c>CDS_UPDATEREGISTRY</c>: exit, a crash or a reboot restores the user's saved
+    /// configuration. The colour depth is carried over from the current mode.</remarks>
+    public static int ApplyPrimaryModeTransient(int width, int height, int refreshHz)
+    {
+        lock (Gate)
+        {
+            return ChangePrimary(width, height, refreshHz, 0);
+        }
+    }
+
+    private static int ChangePrimary(int width, int height, int refreshHz, uint flags)
+    {
+        if (!ReadNative(null, uint.MaxValue, out var mode))
+        {
+            return -2;
+        }
+        mode.Fields = PrimaryModeFields;
+        mode.Width = checked((uint)width);
+        mode.Height = checked((uint)height);
+        mode.Frequency = checked((uint)refreshHz);
+        return Change(null, ref mode, flags);
+    }
+
+    private static PrimaryDisplayMode ProjectPrimary(NativeMode mode) =>
+        new((int)mode.Width, (int)mode.Height, (int)mode.Frequency, (int)mode.Bits);
+
     private static ActiveDisplayPath? Find(DisplayTargetIdentity target)
     {
         var paths = DisplayTopology.CaptureActive().Paths;
@@ -127,7 +211,7 @@ public static partial class DisplayModes
         current is not null && expected.Target == current.Target && expected.SourceName == current.SourceName;
 
     private static DisplayMode Project(NativeMode mode) => new((int)mode.Width, (int)mode.Height, (int)mode.Frequency);
-    private static bool ReadNative(string source, uint index, out NativeMode mode)
+    private static bool ReadNative(string? source, uint index, out NativeMode mode)
     {
         mode = new() { Size = 220 };
         return EnumDisplaySettingsEx(source, index, ref mode, 0);
@@ -146,11 +230,11 @@ public static partial class DisplayModes
 
     [LibraryImport("user32.dll", EntryPoint = "EnumDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool EnumDisplaySettingsEx(string source, uint index, ref NativeMode mode, uint flags);
+    private static partial bool EnumDisplaySettingsEx(string? source, uint index, ref NativeMode mode, uint flags);
 
-    private static int Change(string source, ref NativeMode mode, uint flags) =>
+    private static int Change(string? source, ref NativeMode mode, uint flags) =>
         ChangeDisplaySettingsEx(source, ref mode, 0, flags, 0);
 
     [LibraryImport("user32.dll", EntryPoint = "ChangeDisplaySettingsExW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int ChangeDisplaySettingsEx(string source, ref NativeMode mode, nint window, uint flags, nint parameter);
+    private static partial int ChangeDisplaySettingsEx(string? source, ref NativeMode mode, nint window, uint flags, nint parameter);
 }
