@@ -78,7 +78,12 @@ public static partial class CoreAudio
     {
         if (value is not null && Marshal.IsComObject(value))
         {
-            Marshal.FinalReleaseComObject(value);
+            // RCWs are keyed by native IUnknown identity, and the process-wide cached enumerator
+            // can hand the same identity to more than one caller (a volume key handler racing a
+            // QAM poll, for instance). FinalReleaseComObject forces that RCW's reference count to
+            // zero regardless of how many holders remain, severing it out from under whichever
+            // caller runs second; ReleaseComObject only drops this caller's own claim.
+            Marshal.ReleaseComObject(value);
         }
     }
 
