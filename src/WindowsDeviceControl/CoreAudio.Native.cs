@@ -211,6 +211,15 @@ public static partial class CoreAudio
     }
 
     [ComImport]
+    [Guid("1BE09788-6894-4089-8586-9A2A6C265AC5")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMEndpoint
+    {
+        [PreserveSig]
+        int GetDataFlow(out DataFlow dataFlow);
+    }
+
+    [ComImport]
     [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPropertyStore

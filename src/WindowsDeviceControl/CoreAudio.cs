@@ -310,10 +310,18 @@ public static partial class CoreAudio
         try
         {
             var enumerator = Enumerator();
+            // The previous defaults must come from the same flow as the endpoint being selected.
+            // Reading render defaults for a microphone made a failed capture change "roll back"
+            // to the speakers, leaving the capture roles split while reporting a clean rollback.
+            var flowResult = ReadEndpointFlow(enumerator, endpointId, out var flow);
+            if (flowResult < 0)
+            {
+                return flowResult;
+            }
             var previous = new Dictionary<AudioRole, string>();
             foreach (var role in DefaultRoles)
             {
-                var snapshot = ReadDefaultEndpointId(enumerator, role, out var previousId);
+                var snapshot = ReadDefaultEndpointId(enumerator, flow, role, out var previousId);
                 if (snapshot < 0 || string.IsNullOrEmpty(previousId))
                 {
                     return snapshot < 0 ? snapshot : Failure;
@@ -358,8 +366,31 @@ public static partial class CoreAudio
             : StringComparer.Ordinal.Compare(left.Id, right.Id);
     }
 
+    private static int ReadEndpointFlow(
+        IMMDeviceEnumerator enumerator,
+        string endpointId,
+        out DataFlow flow)
+    {
+        flow = DataFlow.Render;
+        IMMDevice? device = null;
+        try
+        {
+            var result = enumerator.GetDevice(endpointId, out device);
+            if (result < 0)
+            {
+                return result;
+            }
+            return device is IMMEndpoint endpoint ? endpoint.GetDataFlow(out flow) : Failure;
+        }
+        finally
+        {
+            Release(device);
+        }
+    }
+
     private static int ReadDefaultEndpointId(
         IMMDeviceEnumerator enumerator,
+        DataFlow flow,
         AudioRole role,
         out string? endpointId)
     {
@@ -367,7 +398,7 @@ public static partial class CoreAudio
         IMMDevice? device = null;
         try
         {
-            var result = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role, out device);
+            var result = enumerator.GetDefaultAudioEndpoint(flow, role, out device);
             return result < 0 || device is null ? result : device.GetId(out endpointId);
         }
         finally
