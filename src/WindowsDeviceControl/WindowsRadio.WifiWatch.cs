@@ -31,27 +31,32 @@ public static unsafe partial class WindowsRadio
     public static void StartWifiWatch(Action<WifiWatchEvent> onEvent)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
+        // Disposing the previous registration can block: unregistering waits for an in-flight
+        // callback to return, and that callback takes WifiWatchLock as its first act. Detach it
+        // under the lock, then dispose it after the lock is released so a notification delivered
+        // on the WLAN service thread at this exact moment cannot deadlock against this thread.
+        DetachWatch()?.Dispose();
+        var watch = new WifiWatch(onEvent);
+        var registration = WlanNotificationRegistration.TryOpen(
+                (data, context) => OnWifiNotification(watch, data, context),
+                out var status)
+            ?? throw WlanFailure("WlanOpenHandle", status);
+        watch.Registration = registration;
+        status = registration.Register(WlanNotificationSourceAcm | WlanNotificationSourceMsm);
+        if (status != ErrorSuccess)
+        {
+            status = registration.Register(WlanNotificationSourceAcm);
+        }
+        if (status != ErrorSuccess)
+        {
+            registration.Dispose();
+            throw WlanFailure("WlanRegisterNotification", status);
+        }
+        // Published only once fully registered, so no callback can be in flight for it before
+        // this and nothing can race to dispose it out from under a not-yet-successful setup.
         lock (WifiWatchLock)
         {
-            StopWifiWatchCore();
-            var watch = new WifiWatch(onEvent);
-            var registration = WlanNotificationRegistration.TryOpen(
-                    (data, context) => OnWifiNotification(watch, data, context),
-                    out var status)
-                ?? throw WlanFailure("WlanOpenHandle", status);
-            watch.Registration = registration;
             _wifiWatch = watch;
-            status = registration.Register(WlanNotificationSourceAcm | WlanNotificationSourceMsm);
-            if (status != ErrorSuccess)
-            {
-                status = registration.Register(WlanNotificationSourceAcm);
-            }
-            if (status != ErrorSuccess)
-            {
-                _wifiWatch = null;
-                registration.Dispose();
-                throw WlanFailure("WlanRegisterNotification", status);
-            }
         }
     }
 
@@ -59,19 +64,18 @@ public static unsafe partial class WindowsRadio
     /// <remarks>Safe to call when no watch is running. Call it before the process exits: the
     /// callback is held by native code, and leaving it registered risks a call into an unloaded
     /// delegate.</remarks>
-    public static void StopWifiWatch()
+    public static void StopWifiWatch() => DetachWatch()?.Dispose();
+
+    /// <summary>Clears the active watch and returns its registration, still live, for the caller
+    /// to dispose outside <see cref="WifiWatchLock"/>.</summary>
+    private static WlanNotificationRegistration? DetachWatch()
     {
         lock (WifiWatchLock)
         {
-            StopWifiWatchCore();
+            var watch = _wifiWatch;
+            _wifiWatch = null;
+            return watch?.Registration;
         }
-    }
-
-    private static void StopWifiWatchCore()
-    {
-        var watch = _wifiWatch;
-        _wifiWatch = null;
-        watch?.Registration.Dispose();
     }
 
     private static void OnWifiNotification(WifiWatch watch, nint data, nint context)
