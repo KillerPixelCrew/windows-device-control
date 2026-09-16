@@ -103,16 +103,25 @@ public sealed partial class WaveOutFeedback : IDisposable
     /// <summary>Closes the stream and releases its stable unmanaged buffers.</summary>
     public void Dispose()
     {
+        // A device that disconnects mid-playback (Bluetooth or USB headset) makes reset, unprepare
+        // or close return an error while winmm still holds these buffers. Freeing them anyway hands
+        // the driver freed heap; leaking them instead is the safe trade, since the process either
+        // owns them until exit or is discarding this one-shot stream regardless.
+        bool driverReleasedBuffers = true;
         if (_output != 0)
         {
-            WaveOutReset(_output);
+            driverReleasedBuffers &= WaveOutReset(_output) == 0;
             if (_prepared)
             {
-                WaveOutUnprepareHeader(_output, _header, HeaderSize);
+                driverReleasedBuffers &= WaveOutUnprepareHeader(_output, _header, HeaderSize) == 0;
                 _prepared = false;
             }
-            WaveOutClose(_output);
+            driverReleasedBuffers &= WaveOutClose(_output) == 0;
             _output = 0;
+        }
+        if (!driverReleasedBuffers)
+        {
+            return;
         }
         if (_header != 0)
         {
