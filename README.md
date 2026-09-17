@@ -23,6 +23,11 @@ not be valid UTF-8.
 **Default audio endpoint switching.** There is no public API. It goes through `IPolicyConfig`, a COM interface Microsoft
 never documented and whose vtable ordering differs across Windows versions.
 
+**Spatial sound and the endpoint format.** Windows Sonic, Dolby Atmos and DTS have a public WinRT API, but it only
+answers when handed the WinRT device id built from the endpoint id, and it reports an unknown device as "no spatial
+sound" rather than failing. The default format behind the Advanced tab and the speaker-setup wizard, which is where
+channel count and 5.1 or 7.1 layout live, has no public API at all and goes through the same `IPolicyConfig`.
+
 **Panel brightness.** The documented route is WMI `WmiMonitorBrightnessMethods`, which requires elevation and silently
 does nothing on many laptop and handheld panels. The ACPI backlight device answers the same request unelevated.
 
@@ -68,6 +73,12 @@ CoreAudio.SetDefaultEndpoint(outputs[0].Id, out var roleResults); // transaction
 CoreAudio.SetVolume(35, out _);
 CoreAudio.SetMuted(true);
 
+// Spatial sound and the endpoint format, both applied to the running engine at once
+CoreAudio.GetSpatialAudio(outputs[0].Id, out var spatial);            // supported formats, default, active
+CoreAudio.SetSpatialAudio(outputs[0].Id, CoreAudio.SpatialAudioFormats.WindowsSonic, out var status);
+CoreAudio.ListSupportedDeviceFormats(outputs[0].Id, out var formats); // what the Advanced tab would offer
+CoreAudio.SetDeviceFormat(outputs[0].Id, CoreAudio.AudioDeviceFormat.Pcm(channels: 6, sampleRate: 48000, bitsPerSample: 24));
+
 // Brightness, no elevation
 if (Backlight.TryReadBrightness(out int percent))
     Backlight.TrySetBrightness(Math.Min(100, percent + 10));
@@ -83,7 +94,7 @@ var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSe
 |-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `WindowsRadio`        | Radio power, Wi-Fi scan, list, connect and forget, Bluetooth discovery and pairing, change watches (`StartWifiWatch`, `StartBluetoothWatch`) |
 | `WifiProfile`         | Builds profile XML: `CreateOpen`, `CreatePsk` in WPA3-transition, WPA2-AES and WPA-TKIP shapes; survives a non-UTF-8 SSID                    |
-| `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, Bluetooth audio connect and disconnect                                 |
+| `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
 | `Backlight`           | Internal panel brightness over the ACPI backlight device                                                                                     |
 | `WaveOutFeedback`     | The short click Windows itself plays for volume feedback                                                                                     |
 | `DisplayTopology`     | Active CCD paths, rematchable monitor identities, and cancellable display-appearance waits                                                   |

@@ -148,6 +148,54 @@ default playback endpoint snapshots all three previous role defaults before the 
 failure rolls every changed role back in reverse order, attempts every rollback, and returns the
 per-role apply/rollback HRESULTs to callers that use the detailed overload.
 
+## Spatial sound
+
+Windows Sonic, Dolby Atmos and DTS are selected per playback endpoint through the public
+`Windows.Media.Audio.SpatialAudioDeviceConfiguration` (Windows 10 1809 and later). It works from an
+ordinary unpackaged desktop process and applies to the running engine at once, which was confirmed
+on Windows 11 build 26200 on 2026-09-17: Windows Sonic on and off, and Dolby Atmos for Headphones
+on and off once the Dolby Access app had activated a licence. Without that licence Windows answers
+`LicenseNotValidForAudioEndpoint` and leaves the endpoint as it was. The documentation's note that
+the caller must own the format did not apply to either.
+
+### The WinRT id is not the Core Audio id
+
+`GetForDeviceId` wants `\\?\SWD#MMDEVAPI#<endpoint id>#{e6327cad-dcec-4949-ae8a-991e976a79d2}`,
+the render device-interface path. Handed the bare `{0.0.0.00000000}.{...}` id, or any other string,
+it does not fail: it reports the device as unsupported with no format, so a wrong id looks exactly
+like a device without spatial sound. The library builds the path itself and asks Core Audio whether
+the endpoint exists first, so a vanished device is reported as the not-found HRESULT it is.
+
+### Rejected: registry and third-party switches
+
+The selected format is stored in serialised blobs under the endpoint's `Properties` key that belong
+to the audio service, not in a documented `FxProperties` value, and the service does not watch them.
+SoundVolumeView's `/SetSpatial` changed nothing on build 26200 while the WinRT call succeeded.
+Settings itself uses an internal `Windows.Media.Internal.AudioPolicyConfig` factory, which nothing
+here needs.
+
+## Endpoint default format
+
+Channel count and layout, sample rate and bit depth are the endpoint's shared-mode default format:
+what the Advanced tab shows and what the speaker-setup wizard writes when it selects 5.1 or 7.1.
+There is no public API. `IPolicyConfig.GetDeviceFormat` and `SetDeviceFormat` are the calls behind
+both dialogs, and the audio service applies a write to the running engine at once, restarting open
+streams on the new format. On build 26200 a 24-bit to 16-bit change and back was reflected by the
+next read and by the Sound settings page; six channels requested on a stereo endpoint answered
+`AUDCLNT_E_UNSUPPORTED_FORMAT` (0x88890008) and changed nothing, so a refused write needs no
+rollback.
+
+The write carries two formats: the integer PCM default and the float mix format the engine runs at
+the same channel count and rate, which is the pairing Windows writes itself. 24-bit audio travels
+in a 32-bit container. The formats an endpoint accepts are found the way the Advanced tab finds
+them: each candidate is offered to `IAudioClient.IsFormatSupported` in exclusive mode, which opens
+no stream.
+
+`IPolicyConfig` here is the Windows 7 and later layout, whose `GetPropertyValue` and
+`SetPropertyValue` take the FxProperties store flag before the key. The earlier declaration omitted
+it; the two methods were unused, and `SetDefaultEndpoint` sits after them, so nothing broke, but a
+property read through the short layout answers `E_INVALIDARG`.
+
 ## Panel brightness
 
 `Backlight.cs` drives the internal panel through the ACPI display driver's brightness ioctls on

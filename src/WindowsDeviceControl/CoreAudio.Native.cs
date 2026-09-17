@@ -137,6 +137,36 @@ public static partial class CoreAudio
                 : null;
     }
 
+    // WAVEFORMATEX is packed to 2 bytes: 18 bytes with no padding after the 16-bit tag.
+    [StructLayout(LayoutKind.Sequential, Pack = 2)]
+    internal struct WaveFormat
+    {
+        internal ushort FormatTag;
+        internal ushort Channels;
+        internal uint SamplesPerSecond;
+        internal uint AverageBytesPerSecond;
+        internal ushort BlockAlign;
+        internal ushort BitsPerSample;
+        internal ushort ExtraSize;
+    }
+
+    // WAVEFORMATEXTENSIBLE: the 18-byte header followed by the 22 bytes ExtraSize announces, so
+    // the whole structure is 40 bytes and the SubFormat GUID sits at offset 24.
+    [StructLayout(LayoutKind.Sequential, Pack = 2)]
+    internal struct WaveFormatExtensible
+    {
+        internal ushort FormatTag;
+        internal ushort Channels;
+        internal uint SamplesPerSecond;
+        internal uint AverageBytesPerSecond;
+        internal ushort BlockAlign;
+        internal ushort BitsPerSample;
+        internal ushort ExtraSize;
+        internal ushort ValidBitsPerSample;
+        internal uint ChannelMask;
+        internal Guid SubFormat;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct KsProperty
     {
@@ -387,21 +417,80 @@ public static partial class CoreAudio
     }
 
     [ComImport]
+    [Guid("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioClient
+    {
+        [PreserveSig]
+        int Initialize(
+            uint shareMode,
+            uint streamFlags,
+            long bufferDuration,
+            long periodicity,
+            nint format,
+            nint audioSessionGuid);
+
+        [PreserveSig]
+        int GetBufferSize(out uint frameCount);
+
+        [PreserveSig]
+        int GetStreamLatency(out long latency);
+
+        [PreserveSig]
+        int GetCurrentPadding(out uint paddingFrameCount);
+
+        // A format the driver accepts answers S_OK; S_FALSE with a closest match, or
+        // AUDCLNT_E_UNSUPPORTED_FORMAT with none, are the refusals. The closest match is
+        // CoTaskMem the caller frees.
+        [PreserveSig]
+        int IsFormatSupported(uint shareMode, nint format, out nint closestMatch);
+
+        [PreserveSig]
+        int GetMixFormat(out nint format);
+
+        [PreserveSig]
+        int GetDevicePeriod(out long defaultPeriod, out long minimumPeriod);
+
+        [PreserveSig]
+        int Start();
+
+        [PreserveSig]
+        int Stop();
+
+        [PreserveSig]
+        int Reset();
+
+        [PreserveSig]
+        int SetEventHandle(nint eventHandle);
+
+        [PreserveSig]
+        int GetService(ref Guid interfaceId, [MarshalAs(UnmanagedType.IUnknown)] out object? service);
+    }
+
+    // The Windows 7 and later layout. GetPropertyValue and SetPropertyValue carry a BOOL that
+    // selects the FxProperties store over the endpoint's own; the Vista layout without it has a
+    // different IID. Calling the wrong layout shifts every argument and answers E_INVALIDARG.
+    [ComImport]
     [Guid("F8679F50-850A-41CF-9C72-430F290290C8")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPolicyConfig
     {
         [PreserveSig]
-        int GetMixFormat(nint deviceId, out nint format);
+        int GetMixFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, out nint format);
+
+        // isDefault non-zero reads the driver's own default rather than the user's selection.
+        // The format is CoTaskMem the caller frees.
+        [PreserveSig]
+        int GetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int isDefault, out nint format);
 
         [PreserveSig]
-        int GetDeviceFormat(nint deviceId, int isDefault, out nint format);
+        int ResetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
 
         [PreserveSig]
-        int ResetDeviceFormat(nint deviceId);
-
-        [PreserveSig]
-        int SetDeviceFormat(nint deviceId, nint endpointFormat, nint mixFormat);
+        int SetDeviceFormat(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            nint endpointFormat,
+            nint mixFormat);
 
         [PreserveSig]
         int GetProcessingPeriod(nint deviceId, int isDefault, out long defaultPeriod, out long minimumPeriod);
@@ -416,10 +505,18 @@ public static partial class CoreAudio
         int SetShareMode(nint deviceId, nint mode);
 
         [PreserveSig]
-        int GetPropertyValue(nint deviceId, ref PropertyKey key, out PropVariant value);
+        int GetPropertyValue(
+            nint deviceId,
+            [MarshalAs(UnmanagedType.Bool)] bool fxStore,
+            ref PropertyKey key,
+            out PropVariant value);
 
         [PreserveSig]
-        int SetPropertyValue(nint deviceId, ref PropertyKey key, ref PropVariant value);
+        int SetPropertyValue(
+            nint deviceId,
+            [MarshalAs(UnmanagedType.Bool)] bool fxStore,
+            ref PropertyKey key,
+            ref PropVariant value);
 
         [PreserveSig]
         int SetDefaultEndpoint(

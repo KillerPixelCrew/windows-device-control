@@ -20,8 +20,10 @@ including callback threading, completion timing, consent, error meanings, and ow
   `WifiWatch` (WLAN notifications) and `WlanNative`. Only the three WLAN partials are `unsafe`.
 - `WifiProfile.cs`: exact WLAN profile XML, SSID bytes, security shapes, and passphrase validation.
 - `CoreAudio.cs`: endpoint enumeration, default-role transactions, and volume/mute.
-  `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, and `CoreAudio.Native.cs` the COM
-  declarations, `PROPVARIANT` cleanup and the shared device enumerator.
+  `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, `CoreAudio.Spatial.cs` the spatial
+  sound state through the public WinRT configuration, `CoreAudio.Formats.cs` the endpoint default
+  format (channel layout, rate, depth) through `IPolicyConfig`, and `CoreAudio.Native.cs` the COM
+  declarations, native wave-format layouts, `PROPVARIANT` cleanup and the shared device enumerator.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and appearance waits in
   `DisplayTopology.cs`, validated profile capture/apply with rollback in `DisplayTopology.Profiles.cs`,
@@ -132,6 +134,18 @@ Keep COM declarations and `PROPVARIANT` cleanup private to `CoreAudio`, in `Core
 Default endpoint changes are transactions across Console, Multimedia, and Communications roles.
 Snapshot all previous defaults before writing. On failure, roll back every changed role in reverse
 order, attempt every rollback even if one fails, and return per-role apply/rollback HRESULTs.
+
+Spatial sound goes through `Windows.Media.Audio.SpatialAudioDeviceConfiguration`, addressed by the
+WinRT device id built from the endpoint id, after Core Audio has confirmed the endpoint exists; the
+WinRT class answers an unknown id with "unsupported" rather than an error. Do not write the
+endpoint's registry blobs instead: they are the audio service's own serialisation and are not
+picked up live. A licence refusal is Windows' answer, returned as the named status, never retried.
+
+The endpoint default format is one `IPolicyConfig.SetDeviceFormat` write with the integer PCM
+format and its float mix form. Windows validates against the driver and refuses an unsupported
+layout with `AUDCLNT_E_UNSUPPORTED_FORMAT` without changing anything, so there is no rollback and
+no retry. `IPolicyConfig` is the Windows 7 and later layout: `GetPropertyValue` and
+`SetPropertyValue` carry the FxProperties store flag, and dropping it shifts every argument.
 
 Internal-panel brightness uses the ACPI backlight device. Do not substitute WMI or DDC/CI for this
 contract. Set AC and DC policy together. Absence of a controllable internal panel is normal:
