@@ -250,7 +250,9 @@ will leave the value alone.
 `RequestActionAsync` supports shutdown, restart and sign-out using the absolute system tool path, and completion means
 the tool accepted the request. Cancellation cannot undo a dispatched operation.
 `TryGetStatus` reports source and battery values with Windows' unknown sentinels intact. Window owners can register
-power-setting notifications and must unregister their returned handles.
+power-setting notifications and suspend and resume notifications and must unregister their returned handles; the
+suspend and resume registration is what delivers PBT_APMSUSPEND and the resume codes to a message-only window, which
+the broadcast alone never reaches.
 
 `WindowsPowerRequest` owns a display or system wake request and its reason string. Acquire and Release are idempotent,
 failures throw with native error codes, and a failed release stays held until an explicit retry or disposal. Disposal
