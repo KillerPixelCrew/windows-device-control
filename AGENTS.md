@@ -22,8 +22,10 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `CoreAudio.cs`: endpoint enumeration, default-role transactions, and volume/mute.
   `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, `CoreAudio.Spatial.cs` the spatial
   sound state through the public WinRT configuration, `CoreAudio.Formats.cs` the endpoint default
-  format (channel layout, rate, depth) through `IPolicyConfig`, and `CoreAudio.Native.cs` the COM
-  declarations, native wave-format layouts, `PROPVARIANT` cleanup and the shared device enumerator.
+  format (channel layout, rate, depth) through `IPolicyConfig`, `CoreAudio.Watch.cs` the volume and
+  endpoint change notifications (the COM callbacks a consumer registers instead of polling), and
+  `CoreAudio.Native.cs` the COM declarations, native wave-format layouts, `PROPVARIANT` cleanup and
+  the shared device enumerator.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and appearance waits in
   `DisplayTopology.cs`, validated profile capture/apply with rollback in `DisplayTopology.Profiles.cs`,
