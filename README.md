@@ -94,7 +94,7 @@ var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSe
 |-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `WindowsRadio`        | Radio power, Wi-Fi scan, list, connect and forget, Bluetooth discovery and pairing, change watches (`StartWifiWatch`, `StartBluetoothWatch`) |
 | `WifiProfile`         | Builds profile XML: `CreateOpen`, `CreatePsk` in WPA3-transition, WPA2-AES and WPA-TKIP shapes; survives a non-UTF-8 SSID                    |
-| `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
+| `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, change watches (`StartVolumeWatch`, `StartEndpointWatch`), spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
 | `Backlight`           | Internal panel brightness over the ACPI backlight device                                                                                     |
 | `WaveOutFeedback`     | The short click Windows itself plays for volume feedback                                                                                     |
 | `DisplayTopology`     | Active CCD paths, rematchable monitor identities, and cancellable display-appearance waits                                                   |
