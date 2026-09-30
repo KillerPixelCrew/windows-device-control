@@ -337,6 +337,12 @@ preserved as its raw number rather than replaced.
 
 ## Status
 
+`AudioFilePreview` owns local audio preview through Windows Media Foundation and the default audio
+route. `Play` takes an existing absolute path; `Stop` releases playback and `Dispose` ends the owner.
+It changes neither endpoint selection nor system volume. Unsupported or corrupt media raises
+`Failed` on the media callback thread. Consumers serialize owner calls and marshal failures to
+their UI. A stopped preview's queued failure cannot replace a newer preview's status.
+
 Pre-1.0. The surface can still move before it is frozen, so pin an exact version if that matters to you.
 
 Issues and pull requests are welcome, especially hardware reports. The behaviour of Wi-Fi drivers, Bluetooth stacks and
