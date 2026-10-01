@@ -73,7 +73,8 @@ deleted by inference. A failed key or authentication attempt removes a newly aut
 
 The connection path registers a callback before issuing the request, scopes the verdict to the
 selected interface and profile, waits for the ACM completion or failure notification, and falls back
-to reading the current interface state only when the event does not arrive.
+to reading the current interface state only when the event does not arrive. When the callback cannot
+be registered, the request is not sent and the failure carries the registration status.
 
 ### Only an authentication or key failure re-prompts for the password
 

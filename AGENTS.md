@@ -28,10 +28,9 @@ including callback threading, completion timing, consent, error meanings, and ow
   the shared device enumerator.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and appearance waits in
-  `DisplayTopology.cs`, validated profile capture/apply with rollback in `DisplayTopology.Profiles.cs`,
-  and the public records in `DisplayTopology.Types.cs`. `DisplayTopology.Native.cs` owns the native
-  CCD shapes, which are internal so the layout, scaling and colour code share one set of offsets and
-  one query rather than keeping second copies.
+  `DisplayTopology.cs`, and the public records in `DisplayTopology.Types.cs`.
+  `DisplayTopology.Native.cs` owns the native CCD shapes, which are internal so the layout, scaling
+  and colour code share one set of offsets and one query rather than keeping second copies.
 - `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
   the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
   state, an already-matching arrangement is not rewritten, and an unconfirmed apply rolls back once.

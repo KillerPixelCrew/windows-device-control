@@ -203,11 +203,6 @@ public static partial class DisplayTopology
             UseSupplied | AllowChanges | flags);
     }
 
-    private static int Supply(NativeSnapshot snapshot, uint flags)
-    {
-        return Supply(snapshot.Paths, snapshot.Modes, flags);
-    }
-
     /// <summary>
     ///     Repeats a fresh observation until it matches or the deadline passes. Timeout and
     ///     cancellation never change display state.
@@ -238,11 +233,6 @@ public static partial class DisplayTopology
             await Task.Delay(remaining < PollInterval ? remaining : PollInterval, cancellationToken)
                 .ConfigureAwait(false);
         } while (true);
-    }
-
-    internal static string Bound(string value)
-    {
-        return value.Length <= 512 ? value : value[..512];
     }
 
     private static bool Exists<T>(this IReadOnlyList<T> values, Predicate<T> predicate)

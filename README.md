@@ -142,14 +142,7 @@ the documented sizing race and stays read-only.
 
 `WaitForPresentAsync` polls fresh complete CCD snapshots, and timeout and cancellation never change display state.
 `WaitForAvailableAsync` queries all CCD paths and requires target availability instead, so a caller can wait for a
-connected but disabled display before applying a profile.
-
-`CaptureProfile` serializes the active CCD paths and modes alongside those identities. Before application,
-`ValidateProfile` rematches every saved target against the current topology and asks Windows to validate the supplied
-configuration without applying it. `ApplyProfile` repeats that validation, captures the current active topology for
-rollback, applies once, and verifies the saved targets are active. A failed or unconfirmed application attempts one
-rollback and reports both the original Windows status and the rollback result. A successful native return is not
-reported as a confirmed profile until the readback succeeds.
+connected but disabled display before applying a layout.
 
 Display discovery bounds CCD buffers at 4,096 possible routes and 8,192 mode records. Possible source and target
 combinations can be far larger than the active display count: a desktop query on 2026-09-13 returned 284 possible routes
@@ -158,8 +151,7 @@ their buffers.
 
 ### Editable display layouts
 
-`DisplayTopology` replays a captured native configuration, which restores what was there and nothing else.
-`DisplayLayouts` is the editable form.
+`DisplayLayouts` holds a desktop arrangement as editable values.
 
 `Observe()` reports every monitor the adapter can see, active or not, with a fingerprint that only changes when the
 observation does; two equal fingerprints a moment apart are what a caller waits for before acting on an arrival.
@@ -167,10 +159,7 @@ observation does; two equal fingerprints a moment apart are what a caller waits 
 `Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies and confirms by readback.
 
 `Describe(layout)` is the rule set on its own. It is pure and touches no display, so an editor can refuse a layout as it
-is typed and a stored layout can be checked while the monitors it names are unplugged. `FromProfile(profile)` is the
-one-way trip out of a captured `DisplayProfile`, for callers migrating stored profiles to layouts. Scaling and advanced
-colour come back unset, because the profile never recorded them and reading them now would describe today's desktop
-rather than the captured one.
+is typed and a stored layout can be checked while the monitors it names are unplugged.
 
 A layout is checked before Windows sees it: at least one display, exactly one at 0,0 as the primary, no duplicates, no
 overlaps, and every display touching the arrangement, because Windows snaps a detached desktop and the readback would

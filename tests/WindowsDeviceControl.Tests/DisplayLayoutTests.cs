@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using Xunit;
@@ -225,90 +224,6 @@ public sealed class DisplayLayoutTests
         Assert.Null(DisplayLayouts.Describe(new DisplayLayout([Output(target)])));
         Assert.Contains("at least one display", DisplayLayouts.Describe(new DisplayLayout([]))!);
         Assert.Throws<ArgumentNullException>(() => DisplayLayouts.Describe(null!));
-    }
-
-    [Fact]
-    public void ACapturedProfileReadsBackAsTheLayoutItRecorded()
-    {
-        var first = Target(@"\\?\a", "Desk", 10);
-        var second = Target(@"\\?\b", "TV", 20);
-        var profile = Profile(
-            [(first, 0, 0, 2560, 1440, 60), (second, 2560, 0, 3840, 2160, 120)]);
-
-        var layout = DisplayLayouts.FromProfile(profile)!;
-
-        Assert.Equal(2, layout.Outputs.Count);
-        Assert.Equal((0, 2560, 1440), (layout.Outputs[0].X, layout.Outputs[0].Width, layout.Outputs[0].Height));
-        Assert.Equal(2560, layout.Outputs[1].X);
-        Assert.Equal(120, layout.Outputs[1].Refresh.Hertz);
-        // The profile never recorded these, and reading them now would describe today's desktop.
-        Assert.All(layout.Outputs, output => Assert.Null(output.DpiPercent));
-        Assert.All(layout.Outputs, output => Assert.Null(output.Hdr));
-    }
-
-    [Theory]
-    // A record of the wrong length, a target list that does not line up with the paths, and a
-    // recorded arrangement that no longer describes a desktop: all are dropped, never guessed at.
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(false, false, true)]
-    public void AProfileThatCannotBeReadAsALayoutIsRefused(bool truncated, bool mismatched, bool overlapping)
-    {
-        var first = Target(@"\\?\a", "Desk", 10);
-        var second = Target(@"\\?\b", "TV", 20);
-        var profile = overlapping
-            ? Profile([(first, 0, 0, 2560, 1440, 60), (second, 0, 0, 3840, 2160, 60)])
-            : Profile([(first, 0, 0, 2560, 1440, 60)]);
-        if (truncated)
-        {
-            profile = profile with { PathData = [new byte[3]] };
-        }
-
-        if (mismatched)
-        {
-            profile = profile with { Targets = [first, second] };
-        }
-
-        Assert.Null(DisplayLayouts.FromProfile(profile));
-    }
-
-    /// <summary>
-    ///     Builds the native records <see cref="DisplayTopology.CaptureProfile" /> would have
-    ///     written for one arrangement, so the decode can be tested without a second monitor.
-    /// </summary>
-    private static DisplayProfile Profile(
-        (DisplayTargetIdentity Target, int X, int Y, int Width, int Height, int Hertz)[] outputs)
-    {
-        List<DisplayTopology.PathInfo> paths = [];
-        List<DisplayTopology.ModeInfo> modes = [];
-        foreach (var (target, x, y, width, height, hertz) in outputs)
-        {
-            paths.Add(new DisplayTopology.PathInfo
-            {
-                SourceInfo = new DisplayTopology.PathSourceInfo
-                    { Id = target.TargetId, ModeInfoIdx = (uint)modes.Count },
-                TargetInfo = new DisplayTopology.PathTargetInfo
-                {
-                    Id = target.TargetId,
-                    ModeInfoIdx = InvalidIndex,
-                    Rotation = 1,
-                    RefreshRate = new DisplayTopology.Rational { Numerator = (uint)hertz, Denominator = 1 }
-                },
-                Flags = Active
-            });
-            modes.Add(new DisplayTopology.ModeInfo
-            {
-                InfoType = 1,
-                Id = target.TargetId,
-                Mode = new DisplayTopology.ModeUnion
-                {
-                    Source = new DisplayTopology.SourceMode { Width = (uint)width, Height = (uint)height, X = x, Y = y }
-                }
-            });
-        }
-
-        return new DisplayProfile(1, [.. outputs.Select(output => output.Target)],
-            DisplayTopology.Encode(paths.ToArray()), DisplayTopology.Encode(modes.ToArray()));
     }
 
     [Fact]

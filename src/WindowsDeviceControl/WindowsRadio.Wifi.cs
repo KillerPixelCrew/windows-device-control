@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
@@ -249,6 +247,13 @@ public static unsafe partial class WindowsRadio
             throw Fail(ex);
         }
 
+        // The verdict is how the outcome is known, so without it the request is never sent.
+        if (verdict is null)
+        {
+            throw Fail(new Win32Exception((int)verdictRegistrationStatus,
+                "WLAN notification registration failed; the Wi-Fi connection was not attempted."));
+        }
+
         using (verdict)
         {
             nint profilePointer;
@@ -274,22 +279,6 @@ public static unsafe partial class WindowsRadio
                 if (accepted != ErrorSuccess)
                 {
                     throw Fail(WlanFailure("WlanConnect", accepted));
-                }
-
-                if (verdict is null)
-                {
-                    if (PollForConnection(
-                            client.Handle,
-                            choice.Adapter.Id,
-                            targetSsid,
-                            ConnectTimeout))
-                    {
-                        return 0;
-                    }
-
-                    throw Fail(new TimeoutException(
-                        "The Wi-Fi connection attempt did not complete; "
-                        + $"WLAN notification registration failed (Win32 {verdictRegistrationStatus})."));
                 }
 
                 var outcome = verdict.Wait(ConnectTimeout);
@@ -427,26 +416,6 @@ public static unsafe partial class WindowsRadio
         {
             throw last;
         }
-    }
-
-    private static bool PollForConnection(
-        nint client,
-        Guid adapter,
-        byte[] targetSsid,
-        TimeSpan timeout)
-    {
-        var started = Stopwatch.GetTimestamp();
-        while (Stopwatch.GetElapsedTime(started) < timeout)
-        {
-            if (IsConnectedTo(client, adapter, targetSsid))
-            {
-                return true;
-            }
-
-            Thread.Sleep(500);
-        }
-
-        return false;
     }
 
     private static bool IsConnectedTo(nint client, Guid adapter, byte[] targetSsid)

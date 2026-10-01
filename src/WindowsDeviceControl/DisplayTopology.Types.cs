@@ -56,19 +56,8 @@ public sealed record ActiveDisplayPath(
 /// <param name="CapturedAt">Time after the native query and target-name reads completed.</param>
 public sealed record DisplayTopologySnapshot(IReadOnlyList<ActiveDisplayPath> Paths, DateTimeOffset CapturedAt);
 
-/// <summary>Serializable Windows display profile captured from supported CCD APIs.</summary>
-/// <param name="FormatVersion">Profile schema version.</param>
-/// <param name="Targets">Stable target identities in path order.</param>
-/// <param name="PathData">Blittable DISPLAYCONFIG_PATH_INFO records without process pointers.</param>
-/// <param name="ModeData">Blittable DISPLAYCONFIG_MODE_INFO records without process pointers.</param>
-public sealed record DisplayProfile(
-    int FormatVersion,
-    IReadOnlyList<DisplayTargetIdentity> Targets,
-    IReadOnlyList<byte[]> PathData,
-    IReadOnlyList<byte[]> ModeData);
-
-/// <summary>Result of validating or applying a display profile.</summary>
-/// <param name="Applied">Whether the requested profile was applied and confirmed active.</param>
+/// <summary>Result of validating or applying a display change.</summary>
+/// <param name="Applied">Whether the requested change was applied and confirmed active.</param>
 /// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
 /// <param name="RollbackAttempted">Whether failure triggered restoration of the captured topology.</param>
 /// <param name="RollbackSucceeded">Whether rollback returned success.</param>

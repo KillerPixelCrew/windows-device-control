@@ -114,7 +114,7 @@ public enum DisplayLayoutOutcome
 /// <param name="RollbackAttempted">Whether an unconfirmed application was rolled back.</param>
 /// <param name="RollbackSucceeded">Whether that rollback returned success.</param>
 /// <param name="Warnings">Non-fatal problems, such as a refused HDR or scaling write.</param>
-/// <param name="Detail">Bounded diagnostic suitable for a log or UI.</param>
+/// <param name="Detail">Diagnostic suitable for a log or UI.</param>
 public sealed record DisplayLayoutResult(
     DisplayLayoutOutcome Outcome,
     IReadOnlyList<DisplayTargetIdentity> Absent,
@@ -221,67 +221,6 @@ public static class DisplayLayouts
         return DisplayLayoutPlanner.Describe(layout);
     }
 
-    /// <summary>
-    ///     Reads a profile captured by <see cref="DisplayTopology.CaptureProfile" /> back as an
-    ///     editable layout.
-    ///     A profile is a native configuration meant to be replayed, not read; this is the one-way trip
-    ///     out of that form, for callers migrating stored profiles to layouts. Scaling and advanced
-    ///     colour are left unset because the profile never recorded them, and reading them now would
-    ///     describe today's desktop rather than the captured one.
-    /// </summary>
-    /// <param name="profile">A previously captured profile.</param>
-    /// <returns>The layout, or null when the profile cannot be read as one.</returns>
-    public static DisplayLayout? FromProfile(DisplayProfile profile)
-    {
-        ArgumentNullException.ThrowIfNull(profile);
-        DisplayTopology.PathInfo[] paths;
-        DisplayTopology.ModeInfo[] modes;
-        try
-        {
-            paths = DisplayTopology.Decode<DisplayTopology.PathInfo>(profile.PathData);
-            modes = DisplayTopology.Decode<DisplayTopology.ModeInfo>(profile.ModeData);
-        }
-        catch (ArgumentException)
-        {
-            return null;
-        }
-
-        if (paths.Length != profile.Targets.Count)
-        {
-            return null;
-        }
-
-        List<DisplayLayoutOutput> outputs = [];
-        for (var index = 0; index < paths.Length; index++)
-        {
-            var path = paths[index];
-            if ((path.Flags & PathActiveFlag) == 0 || path.SourceInfo.ModeInfoIdx >= modes.Length)
-            {
-                continue;
-            }
-
-            var mode = modes[path.SourceInfo.ModeInfoIdx];
-            if (mode.InfoType != SourceModeType)
-            {
-                continue;
-            }
-
-            var identity = profile.Targets[index];
-            if (outputs.Exists(other => other.Target.Matches(identity)))
-            {
-                continue;
-            }
-
-            var source = mode.Mode.Source;
-            outputs.Add(new DisplayLayoutOutput(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
-                new DisplayRefresh(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
-                path.TargetInfo.Rotation));
-        }
-
-        DisplayLayout layout = new(outputs);
-        return Describe(layout) is null ? layout : null;
-    }
-
     /// <summary>Checks a layout against Windows without changing anything.</summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>Invalid, TargetsAbsent, Rejected, or Applied meaning "would apply".</returns>
@@ -316,7 +255,7 @@ public static class DisplayLayouts
         catch (Win32Exception ex)
         {
             return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
-                DisplayTopology.Bound("The current display configuration could not be read: " + ex.Message));
+                "The current display configuration could not be read: " + ex.Message);
         }
 
         IReadOnlyList<DisplayTargetIdentity> absent =
@@ -347,7 +286,7 @@ public static class DisplayLayouts
         catch (InvalidOperationException ex)
         {
             return new DisplayLayoutResult(DisplayLayoutOutcome.Invalid, [], 0, false, false, [],
-                DisplayTopology.Bound(ex.Message));
+                ex.Message);
         }
 
         var status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcValidate);
