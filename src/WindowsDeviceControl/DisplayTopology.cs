@@ -159,11 +159,24 @@ public static partial class DisplayTopology
             throw new Win32Exception(status, "Display target identity query failed.");
         }
 
-        var edidValid = (target.Flags & 0x2) != 0;
+        var (manufacturerId, productCodeId) =
+            DecodeEdidIds(target.Flags, target.EdidManufacturerId, target.EdidProductCodeId);
         return new DisplayTargetIdentity(NativeText.ReadFixed(target.MonitorDevicePath, 128),
-            edidValid ? target.EdidManufacturerId : null,
-            edidValid ? target.EdidProductCodeId : null, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
+            manufacturerId, productCodeId, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
             path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
+    }
+
+    /// <summary>Decodes IDs only when DISPLAYCONFIG_TARGET_DEVICE_NAME_FLAG_EDID_IDS_VALID (0x4) is set.</summary>
+    internal static (ushort? ManufacturerId, ushort? ProductCodeId) DecodeEdidIds(uint flags, ushort manufacturerId,
+        ushort productCodeId)
+    {
+        const uint edidIdsValid = 1u << 2;
+        if ((flags & edidIdsValid) != 0)
+        {
+            return (manufacturerId, productCodeId);
+        }
+
+        return (null, null);
     }
 
     /// <summary>
