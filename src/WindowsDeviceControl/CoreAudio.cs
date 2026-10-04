@@ -191,6 +191,32 @@ public static partial class CoreAudio
             static (volume, ref state) => volume.SetMute(state.Mute, 0));
     }
 
+    /// <summary>Reads volume and mute from a specific endpoint without following the default.</summary>
+    /// <param name="endpointId">The endpoint's stable Windows identity.</param>
+    /// <param name="percentage">Volume percentage on success.</param>
+    /// <param name="muted">Nonzero when muted on success.</param>
+    /// <returns>Zero on success, otherwise the HRESULT.</returns>
+    public static int GetVolume(string endpointId, out int percentage, out int muted)
+    {
+        var call = new VolumeCall();
+        var result = WithEndpointVolume(endpointId, ref call,
+            static (volume, ref state) => ReadVolume(volume, out state.Percentage, out state.Muted));
+        percentage = call.Percentage;
+        muted = call.Muted;
+        return result;
+    }
+
+    /// <summary>Sets one endpoint's mute state without changing another default endpoint.</summary>
+    /// <param name="endpointId">The endpoint's stable Windows identity.</param>
+    /// <param name="muted">The state to write.</param>
+    /// <returns>Zero on success, otherwise the HRESULT.</returns>
+    public static int SetMuted(string endpointId, bool muted)
+    {
+        var call = new VolumeCall { Mute = muted };
+        return WithEndpointVolume(endpointId, ref call,
+            static (volume, ref state) => volume.SetMute(state.Mute, 0));
+    }
+
     /// <summary>Lists the active audio endpoints in one direction.</summary>
     /// <param name="direction">Playback or recording endpoints.</param>
     /// <param name="endpoints">The endpoints found, newest state; empty when the call fails.</param>
@@ -495,9 +521,45 @@ public static partial class CoreAudio
     }
 
     /// <summary>
-    ///     Opens the default endpoint's volume in one direction, runs one action on it and
+    ///     Opens the named endpoint's volume, runs one action on it and
     ///     releases everything. A COM failure is returned as its HRESULT.
     /// </summary>
+    private static int WithEndpointVolume(string endpointId, ref VolumeCall call, VolumeAction action)
+    {
+        if (string.IsNullOrWhiteSpace(endpointId))
+        {
+            return InvalidArgument;
+        }
+
+        IMMDevice? device = null;
+        IAudioEndpointVolume? volume = null;
+        try
+        {
+            var result = Enumerator().GetDevice(endpointId, out device);
+            if (result < 0 || device is null)
+            {
+                return result < 0 ? result : Failure;
+            }
+
+            result = Activate(device, AudioEndpointVolumeId, out volume);
+            if (result < 0 || volume is null)
+            {
+                return result < 0 ? result : Failure;
+            }
+
+            return action(volume, ref call);
+        }
+        catch (COMException ex)
+        {
+            return ex.HResult;
+        }
+        finally
+        {
+            Release(volume);
+            Release(device);
+        }
+    }
+
     private static int WithDefaultVolume(AudioDirection direction, ref VolumeCall call, VolumeAction action)
     {
         IMMDevice? device = null;
