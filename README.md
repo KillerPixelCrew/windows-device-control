@@ -1,7 +1,7 @@
 # WindowsDeviceControl
 
-Wi-Fi, Bluetooth, audio, display brightness, display layouts and power control for .NET on Windows. The parts that are
-awkward or undocumented, in one library, callable from an ordinary unpackaged process.
+Wi-Fi, Bluetooth, audio, display brightness, display layouts, power and storage control for .NET on Windows. The parts
+that are awkward or undocumented, in one library, callable from an ordinary unpackaged process.
 
 ```
 dotnet add package WindowsDeviceControl
@@ -79,7 +79,7 @@ CoreAudio.SetMuted(true);
 
 // Spatial sound and the endpoint format, both applied to the running engine at once
 CoreAudio.GetSpatialAudio(outputs[0].Id, out var spatial);            // supported formats, default, active
-CoreAudio.SetSpatialAudio(outputs[0].Id, CoreAudio.SpatialAudioFormats.WindowsSonic, out var status);
+CoreAudio.SetSpatialAudio(outputs[0].Id, CoreAudio.SpatialAudioFormats.WindowsSonic, out var spatialStatus);
 CoreAudio.ListSupportedDeviceFormats(outputs[0].Id, out var formats); // what the Advanced tab would offer
 CoreAudio.SetDeviceFormat(outputs[0].Id, CoreAudio.AudioDeviceFormat.Pcm(channels: 6, sampleRate: 48000, bitsPerSample: 24));
 
@@ -94,24 +94,43 @@ DisplayTargetIdentity television = topology.Paths[0].Target;
 DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, AlreadySet, Refused, ...
 ```
 
-| Type                  | Role                                                                                                                                         |
-|-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
-| `WindowsRadio`        | Radio power, Wi-Fi scan, list, connect and forget, Bluetooth discovery and pairing, change watches (`StartWifiWatch`, `StartBluetoothWatch`) |
-| `WifiProfile`         | Builds profile XML: `CreateOpen`, `CreatePsk` in WPA3-transition, WPA2-AES and WPA-TKIP shapes; survives a non-UTF-8 SSID                    |
-| `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, change watches (`StartVolumeWatch`, `StartEndpointWatch`), spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
-| `Backlight`           | Internal panel brightness over the ACPI backlight device                                                                                     |
-| `WaveOutFeedback`     | The short click Windows itself plays for volume feedback                                                                                     |
-| `DisplayTopology`     | Active CCD paths and rematchable monitor identities                                                                                          |
-| `DisplayLayouts`      | Complete desktop arrangements by value: which monitors are on, which is primary, position, mode, scaling and HDR                             |
-| `DisplayScaling`      | One display's Windows scaling percentage, read and written through the relative-step packets                                                 |
-| `DisplayColor`        | One display's advanced colour (HDR) state, with support read before every write                                                              |
-| `WindowsPower`        | Schemes, AC and DC values, effective mode overlays, suspend and shutdown, hybrid core placement                                              |
-| `WindowsPowerRequest` | A display or system wake request and its reason string                                                                                       |
-| `WindowsWakeSecurity` | Wake-policy recovery values, capture and restore                                                                                             |
-| `ModernStandby`       | S0 idle support, wake devices, resume attribution, standby timing                                                                            |
+| Type                            | Role                                                                                                                                         |
+|---------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| `WindowsRadio`                  | Radio power, Wi-Fi scan, list, connect and forget, Bluetooth discovery and pairing, change watches (`StartWifiWatch`, `StartBluetoothWatch`) |
+| `WifiProfile`                   | Builds profile XML: `CreateOpen`, `CreatePsk` in WPA3-transition, WPA2-AES and WPA-TKIP shapes; survives a non-UTF-8 SSID                    |
+| `CoreAudio`                     | Endpoints, default-endpoint switching, volume and mute per direction, change watches (`StartVolumeWatch`, `StartEndpointWatch`), spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
+| `AudioFilePreview`              | Plays one local audio file on the default route and reports a failure as `AudioPreviewFailure`                                              |
+| `WaveOutFeedback`               | The short click Windows itself plays for volume feedback                                                                                     |
+| `Backlight`                     | Internal panel brightness over the ACPI backlight device                                                                                     |
+| `DisplayTopology`               | Active CCD paths and rematchable monitor identities (`DisplayTargetIdentity`, `ActiveDisplayPath`, `DisplayTopologySnapshot`)                |
+| `DisplayLayouts`                | Complete desktop arrangements by value: which monitors are on, which is primary, position, mode, scaling and HDR                             |
+| `DisplayModes`                  | Driver-validated modes of one active display, applied once without persisting, plus the primary display's transient mode                     |
+| `DisplayEdid`                   | Progressive timings read from one monitor's EDID, even while its source is disabled                                                          |
+| `DisplayScaling`                | One display's Windows scaling percentage, read and written through the relative-step packets                                                 |
+| `DisplayColor`                  | One display's advanced colour (HDR) state, with support read before every write                                                              |
+| `WindowsPower`                  | Schemes, AC and DC values, effective mode overlays, status, suspend and shutdown, notifications, hybrid core placement                       |
+| `PowerNotificationRegistration` | A power-setting or suspend and resume notification registration; disposing it unregisters                                                   |
+| `WindowsPowerRequest`           | A display or system wake request and its reason string                                                                                       |
+| `PowerRequestList`              | The system-wide power request list that `powercfg /requests` shows, decoded with bounds checks                                               |
+| `WindowsWakeSecurity`           | Wake-policy recovery values, capture and restore                                                                                             |
+| `ModernStandby`                 | S0 idle support, wake devices, resume attribution, standby timing                                                                            |
+| `WindowsStorage`                | Mounted volumes and the physical disk number behind each one, read-only                                                                      |
 
-Every public member is documented and the build fails on one that is not, so IntelliSense is the reference, including
-which callbacks arrive on a Windows service thread and which calls return before the work they started has finished.
+The other public types are the records, results and enums these members take and return, documented beside them.
+
+Every public member is documented and the build fails on one that is not, so IntelliSense is the reference for
+callback threads, blocking, consent, error meanings and ownership.
+
+### Threading
+
+Every call that reaches Windows blocks until Windows answers, including the WinRT and WLAN waits behind radio power,
+Bluetooth listing and unpairing, spatial sound and the Wi-Fi connect wait. Call them from a worker thread, not a UI
+thread. They are safe to call from any thread and take no cancellation token. `PairBluetoothAsync` is the exception: it
+returns at once, completes on a Windows thread, and takes a token that ends that attempt only.
+
+Watch callbacks, pairing questions and `AudioFilePreview.Failed` arrive on a Windows thread, never the caller's, so
+marshal them to your UI yourself. A watch delivers one callback at a time per registration and contains a callback
+exception. A pairing callback that throws declines its question and ends the attempt with that exception.
 
 Native codes are kept on purpose, because renaming them would hide what they are. A failed `ConnectWifi` carries
 Windows' raw WLAN reason code, which you pass to `ReasonText` or `GetReasonVerdict`; a failed WLAN list or scan is a
@@ -142,6 +161,14 @@ machine has no controllable internal panel", which is the normal answer on a des
 `docs/radios.md` records the platform constraints behind all of this, including the approaches that were tried and did
 not work. Read it before changing how a Windows API is called.
 
+## Audio file preview
+
+`AudioFilePreview` owns local audio preview through Windows Media Foundation and the default audio route. `Play` takes
+an existing absolute path; `Stop` releases playback and `Dispose` ends the owner. It changes neither endpoint selection
+nor system volume. Unsupported or corrupt media raises `Failed` on the media callback thread with an
+`AudioPreviewFailure`: Windows' error class, the extended HRESULT and its message. Consumers serialize owner calls and
+marshal failures to their UI. A stopped preview's queued failure cannot replace a newer preview's status.
+
 ## Displays
 
 Display identity uses the monitor device-interface path as its primary rematching key. EDID manufacturer and product IDs
@@ -150,6 +177,9 @@ data. Adapter LUID and target ID describe the current route and have to be refre
 the documented sizing race, sizes its buffers from what Windows reports and stays read-only. Possible source and target
 combinations can be far larger than the active display count: a desktop query on 2026-09-13 returned 284 possible routes
 and three active ones.
+
+The display records are plain positional data a caller can persist. Members are only ever added, each with a default,
+so an older stored value still reads.
 
 One display whose name cannot be read (a monitor dropping out, an indirect or virtual display) does not hide the others:
 `CaptureActive` leaves it out, and a lookup by identity reports that display as unreadable rather than inactive only
@@ -170,7 +200,9 @@ not read back. Results carry outcome codes and native statuses, not text: the ca
 observation does; two equal fingerprints a moment apart are what a caller waits for before acting on an arrival.
 `Capture()` returns the current desktop as values: identity, position, resolution, refresh, rotation, scaling and HDR.
 `Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies once. A layout output's rotation
-of zero keeps whatever rotation the display runs at; any other value is written and compared.
+of zero keeps whatever rotation the display runs at; any other value is written and compared. An apply and its rollback
+are saved to the Windows display database, so the arrangement survives a reboot; a caller that needs to undo it applies
+the layout it captured before.
 
 `Describe(layout)` is the rule set on its own, returning the `DisplayLayoutProblem` the layout breaks or null. It is
 pure and touches no display, so an editor can refuse a layout as it is typed and a stored layout can be checked while the
@@ -236,8 +268,8 @@ apply those modes or prove they are visible.
 
 `WindowsPower` exposes scheme enumeration and localized names, active scheme read and write, AC and DC policy values,
 and effective power-mode overlays. These synchronous calls belong off UI threads. Native failures throw `Win32Exception`
-with the Windows error code. Writes are issued once, and consumers own transaction ordering and confirmation through
-readback.
+with the Windows error code. Each request is issued once, and a read reports what Windows stores. The order of several
+writes is the caller's.
 
 ```csharp
 Guid scheme = WindowsPower.GetActiveScheme();
@@ -348,13 +380,6 @@ a write to the active scheme needs `RefreshActiveScheme` to take effect. A polic
 preserved as its raw number rather than replaced.
 
 ## Status
-
-`AudioFilePreview` owns local audio preview through Windows Media Foundation and the default audio
-route. `Play` takes an existing absolute path; `Stop` releases playback and `Dispose` ends the owner.
-It changes neither endpoint selection nor system volume. Unsupported or corrupt media raises
-`Failed` on the media callback thread with an `AudioPreviewFailure`: Windows' error class, the
-extended HRESULT and its message. Consumers serialize owner calls and marshal failures to
-their UI. A stopped preview's queued failure cannot replace a newer preview's status.
 
 Pre-1.0. The surface can still move before it is frozen, so pin an exact version if that matters to you.
 

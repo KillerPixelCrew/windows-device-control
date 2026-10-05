@@ -34,13 +34,17 @@ reviews:
       instructions: |
         - Preserve access-before-mutation, every-adapter application, and state
           priority On, Disabled, Off, Unknown, Absent.
-        - Keep all-interface WLAN, raw-SSID identity, XML profile matching,
-          collision-free all-user profiles, rollback, and callback-before-
-          connect.
+        - Keep all-interface WLAN, `WifiNetworkKey` identity (SSID bytes plus
+          security), XML profile matching, collision-free all-user profiles,
+          rollback, and callback-before-connect.
+        - Watches return independent disposable registrations; no process-wide
+          feed slot, and callback exceptions stay contained.
         - Bluetooth snapshots combine classic/LE and merge containers; the live
           watcher keys endpoint ids and emits events immediately.
         - Preserve handler revocation, exact-once pairing tokens under races,
-          attempt-local cancellation, and bounded ceremonies.
+          attempt-local cancellation, and one bounded pairing deadline.
+        - Every member except `PairBluetoothAsync` blocks; document new
+          blocking calls rather than adding token overloads.
         - Keep destructive unpairing separate from soft audio connection.
     - path: "src/WindowsDeviceControl/WifiProfile.cs"
       instructions: |
@@ -64,6 +68,58 @@ reviews:
         Preserve the reusable open endpoint, drop a cue while one is queued
         instead of accumulating repeats, and release every native resource on
         disposal and failure paths.
+    - path: "src/WindowsDeviceControl/AudioFilePreview.cs"
+      instructions: |
+        One owner per preview: it changes neither endpoint selection nor
+        volume, reports failures with Windows' error class and HRESULT, and a
+        stopped preview's queued failure must not replace a newer status.
+    - path: "src/WindowsDeviceControl/Display*.cs"
+      instructions: |
+        - Identity rematches by device path, then EDID ids; LUID and target id
+          are routes refreshed after hotplug. Skip an unreadable unrelated path.
+        - Every display write takes the one shared write gate; reads take no
+          lock. A write Windows accepts is the result and is never read back.
+          A refused layout or mode gets exactly one rollback; nothing retries.
+        - Layout apply and rollback keep `SDC_SAVE_TO_DATABASE`. Display
+          records are persisted by consumers: no renames, retypes or removals,
+          and added positional members carry defaults.
+        - Results carry outcome codes and native statuses, not English text.
+        - EDID parsing keeps strict checksums and block bounds.
+    - path: "src/WindowsDeviceControl/WindowsPower*.cs"
+      instructions: |
+        Requests are issued once per power source: no retry, no rollback, no
+        scheme activation on the caller's behalf, and no readback confirmation.
+        Hybrid core values come from Windows' published lists, and unnamed
+        values are preserved. Notification registrations unregister on
+        disposal. Power actions stay behind the internal port so tests never
+        reach suspend or shutdown.
+    - path: "src/WindowsDeviceControl/ModernStandby.cs"
+      instructions: |
+        Wake control is per named device, never wholesale; power button,
+        sleep button and lid are reported, never written. Restore attempts
+        every observed device once and returns the failures. Only
+        `ERROR_NO_MORE_ITEMS` ends enumeration, and no buffer or count cap
+        truncates the list.
+    - path: "src/WindowsDeviceControl/WindowsWakeSecurity.cs"
+      instructions: |
+        Capture records absent values and refuses non-DWORD values. Restore
+        writes only what the snapshot recorded, attempts every step once and
+        reports failures. The library never elevates and stores no
+        application configuration.
+    - path: "src/WindowsDeviceControl/PowerRequest*.cs"
+      instructions: |
+        The request list decodes an undocumented layout through bounds-checked
+        reads; a surprise yields an unknown status, never a plausible wrong
+        list. The buffer grows until the list fits. Request owners keep their
+        reason buffer alive for the handle's lifetime.
+    - path: "src/WindowsDeviceControl/WindowsStorage.cs"
+      instructions: |
+        Read-only. Nothing formats, mounts, ejects or writes, network drives
+        are skipped, and an unqueryable volume is omitted rather than invented.
+    - path: "src/WindowsDeviceControl/Interop.cs"
+      instructions: |
+        Shared helpers must preserve Win32 error codes and stack traces. Flag
+        new blocking waits that are not documented on their public caller.
     - path: "src/WindowsDeviceControl/WindowsDeviceControl.csproj"
       instructions: |
         Preserve both net8.0/net10.0 Windows 10.0.19041.0 targets, that platform

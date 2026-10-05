@@ -316,7 +316,12 @@ public static class DisplayLayouts
     /// <summary>Applies a layout once. Windows' acceptance is the result; nothing is read back.</summary>
     /// <param name="layout">The layout to apply.</param>
     /// <returns>What happened, including any rollback.</returns>
-    /// <remarks>Serialized with every other display write in the process.</remarks>
+    /// <remarks>
+    ///     Serialized with every other display write in the process. The arrangement and any rollback are
+    ///     saved to the Windows display database, so they survive a reboot; a caller that needs to undo an
+    ///     apply applies the layout it captured before. This call blocks on the driver, so keep it off the
+    ///     UI thread.
+    /// </remarks>
     public static DisplayLayoutResult Apply(DisplayLayout layout)
     {
         lock (DisplayTopology.WriteGate)

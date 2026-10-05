@@ -3,7 +3,9 @@
 ## Scope and sources of truth
 
 WindowsDeviceControl is a public, pre-1.0 .NET library for Windows radio, Wi-Fi, Bluetooth, audio,
-and internal-panel brightness control from an ordinary unpackaged process.
+internal-panel brightness, display topology, layouts and modes, power policy, Modern Standby, wake
+security and storage control from an ordinary unpackaged process. It describes Windows, not any one
+host application.
 
 Read `README.md` for the public behavior and `docs/radios.md` before changing any Windows API path.
 The latter records live platform findings and rejected alternatives; do not replace a proven route
@@ -23,9 +25,11 @@ including callback threading, completion timing, consent, error meanings, and ow
   `CoreAudio.Bluetooth.cs` holds Bluetooth audio connection, `CoreAudio.Spatial.cs` the spatial
   sound state through the public WinRT configuration, `CoreAudio.Formats.cs` the endpoint default
   format (channel layout, rate, depth) through `IPolicyConfig`, `CoreAudio.Watch.cs` the volume and
-  endpoint change notifications (the COM callbacks a consumer registers instead of polling), and
-  `CoreAudio.Native.cs` the COM declarations, native wave-format layouts, `PROPVARIANT` cleanup and
-  the shared device enumerator.
+  endpoint change notifications with the two callback interfaces they implement
+  (`IAudioEndpointVolumeCallback`, `IMMNotificationClient`), and `CoreAudio.Native.cs` the other COM
+  declarations, native wave-format layouts, `PROPVARIANT` cleanup and the shared device enumerator.
+- `AudioFilePreview.cs`: one owned Media Foundation preview of a local file on the default route;
+  failures carry Windows' error class and HRESULT.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
 - `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and the one display write
   gate in `DisplayTopology.cs`, and the public records and result types in `DisplayTopology.Types.cs`.
@@ -37,15 +41,24 @@ including callback threading, completion timing, consent, error meanings, and ow
   refused apply rolls back once.
   `Describe` exposes those rules without touching a display, so a caller's editor and its stored
   configuration check a layout the same way this library will. Keep it that way: a second copy of
-  the rules in a consumer is how the two drift apart.
+  the rules in a consumer is how the two drift apart. Apply and its rollback always pass
+  `SDC_SAVE_TO_DATABASE`, so an applied arrangement survives a reboot; that is documented, not a
+  parameter. The display records are positional data consumers persist: never rename, retype or
+  remove a public member, and give every added positional member a default.
+- `DisplayModes.cs`: driver-mode enumeration, exact active-route validation and transient
+  application with one write-back after a refusal and no readback. UI and mode-selection policy
+  remain with callers.
+- `DisplayEdid.cs`: read-only timing candidates for an exact monitor interface, even while its
+  source is disabled. Keep checksums and block bounds strict; EDID candidates are not
+  driver-validated mode snapshots and must not bypass the normal layout validation and apply path.
 - `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
   addressed by monitor identity. Support and current value are read before every write as its input,
   nothing is read after it, and a refusal is reported with its native status rather than retried.
   Display results are outcome codes and statuses; wording belongs to the caller.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
 - `WindowsPower*.cs`: power-scheme enumeration, policy values, power-mode operations and hybrid
-  processor core placement. Callers own policy ordering, readback confirmation and UI; the library
-  preserves native error codes.
+  processor core placement. Each request is issued once and a read reports what Windows stores;
+  callers own policy ordering and UI, and the library preserves native error codes.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
 - `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is unknown.
 - `WindowsWakeSecurity.cs`: wake sign-in capture, write and restore primitives. Callers compose the
@@ -53,6 +66,8 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
+- `WindowsStorage.cs`: read-only volume-to-disk-number mapping; nothing here mounts, ejects or
+  writes.
 - `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
   that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
@@ -185,7 +200,7 @@ caller persists and restores from.
 
 Modern Standby wake control is per named device and never wholesale. There is no call that disables
 every wake source, and the power button, sleep button and lid are reported by `Query` rather than
-being writable at all. Enumeration is the actionable set — programmable, plus armed-but-fixed — not
+being writable at all. Enumeration is the actionable set (programmable, plus armed-but-fixed), not
 every device that supports waking from S0; a source that cannot safely be changed is reported as
 `Fixed` instead of being written to. `TrySetWakeArmed` re-reads programmability at the moment of the
 write, so a stale record cannot drive one. Restore touches only devices the snapshot observed, attempts
@@ -193,7 +208,7 @@ each of them once and reports the ones that failed rather than stopping at the f
 
 The enumeration's size argument is not an output: Windows leaves it at the buffer size it was given,
 so a device name ends at its terminator. The end of the list and a genuine failure both return
-FALSE, and only `ERROR_NO_MORE_ITEMS` separates them — do not treat every FALSE as the end, which
+FALSE, and only `ERROR_NO_MORE_ITEMS` separates them. Do not treat every FALSE as the end, which
 reports a partial device list as a complete one.
 
 ## Testing
@@ -224,11 +239,13 @@ not present unit-test success as proof of hardware compatibility.
 checkout applies, so the library and its tests build the same standalone and as a submodule. The
 test project targets both frameworks the library ships for.
 
-Build the multi-target library first, then run the test project:
+`WindowsDeviceControl.slnx` at the root lists the library and its tests. Build it, then run the
+suite on each framework:
 
 ```powershell
-dotnet build .\src\WindowsDeviceControl\WindowsDeviceControl.csproj --configuration Release
-dotnet test .\tests\WindowsDeviceControl.Tests\WindowsDeviceControl.Tests.csproj --configuration Release
+dotnet build .\WindowsDeviceControl.slnx --configuration Release
+dotnet test .\WindowsDeviceControl.slnx --configuration Release --no-build -f net8.0-windows10.0.19041.0
+dotnet test .\WindowsDeviceControl.slnx --configuration Release --no-build -f net10.0-windows10.0.19041.0
 ```
 
 For package changes, also verify packing from the already validated Release build:
@@ -242,9 +259,3 @@ lists as errors. Do not suppress CS1591 or CS1573 in the library to make a chang
 
 Do not commit `bin/`, `obj/`, or generated package output. Keep functional changes focused and avoid
 unrelated formatting.
-
-DisplayModes.cs owns driver-mode enumeration, exact active-route validation and transient application
-with one write-back after a refusal and no readback. UI and mode-selection policy remain with callers.
-DisplayEdid.cs provides read-only timing candidates for an exact monitor interface even while its
-source is disabled. Keep checksums and block bounds strict; EDID candidates are not driver-validated
-mode snapshots and must not bypass the normal layout validation and apply path.

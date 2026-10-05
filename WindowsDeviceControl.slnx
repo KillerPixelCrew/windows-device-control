@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WindowsDeviceControl/WindowsDeviceControl.csproj"/>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WindowsDeviceControl.Tests/WindowsDeviceControl.Tests.csproj"/>
+  </Folder>
+</Solution>

@@ -37,10 +37,13 @@
     <!-- Pre-1.0 on purpose: the surface is extracted from a working application and is expected to
          move before it is frozen. -->
     <Version>0.2.0</Version>
-    <Description>Windows radio, audio and display control for .NET. Wi-Fi enumeration, connection and profile management over the native WLAN API; Bluetooth discovery, pairing with PIN ceremony and unpairing over WinRT; default audio endpoint switching and per-device volume over Core Audio; internal panel brightness over the ACPI backlight interface.</Description>
-    <PackageTags>windows;wifi;wlan;bluetooth;audio;coreaudio;brightness;backlight;kiosk;iot</PackageTags>
+    <Description>Windows device control for .NET from an unpackaged process. Radio power; Wi-Fi enumeration, connection and profile management over the native WLAN API; Bluetooth discovery, pairing with PIN ceremony and unpairing over WinRT; Core Audio endpoint switching, volume, spatial sound, default format and file preview; internal panel brightness over the ACPI backlight interface; display topology, layouts, modes, EDID timings, scaling and HDR over CCD; power schemes, policy values, notifications, hybrid core placement and power requests; Modern Standby wake sources; wake-security policy capture and restore; volume-to-disk storage mapping.</Description>
+    <PackageTags>windows;wifi;wlan;bluetooth;audio;coreaudio;spatial-audio;brightness;backlight;display;ccd;edid;hdr;power;modern-standby;storage;kiosk;iot</PackageTags>
+    <Authors>Killer Pixel Crew</Authors>
+    <Copyright>Copyright (c) 2026 Killer Pixel Crew</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/KillerPixelCrew/windows-device-control</PackageProjectUrl>
     <RepositoryUrl>https://github.com/KillerPixelCrew/windows-device-control</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>

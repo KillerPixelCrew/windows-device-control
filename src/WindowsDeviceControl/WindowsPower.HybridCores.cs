@@ -135,8 +135,8 @@ public static partial class WindowsPower
     /// <remarks>
     ///     Does not activate the scheme, retry, or roll back: a failure throws with the earlier writes
     ///     already stored, and the caller restores from its own snapshot. Processor policy written to the
-    ///     active scheme takes effect after <see cref="RefreshActiveScheme" />. Confirm with
-    ///     <see cref="ReadHybridCores" />.
+    ///     active scheme takes effect after <see cref="RefreshActiveScheme" />. A later
+    ///     <see cref="ReadHybridCores" /> reports what Windows stores.
     /// </remarks>
     /// <param name="scheme">Power scheme identity.</param>
     /// <param name="onBattery">True selects DC; false selects AC.</param>

@@ -12,8 +12,8 @@ Radio access and power use `Windows.Devices.Radios.Radio`. Access is requested b
 change. Every adapter of the requested kind is enumerated and the requested state applied to all of
 them: a machine can expose more than one Bluetooth or Wi-Fi radio (handhelds routinely do), and
 changing only the first leaves a UI claiming a state that does not describe the machine. Aggregate
-state is deterministic — On wins, then Disabled, then Off, then Unknown; an empty adapter set is
-Absent — so a machine-wide or hardware block cannot be hidden by an adapter that is merely off.
+state is deterministic (On wins, then Disabled, then Off, then Unknown; an empty adapter set is
+Absent), so a machine-wide or hardware block cannot be hidden by an adapter that is merely off.
 
 The adapter list is cached briefly because WinRT enumeration can stall. Each cached radio still
 reports its live state, and the cache expires so newly attached adapters are discovered. Failures
@@ -95,7 +95,7 @@ uses stays and nothing is rolled back.
 
 Reason codes are classified so a UI asks for the password again only when Windows reports an
 authentication or key failure. An association timeout blamed on the user's typing makes them retype
-a password that was already correct, while the real cause — range — goes unmentioned.
+a password that was already correct, while the real cause, range, goes unmentioned.
 
 ### Change notification
 
@@ -133,8 +133,11 @@ handler accepted the pairing without presenting the question to the application.
 
 ### Pairing ceremonies
 
-Pairing uses `Custom.PairAsync` with every ceremony a general UI can present: ConfirmOnly,
-DisplayPin, ProvidePin and ConfirmPinMatch. Two constraints hang pairing rather than failing it:
+Pairing uses `Custom.PairAsync` with the ceremonies a general UI can present: ConfirmOnly,
+ProvidePin and ConfirmPinMatch first, then DisplayPin as the one retry described below. Each
+question reaches the caller with its `PairingKind`. A ceremony outside those four arrives as
+`PairingKind.Unknown`; Windows still waits for its answer, so the caller accepts or rejects it
+like any other. Two constraints hang pairing rather than failing it:
 
 - The `PairingRequested` deferral must stay alive until the answer is applied.
 - Each request token must complete that deferral at most once, including when a timeout races a
@@ -145,7 +148,7 @@ can end it sooner. A cancel or timeout completes only that attempt's pending def
 cancelling the operation; concurrent attempts cannot cancel one another. A request callback that
 throws declines its question and ends the attempt with that exception. Repeating an answer for an
 expired token is harmless. Some devices reject the first ceremony mask but accept DisplayPin, so
-one retry with that ceremony is retained. Unpairing uses the same Association Endpoint
+one retry with that ceremony is retained inside the same deadline. Unpairing uses the same Association Endpoint
 id and is a separate, destructive action from an audio disconnect.
 
 ## Bluetooth audio

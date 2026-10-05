@@ -47,14 +47,14 @@ public enum PowerRequestListStatus
     Unsupported
 }
 
+// The decoder was ported from the author's WakeWatch project (MIT, same author).
 /// <summary>
 ///     Enumerates system-wide power requests via the undocumented
-///     <c>NtPowerInformation(GetPowerRequestList)</c> class — what `powercfg /requests`
-///     uses internally. Ported from the maintainer's WakeWatch project (MIT, same
-///     author): the returned POWER_REQUEST layout is undocumented and varies by Windows
-///     build, so every read goes through bounds-checked accessors and any structural
-///     surprise yields "unknown" (null) — never a plausible-looking wrong answer, and
-///     in particular never a false "all clear".
+///     <c>NtPowerInformation(GetPowerRequestList)</c> class, the one <c>powercfg /requests</c>
+///     uses internally. Decoding follows the undocumented POWER_REQUEST_LIST layout, which varies
+///     by Windows build, so every read goes through bounds-checked accessors and any structural
+///     surprise yields "unknown" (null), never a plausible-looking wrong answer and in particular
+///     never a false "all clear".
 /// </summary>
 public static partial class PowerRequestList
 {
