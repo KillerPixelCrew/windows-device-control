@@ -34,9 +34,9 @@ public static partial class WindowsRadio
 
     /// <summary>Classifies a WLAN reason code into the kind of failure it represents.</summary>
     /// <param name="code">
-    ///     A reason code, as returned by
-    ///     <see cref="ConnectWifi(string, string?)" /> or carried on a
-    ///     <see cref="WlanReasonException" />.
+    ///     A WLAN reason code, as carried by <see cref="WifiConnectResult.ReasonCode" /> or by
+    ///     <see cref="System.ComponentModel.Win32Exception.NativeErrorCode" /> after a profile write
+    ///     failed.
     /// </param>
     /// <returns>Which of the few outcomes a caller can act on differently.</returns>
     /// <remarks>
@@ -86,60 +86,53 @@ public static partial class WindowsRadio
         };
     }
 
+    /// <summary>
+    ///     The profile name a new or replaced profile is written under: the network's own name,
+    ///     then "name 2", "name 3" and so on.
+    /// </summary>
+    /// <remarks>
+    ///     A name held by a readable profile for the same SSID bytes is reused, and its XML kept for
+    ///     the rollback. A name held by anything else, including a profile whose XML cannot be read,
+    ///     is skipped and never overwritten. Each saved profile blocks at most one candidate, so the
+    ///     search always ends within one more suffix than there are profiles.
+    /// </remarks>
     internal static ProfileMutation FindFreeProfileName(
         IReadOnlyList<SavedProfile> profiles,
         string ssid,
         byte[] target)
     {
-        for (var suffix = 1; suffix <= 64; suffix++)
+        for (var suffix = 1;; suffix++)
         {
             var candidate = suffix == 1 ? ssid : $"{ssid} {suffix}";
             var owner = profiles.FirstOrDefault(profile => profile.Name == candidate);
             if (owner == default)
             {
-                return new ProfileMutation(candidate, false, null);
+                return new ProfileMutation(candidate, null);
             }
 
-            if (owner.Ssid is { } ownerSsid && ownerSsid.AsSpan().SequenceEqual(target))
+            if (owner is { Ssid: { } ownerSsid, Xml: { } ownerXml } && ownerSsid.AsSpan().SequenceEqual(target))
             {
-                if (owner.Xml is null)
-                {
-                    throw new InvalidOperationException(
-                        $"The existing Wi-Fi profile '{candidate}' could not be read, so it cannot be overwritten safely.");
-                }
-
-                return new ProfileMutation(candidate, true, owner.Xml);
+                return new ProfileMutation(candidate, ownerXml);
             }
         }
-
-        throw new InvalidOperationException(
-            "No collision-free Wi-Fi profile name is available for this network.");
     }
 
+    /// <summary>
+    ///     Merges two observations of one network, from two adapters or two profile entries. The
+    ///     caller only merges observations with the same key, so they never conflict: the stronger
+    ///     one supplies the signal, and either one's flags count.
+    /// </summary>
     internal static WifiNetworkFacts MergeNetworkFacts(
         WifiNetworkFacts existing,
         WifiNetworkFacts observed)
     {
-        var conflictingIdentity = existing.Ambiguous
-                                  || observed.Ambiguous
-                                  || existing.Security != observed.Security
-                                  || existing.Authentication != observed.Authentication
-                                  || (existing.ProfileName is { Length: > 0 } existingProfile
-                                      && observed.ProfileName is { Length: > 0 } observedProfile
-                                      && !string.Equals(existingProfile, observedProfile, StringComparison.Ordinal));
         var observedIsPrimary = observed.Signal > existing.Signal;
         var primary = observedIsPrimary ? observed : existing;
-        var secondary = observedIsPrimary ? existing : observed;
         return primary with
         {
-            Signal = Math.Max(existing.Signal, observed.Signal),
-            Security = conflictingIdentity ? WifiSecurity.Unsupported : primary.Security,
-            Authentication = conflictingIdentity ? 0 : primary.Authentication,
             Saved = existing.Saved || observed.Saved,
-            Connectable = !conflictingIdentity && (existing.Connectable || observed.Connectable),
-            Connected = existing.Connected || observed.Connected,
-            ProfileName = conflictingIdentity ? null : primary.ProfileName ?? secondary.ProfileName,
-            Ambiguous = conflictingIdentity
+            Connectable = existing.Connectable || observed.Connectable,
+            Connected = existing.Connected || observed.Connected
         };
     }
 
@@ -165,23 +158,20 @@ public static partial class WindowsRadio
 
     internal readonly record struct SavedProfile(string Name, byte[]? Ssid, string? Xml);
 
-    internal readonly record struct ProfileMutation(string Name, bool Existed, string? PreviousXml);
+    /// <summary>The profile one connection attempt writes, and what to put back if it must.</summary>
+    /// <param name="Name">The profile name written.</param>
+    /// <param name="PreviousXml">The replaced profile's exact XML, or null when the name was free.</param>
+    internal readonly record struct ProfileMutation(string Name, string? PreviousXml)
+    {
+        /// <summary>Whether the attempt replaced an existing profile rather than creating one.</summary>
+        internal bool Existed => PreviousXml is not null;
+    }
 
+    /// <summary>One listed network as observed on one or more adapters.</summary>
     internal readonly record struct WifiNetworkFacts(
-        string Ssid,
-        byte[] RawSsid,
+        WifiNetworkKey Key,
         int Signal,
-        WifiSecurity Security,
-        int Authentication,
         bool Saved,
         bool Connectable,
-        bool Connected,
-        string? ProfileName,
-        bool Ambiguous)
-    {
-        public static WifiNetworkFacts Empty(string ssid)
-        {
-            return new WifiNetworkFacts(ssid, [], 0, WifiSecurity.Unsupported, 0, false, false, false, null, false);
-        }
-    }
+        bool Connected);
 }

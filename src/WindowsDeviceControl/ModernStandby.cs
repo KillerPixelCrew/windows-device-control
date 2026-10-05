@@ -31,6 +31,11 @@ public sealed record WakeDevice(string Name, bool Armed, WakeDeviceControl Contr
 /// <param name="Armed">Those of them that were armed.</param>
 public sealed record WakeDeviceSnapshot(IReadOnlyList<string> Known, IReadOnlyList<string> Armed);
 
+/// <summary>One device whose wake arming a restore could not write.</summary>
+/// <param name="Name">The device description.</param>
+/// <param name="NativeErrorCode">The Win32 error the write returned.</param>
+public sealed record WakeDeviceRestoreFailure(string Name, int NativeErrorCode);
+
 /// <summary>Interrupt-time marks around the machine's last standby, all from the same read.</summary>
 /// <remarks>
 ///     Interrupt time counts from boot and does not advance while the machine is asleep, so these
@@ -70,7 +75,7 @@ public sealed record ModernStandbySupport(
 /// <remarks>
 ///     Policy-neutral on purpose. There is no "disable every wake source" call and no stored state:
 ///     a caller names one device at a time, persists <see cref="CaptureWakeDevices" /> before it
-///     changes anything, and keeps that snapshot until <see cref="RestoreWakeDevices" /> succeeds.
+///     changes anything, and keeps that snapshot until <see cref="RestoreWakeDevices" /> reports no failure.
 ///     <para>
 ///         The power button, sleep button and lid are reported by <see cref="Query" /> and are not part
 ///         of the device list this class writes to, so no call here can take away a recovery wake path.
@@ -88,8 +93,8 @@ public static partial class ModernStandby
     private const uint SetWakeEnabled = 0x00000001;
     private const uint ClearWakeEnabled = 0x00000002;
 
-    /// <summary>Bounded buffer for one device description; Windows names are far below this.</summary>
-    private const uint MaximumNameBytes = 4096;
+    /// <summary>The first buffer size for one device description; it grows when Windows asks for more.</summary>
+    private const int InitialNameBytes = 4096;
 
     private const int CapabilitiesBytes = 76;
     private const int OffsetPowerButton = 0;
@@ -98,8 +103,6 @@ public static partial class ModernStandby
     private const int OffsetWakeAlarm = 19;
     private const int OffsetAoAc = 20;
     private const int OffsetAoAcConnectivity = 23;
-
-    private const uint MaximumDevices = 4096;
 
     /// <summary>POWER_INFORMATION_LEVEL.LastWakeTime; interrupt time at the last wake.</summary>
     private const uint LastWakeTime = 14;
@@ -172,6 +175,10 @@ public static partial class ModernStandby
     ///     what woke the machine: Windows exposes no documented call for that.
     /// </remarks>
     /// <returns>The last sleep and wake marks and the current interrupt time.</returns>
+    /// <exception cref="Win32Exception">
+    ///     The power information read failed. Its <see cref="Win32Exception.NativeErrorCode" /> is the NTSTATUS
+    ///     <c>CallNtPowerInformation</c> returned, not a Win32 error code.
+    /// </exception>
     public static StandbyTiming ReadStandbyTiming()
     {
         return new StandbyTiming(
@@ -209,11 +216,11 @@ public static partial class ModernStandby
 
         try
         {
-            var buffer = new byte[MaximumNameBytes];
+            var buffer = new byte[InitialNameBytes];
             HashSet<string> programmable = new(
-                Enumerate(FilterDevicesPresent | FilterWakeProgrammable, buffer), StringComparer.Ordinal);
+                Enumerate(FilterDevicesPresent | FilterWakeProgrammable, ref buffer), StringComparer.Ordinal);
             HashSet<string> armed = new(
-                Enumerate(FilterDevicesPresent | FilterWakeEnabled, buffer), StringComparer.Ordinal);
+                Enumerate(FilterDevicesPresent | FilterWakeEnabled, ref buffer), StringComparer.Ordinal);
 
             List<string> names = [.. programmable];
             foreach (var name in armed)
@@ -279,9 +286,7 @@ public static partial class ModernStandby
                     return true;
                 }
 
-                Check(
-                    DevicePowerSetDeviceState(name, armed ? SetWakeEnabled : ClearWakeEnabled, 0),
-                    "DevicePowerSetDeviceState");
+                SetArmedCore(name, armed);
                 return true;
             }
 
@@ -312,21 +317,41 @@ public static partial class ModernStandby
     /// <remarks>
     ///     Only devices the snapshot actually observed are touched: a device that appeared since
     ///     then has no prior state to restore, and guessing one would be a change dressed as a
-    ///     restore. Idempotent, and a device that is no longer programmable is skipped rather than
-    ///     failing the rest.
+    ///     restore. The devices are enumerated once; a device that is absent or no longer
+    ///     programmable is skipped, and every other write is attempted once even when an earlier
+    ///     one fails. Idempotent.
     /// </remarks>
     /// <param name="snapshot">A snapshot from <see cref="CaptureWakeDevices" />.</param>
+    /// <returns>The devices whose write failed; empty when everything restorable was restored.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="snapshot" /> is null.</exception>
-    public static void RestoreWakeDevices(WakeDeviceSnapshot snapshot)
+    /// <exception cref="Win32Exception">The devices could not be enumerated; nothing was written.</exception>
+    public static IReadOnlyList<WakeDeviceRestoreFailure> RestoreWakeDevices(WakeDeviceSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         lock (WakeDeviceGate)
         {
-            foreach (var (name, armed) in RestorePlan(EnumerateWakeDevicesCore(), snapshot))
+            return ExecuteRestore(RestorePlan(EnumerateWakeDevicesCore(), snapshot), SetArmedCore);
+        }
+    }
+
+    /// <summary>Writes every planned arming once, collecting failures instead of stopping at the first.</summary>
+    internal static List<WakeDeviceRestoreFailure> ExecuteRestore(
+        IReadOnlyList<(string Name, bool Armed)> plan, Action<string, bool> write)
+    {
+        List<WakeDeviceRestoreFailure> failures = [];
+        foreach (var (name, armed) in plan)
+        {
+            try
             {
-                TrySetWakeArmed(name, armed);
+                write(name, armed);
+            }
+            catch (Win32Exception ex)
+            {
+                failures.Add(new WakeDeviceRestoreFailure(name, ex.NativeErrorCode));
             }
         }
+
+        return failures;
     }
 
     internal static IReadOnlyList<(string Name, bool Armed)> RestorePlan(
@@ -400,7 +425,8 @@ public static partial class ModernStandby
         if (status != 0)
         {
             // NTSTATUS, not a Win32 code: preserved as-is rather than mapped to an invented one.
-            throw Failure(status, "CallNtPowerInformation");
+            throw new Win32Exception(unchecked((int)status),
+                $"CallNtPowerInformation failed (NTSTATUS 0x{status:X8}).");
         }
 
         return TimeSpan.FromTicks(checked((long)ticks));
@@ -412,18 +438,27 @@ public static partial class ModernStandby
         return TimeSpan.FromTicks(checked((long)ticks));
     }
 
-    private static List<string> Enumerate(uint interpretation, byte[] buffer)
+    private static void SetArmedCore(string name, bool armed)
+    {
+        Check(
+            DevicePowerSetDeviceState(name, armed ? SetWakeEnabled : ClearWakeEnabled, 0),
+            "DevicePowerSetDeviceState");
+    }
+
+    private static List<string> Enumerate(uint interpretation, ref byte[] buffer)
     {
         List<string> names = [];
-        for (uint index = 0; index < MaximumDevices; index++)
+        uint index = 0;
+        while (true)
         {
             // Cleared rather than reallocated, so a shorter name still ends at the zero padding a
             // fresh buffer would have given it.
             Array.Clear(buffer);
-            var size = MaximumNameBytes;
+            var size = (uint)buffer.Length;
             if (DevicePowerEnumDevices(index, interpretation, 0, buffer, ref size))
             {
                 names.Add(DecodeDeviceName(buffer));
+                index++;
                 continue;
             }
 
@@ -436,10 +471,15 @@ public static partial class ModernStandby
                 return names;
             }
 
-            throw Failure(error, "DevicePowerEnumDevices");
-        }
+            if (error is not (ErrorInsufficientBuffer or ErrorMoreData))
+            {
+                throw Failure(error, "DevicePowerEnumDevices");
+            }
 
-        return names;
+            // A name longer than the buffer: grow to the size Windows reports, or double when it
+            // reports none, and read the same index again.
+            buffer = new byte[size > buffer.Length ? checked((int)size) : checked(buffer.Length * 2)];
+        }
     }
 
     [LibraryImport("powrprof.dll", SetLastError = true)]

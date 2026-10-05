@@ -164,7 +164,7 @@ internal sealed partial class NativePowerRequestApi : IPowerRequestApi
 {
     public nint Create(nint reason)
     {
-        ReasonContext context = new() { Version = 0, Flags = 1, SimpleReasonString = reason };
+        ReasonContext context = new() { Version = 0, Flags = 1, LocalizedReasonModuleOrSimpleString = reason };
         return PowerCreateRequest(in context);
     }
 
@@ -200,10 +200,16 @@ internal sealed partial class NativePowerRequestApi : IPowerRequestApi
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CloseHandle(nint handle);
 
+    /// <summary>
+    ///     REASON_CONTEXT declared through its detailed arm, the larger union member, so the managed size
+    ///     matches the native one on both bitnesses. The simple string shares the first field's offset.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
-    private struct ReasonContext
+    internal struct ReasonContext
     {
         internal uint Version, Flags;
-        internal nint SimpleReasonString;
+        internal nint LocalizedReasonModuleOrSimpleString;
+        internal uint LocalizedReasonId, ReasonStringCount;
+        internal nint ReasonStrings;
     }
 }

@@ -14,8 +14,8 @@
     <RootNamespace>WindowsDeviceControl</RootNamespace>
     <AssemblyName>WindowsDeviceControl</AssemblyName>
 
-    <!-- The WLAN API and the backlight ioctl both transfer variable-length structures. They are
-         read through stack buffers and span readers rather than marshalled layouts. -->
+    <!-- Unsafe code reads native buffers and fixed-size native structs (WLAN, CCD, backlight,
+         Core Audio). -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Public surface: every exported member carries documentation, and a missing one fails the
@@ -28,8 +28,7 @@
          tooltip. Both are errors here so the surface cannot regress. -->
     <WarningsAsErrors>$(WarningsAsErrors);CS1573;CS1591</WarningsAsErrors>
     <NoWarn/>
-    <!-- Emit the parameter names in the reference assembly too, so consumers see them even when
-         only the compiled library is available. -->
+    <!-- Embeds generated and untracked source files in the PDB so source-link debugging works. -->
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
@@ -37,7 +36,7 @@
     <PackageId>WindowsDeviceControl</PackageId>
     <!-- Pre-1.0 on purpose: the surface is extracted from a working application and is expected to
          move before it is frozen. -->
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Description>Windows radio, audio and display control for .NET. Wi-Fi enumeration, connection and profile management over the native WLAN API; Bluetooth discovery, pairing with PIN ceremony and unpairing over WinRT; default audio endpoint switching and per-device volume over Core Audio; internal panel brightness over the ACPI backlight interface.</Description>
     <PackageTags>windows;wifi;wlan;bluetooth;audio;coreaudio;brightness;backlight;kiosk;iot</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

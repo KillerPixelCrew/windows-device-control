@@ -32,8 +32,10 @@ public readonly record struct PrimaryDisplayMode(int Width, int Height, int Refr
 /// <remarks>
 ///     Calls block on display drivers; use a worker thread. No registry settings are persisted.
 ///     Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
-///     not prove physical visibility. An unconfirmed write gets one rollback to the captured mode,
-///     only while the original route remains present; callers must not automatically retry.
+///     not prove physical visibility. A write Windows accepts is not read back. A refused write gets one
+///     write-back of the captured mode, only while the original route remains present; callers must not
+///     automatically retry. Writes share one process-wide gate with every other display write; reads take
+///     no lock.
 /// </remarks>
 public static partial class DisplayModes
 {
@@ -42,100 +44,83 @@ public static partial class DisplayModes
     // Width, height and frequency only: a transient primary-display change keeps the colour depth.
     private const uint PrimaryModeFields = 0x00080000 | 0x00100000 | 0x00400000;
     private const uint ChangeTest = 2;
-    private static readonly object Gate = new();
+
+    // DISP_CHANGE_FAILED, returned when the primary display's current mode cannot be read.
+    private const int ChangeFailed = -1;
 
     /// <summary>Reads current and supported modes from a fresh topology observation.</summary>
     /// <param name="target">Active target to query.</param>
     /// <returns>Null when the target is absent, ambiguous or unreadable.</returns>
+    /// <remarks>
+    ///     Each distinct mode is tested with the driver, which can take a while. That holds no lock, and the
+    ///     route is checked again afterwards so an interleaved change returns null instead of a stale list.
+    /// </remarks>
     public static DisplayModeSnapshot? Read(DisplayTargetIdentity target)
     {
         ArgumentNullException.ThrowIfNull(target);
-        lock (Gate)
+        var path = Find(target);
+        if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current))
         {
-            // Find walks every active path, and one unreadable target (Miracast, indirect,
-            // virtual) throws out of that walk even when it is not the target being read. The
-            // contract above is null for an unreadable target, not an exception for every read;
-            // DisplayLayouts.Observe catches per target for the same reason.
-            ActiveDisplayPath? path;
-            try
-            {
-                path = Find(target);
-            }
-            catch (Win32Exception)
-            {
-                return null;
-            }
-
-            if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current))
-            {
-                return null;
-            }
-
-            HashSet<DisplayMode> supported = [];
-            for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
-            {
-                if (mode.Width == 0 || mode.Height == 0 || mode.Frequency < 2 || mode.Bits != current.Bits)
-                {
-                    continue;
-                }
-
-                // The driver lists a width, height and rate once per variant; one passing test offers it.
-                var projected = Project(mode);
-                if (supported.Contains(projected))
-                {
-                    continue;
-                }
-
-                mode.Fields = ModeFields;
-                if (Change(path.SourceName, ref mode, 2) == 0)
-                {
-                    supported.Add(projected);
-                }
-            }
-
-            ActiveDisplayPath? after;
-            try
-            {
-                after = Find(target);
-            }
-            catch (Win32Exception)
-            {
-                return null;
-            }
-
-            if (!SameRoute(path, after))
-            {
-                return null;
-            }
-
-            return new DisplayModeSnapshot(path, Project(current), supported.OrderBy(mode => mode.Width)
-                .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
+            return null;
         }
+
+        HashSet<DisplayMode> supported = [];
+        for (uint index = 0; ReadNative(path.SourceName, index, out var mode); index++)
+        {
+            if (mode.Width == 0 || mode.Height == 0 || mode.Frequency < 2 || mode.Bits != current.Bits)
+            {
+                continue;
+            }
+
+            // The driver lists a width, height and rate once per variant; one passing test offers it.
+            var projected = Project(mode);
+            if (supported.Contains(projected))
+            {
+                continue;
+            }
+
+            mode.Fields = ModeFields;
+            if (Change(path.SourceName, ref mode, ChangeTest) == 0)
+            {
+                supported.Add(projected);
+            }
+        }
+
+        if (!SameRoute(path, Find(target)))
+        {
+            return null;
+        }
+
+        return new DisplayModeSnapshot(path, Project(current), supported.OrderBy(mode => mode.Width)
+            .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
     }
 
-    /// <summary>Revalidates a selected mode, applies it once and confirms readback.</summary>
+    /// <summary>Revalidates a selected mode and applies it once.</summary>
     /// <param name="observation">Observation from which the user selected the mode.</param>
     /// <param name="requested">Mode explicitly selected by the user.</param>
-    /// <returns>Application and rollback results. No automatic retry is performed.</returns>
-    public static DisplayProfileResult Apply(DisplayModeSnapshot observation, DisplayMode requested)
+    /// <returns>
+    ///     <see cref="DisplayModeOutcome.Applied" /> when Windows accepted the write, which is not read back;
+    ///     otherwise why nothing was written, or the refusal and its one write-back. No automatic retry is
+    ///     performed.
+    /// </returns>
+    public static DisplayModeResult Apply(DisplayModeSnapshot observation, DisplayMode requested)
     {
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(requested);
-        lock (Gate)
+        lock (DisplayTopology.WriteGate)
         {
             var path = Find(observation.Path.Target);
             if (!SameRoute(observation.Path, path) || !observation.Supported.Contains(requested))
             {
-                return new DisplayProfileResult(false, -2, false, false,
-                    "Display changed or the selected mode was not offered. Refresh and select again.");
+                return new DisplayModeResult(DisplayModeOutcome.Stale, 0, false, false);
             }
 
             if (!ReadNative(path!.SourceName, uint.MaxValue, out var original))
             {
-                return new DisplayProfileResult(false, -2, false, false, "Current display mode is unavailable.");
+                return new DisplayModeResult(DisplayModeOutcome.Unreadable, 0, false, false);
             }
 
-            for (uint index = 0; index < 4096 && ReadNative(path.SourceName, index, out var mode); index++)
+            for (uint index = 0; ReadNative(path.SourceName, index, out var mode); index++)
             {
                 if (Project(mode) != requested || mode.Bits != original.Bits)
                 {
@@ -143,52 +128,44 @@ public static partial class DisplayModes
                 }
 
                 mode.Fields = ModeFields;
-                var test = Change(path.SourceName, ref mode, 2);
+                var test = Change(path.SourceName, ref mode, ChangeTest);
                 if (test != 0)
                 {
-                    return new DisplayProfileResult(false, test, false, false, "The display rejected mode validation.");
+                    return new DisplayModeResult(DisplayModeOutcome.ValidationRefused, test, false, false);
                 }
 
                 if (!SameRoute(path, Find(path.Target)))
                 {
-                    return new DisplayProfileResult(false, -2, false, false,
-                        "Display route changed before application.");
+                    return new DisplayModeResult(DisplayModeOutcome.RouteChanged, 0, false, false);
                 }
 
                 var status = Change(path.SourceName, ref mode, 0);
-                var same = SameRoute(path, Find(path.Target));
-                if (status == 0 && same && ReadNative(path.SourceName, uint.MaxValue, out var readback)
-                    && Project(readback) == requested)
+                if (status == 0)
                 {
-                    return new DisplayProfileResult(true, 0, false, false, "Display mode confirmed.");
+                    return new DisplayModeResult(DisplayModeOutcome.Applied, 0, false, false);
+                }
+
+                // A refusal can follow a partial driver change, so the captured mode goes back once, and
+                // only while the source name still names this display: otherwise it could name another one.
+                if (!SameRoute(path, Find(path.Target)))
+                {
+                    return new DisplayModeResult(DisplayModeOutcome.Refused, status, false, false);
                 }
 
                 original.Fields = ModeFields;
-                var rollback = same && Change(path.SourceName, ref original, 0) == 0
-                                    && ReadNative(path.SourceName, uint.MaxValue, out var restored) &&
-                                    Project(restored) == Project(original);
-                return new DisplayProfileResult(false, status, same, rollback, rollback
-                    ? "Mode was not confirmed; the original mode was restored."
-                    : "Mode was not confirmed; display recovery could not be verified.");
+                var rollback = Change(path.SourceName, ref original, 0);
+                return new DisplayModeResult(DisplayModeOutcome.Refused, status, true, rollback == 0);
             }
 
-            return new DisplayProfileResult(false, -2, false, false, "The selected mode is no longer advertised.");
+            return new DisplayModeResult(DisplayModeOutcome.NotAdvertised, 0, false, false);
         }
     }
 
     /// <summary>Reads the primary display's current mode.</summary>
     /// <returns>The mode, or null when the display cannot be read.</returns>
-    /// <remarks>
-    ///     The primary-display calls share this type's gate with <see cref="Apply" />, so a
-    ///     transient change and a validated per-target change can never interleave their read and
-    ///     write.
-    /// </remarks>
     public static PrimaryDisplayMode? ReadPrimaryMode()
     {
-        lock (Gate)
-        {
-            return ReadNative(null, uint.MaxValue, out var current) ? ProjectPrimary(current) : null;
-        }
+        return ReadNative(null, uint.MaxValue, out var current) ? ProjectPrimary(current) : null;
     }
 
     /// <summary>Lists every mode the driver enumerates for the primary display.</summary>
@@ -198,16 +175,13 @@ public static partial class DisplayModes
     /// </returns>
     public static IReadOnlyList<PrimaryDisplayMode> EnumeratePrimaryModes()
     {
-        lock (Gate)
+        List<PrimaryDisplayMode> modes = [];
+        for (uint index = 0; ReadNative(null, index, out var mode); index++)
         {
-            List<PrimaryDisplayMode> modes = [];
-            for (uint index = 0; index < 4096 && ReadNative(null, index, out var mode); index++)
-            {
-                modes.Add(ProjectPrimary(mode));
-            }
-
-            return modes;
+            modes.Add(ProjectPrimary(mode));
         }
+
+        return modes;
     }
 
     /// <summary>Asks the driver whether the primary display would accept a mode. Changes nothing.</summary>
@@ -217,24 +191,26 @@ public static partial class DisplayModes
     /// <returns>Whether the driver's test accepted the mode.</returns>
     public static bool TestPrimaryMode(int width, int height, int refreshHz)
     {
-        lock (Gate)
-        {
-            return ChangePrimary(width, height, refreshHz, ChangeTest) == 0;
-        }
+        return ChangePrimary(width, height, refreshHz, ChangeTest) == 0;
     }
 
     /// <summary>Applies a mode to the primary display without persisting it.</summary>
     /// <param name="width">Width in pixels.</param>
     /// <param name="height">Height in pixels.</param>
     /// <param name="refreshHz">Refresh rate in hertz.</param>
-    /// <returns>The <c>ChangeDisplaySettingsEx</c> status: zero on success.</returns>
+    /// <returns>
+    ///     The <c>ChangeDisplaySettingsEx</c> status: zero on success, and <c>DISP_CHANGE_FAILED</c> (-1)
+    ///     without a write when the current mode cannot be read.
+    /// </returns>
     /// <remarks>
-    ///     No <c>CDS_UPDATEREGISTRY</c>: exit, a crash or a reboot restores the user's saved
-    ///     configuration. The colour depth is carried over from the current mode.
+    ///     No <c>CDS_UPDATEREGISTRY</c>, so the saved configuration is untouched. The mode stays after this
+    ///     process exits, until another mode change, sign-out or restart; the caller restores it explicitly.
+    ///     The colour depth is carried over from the current mode. Serialized with every other display write
+    ///     in the process.
     /// </remarks>
     public static int ApplyPrimaryModeTransient(int width, int height, int refreshHz)
     {
-        lock (Gate)
+        lock (DisplayTopology.WriteGate)
         {
             return ChangePrimary(width, height, refreshHz, 0);
         }
@@ -244,7 +220,7 @@ public static partial class DisplayModes
     {
         if (!ReadNative(null, uint.MaxValue, out var mode))
         {
-            return -2;
+            return ChangeFailed;
         }
 
         mode.Fields = PrimaryModeFields;
@@ -259,13 +235,68 @@ public static partial class DisplayModes
         return new PrimaryDisplayMode((int)mode.Width, (int)mode.Height, (int)mode.Frequency, (int)mode.Bits);
     }
 
+    /// <summary>
+    ///     The one active path driving this monitor, or null when it is absent, ambiguous, unreadable or
+    ///     shares its source with another target (a clone, where one mode change would change them all).
+    ///     Never throws: an unreadable unrelated path is skipped, and a failed query reads as absent.
+    /// </summary>
     private static ActiveDisplayPath? Find(DisplayTargetIdentity target)
     {
-        var paths = DisplayTopology.CaptureActive().Paths;
-        var matches = paths.Where(path => target.Matches(path.Target)).ToArray();
-        return matches.Length == 1 && paths.Count(path => path.SourceName == matches[0].SourceName) == 1
-            ? matches[0]
-            : null;
+        DisplayTopology.PathInfo[] paths;
+        try
+        {
+            paths = DisplayTopology.Query(DisplayTopology.OnlyActivePaths, "Active display topology query failed.")
+                .Paths;
+        }
+        catch (Win32Exception)
+        {
+            return null;
+        }
+
+        DisplayTopology.PathInfo? match = null;
+        DisplayTargetIdentity? identity = null;
+        foreach (var path in paths)
+        {
+            DisplayTargetIdentity candidate;
+            try
+            {
+                candidate = DisplayTopology.ReadTarget(path);
+            }
+            catch (Win32Exception)
+            {
+                continue;
+            }
+
+            if (!target.Matches(candidate))
+            {
+                continue;
+            }
+
+            if (match is not null)
+            {
+                return null;
+            }
+
+            match = path;
+            identity = candidate;
+        }
+
+        if (match is not { } found || identity is null || paths.Count(path =>
+                path.SourceInfo.AdapterId.LowPart == found.SourceInfo.AdapterId.LowPart
+                && path.SourceInfo.AdapterId.HighPart == found.SourceInfo.AdapterId.HighPart
+                && path.SourceInfo.Id == found.SourceInfo.Id) != 1)
+        {
+            return null;
+        }
+
+        try
+        {
+            return DisplayTopology.ToActive(found, identity);
+        }
+        catch (Win32Exception)
+        {
+            return null;
+        }
     }
 
     private static bool SameRoute(ActiveDisplayPath expected, ActiveDisplayPath? current)

@@ -35,15 +35,19 @@ public static partial class WindowsPower
     }
 
     /// <summary>Reads the effective Windows power-mode overlay. Guid.Empty denotes Balanced.</summary>
-    /// <returns>The effective overlay identity; native failures throw Win32Exception.</returns>
+    /// <remarks>Uses <c>PowerGetEffectiveOverlayScheme</c>, a powrprof export Microsoft does not document.</remarks>
+    /// <returns>The effective overlay identity.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">The overlay could not be read.</exception>
     public static Guid GetEffectiveMode()
     {
         Check(PowerGetEffectiveOverlayScheme(out var mode), "Read effective power mode");
         return mode;
     }
 
-    /// <summary>Requests a power-mode overlay once. Read back to confirm application.</summary>
+    /// <summary>Requests a power-mode overlay once. Does not retry; a failed request throws.</summary>
+    /// <remarks>Uses <c>PowerSetActiveOverlayScheme</c>, a powrprof export Microsoft does not document.</remarks>
     /// <param name="mode">Overlay identity, or Guid.Empty for Balanced.</param>
+    /// <exception cref="System.ComponentModel.Win32Exception">Windows refused the request.</exception>
     public static void SetActiveMode(Guid mode)
     {
         Check(PowerSetActiveOverlayScheme(mode), "Set power mode");

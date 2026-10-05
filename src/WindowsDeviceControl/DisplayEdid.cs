@@ -6,6 +6,27 @@ using Windows.Devices.Display;
 
 namespace WindowsDeviceControl;
 
+/// <summary>Why <see cref="DisplayEdid.ReadModes" /> did or did not produce timings.</summary>
+public enum DisplayEdidStatus
+{
+    /// <summary>The descriptor was read. An invalid descriptor is read too and yields no modes.</summary>
+    Read,
+
+    /// <summary>The identity has no device path, or Windows found no monitor behind it.</summary>
+    NotFound,
+
+    /// <summary>The monitor interface lookup did not finish within its three-second budget.</summary>
+    TimedOut,
+
+    /// <summary>The monitor was found but returned no EDID descriptor.</summary>
+    NoDescriptor
+}
+
+/// <summary>EDID timings read for one monitor, and how the read went.</summary>
+/// <param name="Modes">Progressive timing candidates; empty unless <paramref name="Status" /> is Read.</param>
+/// <param name="Status">Whether the descriptor was read, and why not when it was not.</param>
+public sealed record DisplayEdidModes(IReadOnlyList<DisplayMode> Modes, DisplayEdidStatus Status);
+
 /// <summary>Reads advertised monitor timings without activating a Windows display source.</summary>
 public static class DisplayEdid
 {
@@ -22,23 +43,46 @@ public static class DisplayEdid
 
     /// <summary>Reads EDID through the exact monitor interface, including a connected disabled monitor.</summary>
     /// <param name="target">Monitor interface identity obtained from display discovery.</param>
-    /// <returns>Progressive timing candidates, not a driver validation or an active mode snapshot.</returns>
+    /// <returns>
+    ///     Progressive timing candidates, not a driver validation or an active mode snapshot, with the status
+    ///     that tells a slow display from a missing one.
+    /// </returns>
     /// <remarks>
-    ///     Call on a worker. Interface lookup has a three-second cancellation budget; lookup
-    ///     failures propagate to the caller. Invalid descriptors produce no modes. Reading does not
-    ///     enable the display, validate a topology, or apply any setting.
+    ///     Call on a worker. Interface lookup has a three-second budget, reported as
+    ///     <see cref="DisplayEdidStatus.TimedOut" />; other lookup failures propagate to the caller. Invalid
+    ///     descriptors produce no modes. Reading does not enable the display, validate a topology, or apply
+    ///     any setting.
     /// </remarks>
-    public static IReadOnlyList<DisplayMode> ReadModes(DisplayTargetIdentity target)
+    public static DisplayEdidModes ReadModes(DisplayTargetIdentity target)
     {
         ArgumentNullException.ThrowIfNull(target);
         if (string.IsNullOrEmpty(target.DevicePath))
         {
-            return [];
+            return new DisplayEdidModes([], DisplayEdidStatus.NotFound);
         }
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
-        var monitor = DisplayMonitor.FromInterfaceIdAsync(target.DevicePath).WaitWinRt(timeout.Token);
-        return Parse(monitor.GetDescriptor(DisplayMonitorDescriptorKind.Edid));
+        DisplayMonitor? monitor;
+        using (CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3)))
+        {
+            try
+            {
+                monitor = DisplayMonitor.FromInterfaceIdAsync(target.DevicePath).WaitWinRt(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                return new DisplayEdidModes([], DisplayEdidStatus.TimedOut);
+            }
+        }
+
+        if (monitor is null)
+        {
+            return new DisplayEdidModes([], DisplayEdidStatus.NotFound);
+        }
+
+        var descriptor = monitor.GetDescriptor(DisplayMonitorDescriptorKind.Edid);
+        return descriptor is not { Length: > 0 }
+            ? new DisplayEdidModes([], DisplayEdidStatus.NoDescriptor)
+            : new DisplayEdidModes(Parse(descriptor), DisplayEdidStatus.Read);
     }
 
     internal static IReadOnlyList<DisplayMode> Parse(ReadOnlySpan<byte> edid)

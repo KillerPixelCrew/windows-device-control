@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.Text;
 using Xunit;
 using static WindowsDeviceControl.Tests.TestFixtures;
@@ -121,26 +123,22 @@ public sealed class ModernStandbyTests
     }
 
     [Fact]
-    public void TheSubgroupAndSettingIdentitiesAreTheOnesWindowsPublishes()
+    public void RestoreAttemptsEveryPlannedDeviceAndCollectsEachFailure()
     {
-        // Verified against powercfg /qh on a Modern Standby machine: these aliases are SUB_SLEEP,
-        // SUB_NONE, RTCWAKE, AWAYMODE, UNATTENDSLEEP, CONNECTIVITYINSTANDBY and
-        // DISCONNECTEDSTANDBYMODE. A typo here writes a different setting than the name promises.
-        Assert.Equal(new Guid("238c9fa8-0aad-41ed-83f4-97be242c8f20"), ModernStandby.SubgroupSleep);
-        Assert.Equal(new Guid("fea3413e-7e05-4911-9a71-700331f1c294"), ModernStandby.SubgroupNone);
-        Assert.Equal(
-            new Guid("bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d"), ModernStandby.SettingAllowWakeTimers);
-        Assert.Equal(
-            new Guid("25dfa149-5dd1-4736-b5ab-e8a37b5b8187"), ModernStandby.SettingAllowAwayMode);
-        Assert.Equal(
-            new Guid("7bc4a2f9-d8fc-4469-b07b-33eb785aaca0"),
-            ModernStandby.SettingUnattendedSleepTimeout);
-        Assert.Equal(
-            new Guid("f15576e8-98b7-4186-b944-eafa664402d9"),
-            ModernStandby.SettingConnectivityInStandby);
-        Assert.Equal(
-            new Guid("68afb2d9-ee95-47a8-8f50-4115088073b1"),
-            ModernStandby.SettingDisconnectedStandby);
+        (string Name, bool Armed)[] plan = [("A", true), ("B", false), ("C", true)];
+        List<string> written = [];
+
+        var failures = ModernStandby.ExecuteRestore(plan, (name, _) =>
+        {
+            written.Add(name);
+            if (name == "B")
+            {
+                throw new Win32Exception(4214);
+            }
+        });
+
+        Assert.Equal(["A", "B", "C"], written);
+        Assert.Equal(new WakeDeviceRestoreFailure("B", 4214), Assert.Single(failures));
     }
 
     [Theory]

@@ -40,7 +40,10 @@ public sealed record DisplayRefresh(uint Numerator, uint Denominator)
 /// <param name="Width">Horizontal resolution in pixels.</param>
 /// <param name="Height">Vertical resolution in pixels.</param>
 /// <param name="Refresh">Refresh rate, or <see cref="DisplayRefresh.Default" />.</param>
-/// <param name="Rotation">Raw DISPLAYCONFIG_ROTATION value; 1 is landscape.</param>
+/// <param name="Rotation">
+///     Raw DISPLAYCONFIG_ROTATION value; 1 is landscape. Zero keeps the rotation the display runs at when
+///     the layout is applied (landscape for a display that is off) and is never compared.
+/// </param>
 /// <param name="DpiPercent">Scaling percentage to apply, or null to leave it alone.</param>
 /// <param name="Hdr">Advanced colour state to apply, or null to leave it alone.</param>
 public sealed record DisplayLayoutOutput(
@@ -88,7 +91,7 @@ public sealed record DisplayArrangement(
 /// <summary>How a layout application ended.</summary>
 public enum DisplayLayoutOutcome
 {
-    /// <summary>Applied and confirmed by readback.</summary>
+    /// <summary>Windows accepted the arrangement (status zero); nothing is read back to confirm it.</summary>
     Applied,
 
     /// <summary>The arrangement already matched; nothing was written.</summary>
@@ -100,32 +103,100 @@ public enum DisplayLayoutOutcome
     /// <summary>The layout itself does not describe a usable desktop.</summary>
     Invalid,
 
-    /// <summary>Windows refused the configuration before anything changed.</summary>
+    /// <summary>Windows refused the configuration, or it could not be read, before anything changed.</summary>
     Rejected,
 
-    /// <summary>Windows accepted it but the readback did not match. Rolled back once, never retried.</summary>
-    Unconfirmed
+    /// <summary>Windows refused the apply; the captured arrangement was restored once, never retried.</summary>
+    Refused
 }
+
+/// <summary>Why a layout was not applied.</summary>
+public enum DisplayLayoutProblem
+{
+    /// <summary>The layout lists no display.</summary>
+    NoDisplays,
+
+    /// <summary>A resolution is outside 320x200 to 32768x32768.</summary>
+    ResolutionOutOfRange,
+
+    /// <summary>Not exactly one display sits at 0,0 as the primary.</summary>
+    PrimaryNotAtOrigin,
+
+    /// <summary>The same display is listed twice.</summary>
+    DuplicateDisplay,
+
+    /// <summary>Two displays overlap.</summary>
+    Overlap,
+
+    /// <summary>A scaling percentage is outside 100 to 500.</summary>
+    ScalingOutOfRange,
+
+    /// <summary>A display does not touch the others; Windows snaps a detached desktop.</summary>
+    Detached,
+
+    /// <summary>No path on the adapter reaches a display; see <see cref="DisplayLayoutResult.ProblemTarget" />.</summary>
+    NoDisplayPath,
+
+    /// <summary>No free source is left for a display; see <see cref="DisplayLayoutResult.ProblemTarget" />.</summary>
+    NoFreeSource,
+
+    /// <summary>The current configuration could not be read; see <see cref="DisplayLayoutResult.FailureMessage" />.</summary>
+    ReadFailed,
+
+    /// <summary>Windows rejected the layout during validation; see <see cref="DisplayLayoutResult.NativeStatus" />.</summary>
+    ValidationRejected,
+
+    /// <summary>The current arrangement could not be captured for rollback, so nothing was applied.</summary>
+    RollbackCaptureFailed
+}
+
+/// <summary>Which per-display setting a layout warning is about.</summary>
+public enum DisplayOutputWarningKind
+{
+    /// <summary>Advanced colour (HDR).</summary>
+    Hdr,
+
+    /// <summary>Scaling percentage.</summary>
+    Scaling
+}
+
+/// <summary>A per-display setting that was not written after the arrangement itself was.</summary>
+/// <param name="Target">The display.</param>
+/// <param name="Kind">Which setting.</param>
+/// <param name="Outcome">Why it was not written.</param>
+/// <param name="NativeStatus">The native status of a refused write, or zero.</param>
+public sealed record DisplayOutputWarning(
+    DisplayTargetIdentity Target,
+    DisplayOutputWarningKind Kind,
+    DisplaySetOutcome Outcome,
+    int NativeStatus);
 
 /// <summary>Result of validating or applying a layout.</summary>
 /// <param name="Outcome">What happened.</param>
 /// <param name="Absent">The requested monitors that are not connected.</param>
 /// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
-/// <param name="RollbackAttempted">Whether an unconfirmed application was rolled back.</param>
-/// <param name="RollbackSucceeded">Whether that rollback returned success.</param>
-/// <param name="Warnings">Non-fatal problems, such as a refused HDR or scaling write.</param>
-/// <param name="Detail">Diagnostic suitable for a log or UI.</param>
+/// <param name="RollbackAttempted">Whether a refused application was rolled back.</param>
+/// <param name="RollbackStatus">SetDisplayConfig status of that rollback, or zero.</param>
+/// <param name="Warnings">Per-display settings that were not written, such as a refused HDR or scaling write.</param>
+/// <param name="Problem">Why the layout was not applied, when the library knows a specific reason.</param>
+/// <param name="ProblemTarget">The display <paramref name="Problem" /> concerns, when it concerns one.</param>
+/// <param name="FailureMessage">The native failure text, when the current configuration could not be read.</param>
 public sealed record DisplayLayoutResult(
     DisplayLayoutOutcome Outcome,
     IReadOnlyList<DisplayTargetIdentity> Absent,
     int NativeStatus,
     bool RollbackAttempted,
-    bool RollbackSucceeded,
-    IReadOnlyList<string> Warnings,
-    string Detail)
+    int RollbackStatus,
+    IReadOnlyList<DisplayOutputWarning> Warnings,
+    DisplayLayoutProblem? Problem = null,
+    DisplayTargetIdentity? ProblemTarget = null,
+    string? FailureMessage = null)
 {
-    /// <summary>Whether the desktop now matches the layout.</summary>
+    /// <summary>Whether Windows took the layout, or the desktop already matched it.</summary>
     public bool Applied => Outcome is DisplayLayoutOutcome.Applied or DisplayLayoutOutcome.AlreadyActive;
+
+    /// <summary>Whether a rollback was attempted and returned success. Its own status, not a readback.</summary>
+    public bool RollbackSucceeded => RollbackAttempted && RollbackStatus == 0;
 }
 
 /// <summary>
@@ -138,8 +209,8 @@ public sealed record DisplayLayoutResult(
 /// <remarks>
 ///     These calls block on display drivers; run them on a worker. Applying rearranges or blanks
 ///     displays. A requested monitor that is not connected is reported as absent rather than thrown, so
-///     a caller can wait for it. An unconfirmed application gets exactly one rollback and is never
-///     retried automatically.
+///     a caller can wait for it. An application Windows accepts is not read back; one it refuses gets
+///     exactly one rollback, and nothing is retried automatically.
 /// </remarks>
 public static class DisplayLayouts
 {
@@ -180,17 +251,30 @@ public static class DisplayLayouts
             }
 
             var active = (path.Flags & PathActiveFlag) != 0;
-            if (targets.Exists(other => other.Target.Matches(identity) && (other.Active || !active)))
+            if (targets.Exists(other => Same(other.Target, identity) && (other.Active || !active)))
             {
                 continue;
             }
 
-            targets.RemoveAll(other => other.Target.Matches(identity));
+            targets.RemoveAll(other => Same(other.Target, identity));
             targets.Add(new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
                 active ? ReadOutput(path, modes, identity) : null));
         }
 
         return new DisplayArrangement(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    ///     Whether two observations are the same monitor. An identity with neither a path nor EDID ids
+    ///     matches nothing, so the many routes of such a monitor fold by the target route instead.
+    /// </summary>
+    private static bool Same(DisplayTargetIdentity first, DisplayTargetIdentity second)
+    {
+        return first.Matches(second)
+               || (!first.Matches(first) && !second.Matches(second)
+                                         && first.AdapterLowPart == second.AdapterLowPart
+                                         && first.AdapterHighPart == second.AdapterHighPart
+                                         && first.TargetId == second.TargetId);
     }
 
     /// <summary>Captures the current desktop as an editable layout.</summary>
@@ -214,8 +298,8 @@ public static class DisplayLayouts
     ///     answers the separate question of whether Windows would accept it now.
     /// </summary>
     /// <param name="layout">The layout to check.</param>
-    /// <returns>A user-facing reason, or null when the layout is well formed.</returns>
-    public static string? Describe(DisplayLayout layout)
+    /// <returns>The first rule the layout breaks, or null when the layout is well formed.</returns>
+    public static DisplayLayoutProblem? Describe(DisplayLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
         return DisplayLayoutPlanner.Describe(layout);
@@ -229,12 +313,16 @@ public static class DisplayLayouts
         return Run(layout, false);
     }
 
-    /// <summary>Applies a layout and confirms it by readback.</summary>
+    /// <summary>Applies a layout once. Windows' acceptance is the result; nothing is read back.</summary>
     /// <param name="layout">The layout to apply.</param>
     /// <returns>What happened, including any rollback.</returns>
+    /// <remarks>Serialized with every other display write in the process.</remarks>
     public static DisplayLayoutResult Apply(DisplayLayout layout)
     {
-        return Run(layout, true);
+        lock (DisplayTopology.WriteGate)
+        {
+            return Run(layout, true);
+        }
     }
 
     private static DisplayLayoutResult Run(DisplayLayout layout, bool apply)
@@ -242,7 +330,7 @@ public static class DisplayLayouts
         ArgumentNullException.ThrowIfNull(layout);
         if (DisplayLayoutPlanner.Describe(layout) is { } invalid)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Invalid, [], 0, false, false, [], invalid);
+            return Failed(DisplayLayoutOutcome.Invalid, invalid);
         }
 
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read = [];
@@ -254,8 +342,8 @@ public static class DisplayLayouts
         }
         catch (Win32Exception ex)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
-                "The current display configuration could not be read: " + ex.Message);
+            return Failed(DisplayLayoutOutcome.Rejected, DisplayLayoutProblem.ReadFailed, ex.NativeErrorCode,
+                failureMessage: ex.Message);
         }
 
         IReadOnlyList<DisplayTargetIdentity> absent =
@@ -265,107 +353,149 @@ public static class DisplayLayouts
         ];
         if (absent.Count != 0)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.TargetsAbsent, absent, 0, false, false, [],
-                "Waiting for " + string.Join(", ", absent.Select(Describe)) + ".");
+            return new DisplayLayoutResult(DisplayLayoutOutcome.TargetsAbsent, absent, 0, false, 0, []);
         }
 
         if (apply && Matches(arrangement, layout))
         {
-            // Nothing to change. Reported rather than written, so compensating twice is harmless.
-            return ApplyPerTarget(layout, DisplayLayoutOutcome.AlreadyActive, [],
-                "The desktop already matches this layout.");
+            // Nothing to change. Reported rather than written, so compensating twice is harmless. The
+            // per-display settings still apply, through the active paths this observation already found.
+            var active = paths.Where(path => (path.Flags & PathActiveFlag) != 0).ToArray();
+            return new DisplayLayoutResult(DisplayLayoutOutcome.AlreadyActive, [], 0, false, 0,
+                ApplyExtras(layout.Outputs.Select(output => (output, Driving(active, read, output.Target)))));
         }
 
-        DisplayTopology.PathInfo[] planned;
-        DisplayTopology.ModeInfo[] plannedModes;
-        try
+        var (planned, plannedModes, problem, problemTarget) =
+            DisplayLayoutPlanner.Plan(paths, layout, path => DisplayTopology.ReadTarget(path, read));
+        if (problem is { } unplanned)
         {
-            (planned, plannedModes) =
-                DisplayLayoutPlanner.Plan(paths, layout, path => DisplayTopology.ReadTarget(path, read));
-        }
-        catch (InvalidOperationException ex)
-        {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Invalid, [], 0, false, false, [],
-                ex.Message);
+            return Failed(DisplayLayoutOutcome.Invalid, unplanned, problemTarget: problemTarget);
         }
 
         var status = DisplayTopology.Supply(planned, plannedModes, DisplayTopology.SdcValidate);
         if (status != 0)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], status, false, false, [],
-                $"Windows rejected this layout during validation (status {status}).");
+            return Failed(DisplayLayoutOutcome.Rejected, DisplayLayoutProblem.ValidationRejected, status);
         }
 
         if (!apply)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Applied, [], 0, false, false, [],
-                "The layout is valid for this hardware.");
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Applied, [], 0, false, 0, []);
         }
 
+        // One snapshot is both the native rollback and the scaling and colour that follow it back, read
+        // before the apply so the two always describe the same desktop.
         DisplayTopology.NativeSnapshot rollback;
-        DisplayLayout rollbackLayout;
         try
         {
             rollback = DisplayTopology.Query(DisplayTopology.OnlyActivePaths);
-            rollbackLayout = Capture();
         }
         catch (Win32Exception ex)
         {
-            return new DisplayLayoutResult(DisplayLayoutOutcome.Rejected, [], ex.NativeErrorCode, false, false, [],
-                "The current arrangement could not be captured for rollback; nothing was applied.");
+            return Failed(DisplayLayoutOutcome.Rejected, DisplayLayoutProblem.RollbackCaptureFailed,
+                ex.NativeErrorCode);
+        }
+
+        List<(DisplayLayoutOutput Output, DisplayTopology.PathInfo? Path)> rollbackExtras = [];
+        foreach (var path in rollback.Paths)
+        {
+            try
+            {
+                if (ReadOutput(path, rollback.Modes, DisplayTopology.ReadTarget(path)) is { } output)
+                {
+                    rollbackExtras.Add((output, path));
+                }
+            }
+            catch (Win32Exception)
+            {
+                // A display that cannot be read gets its topology back but not its scaling or colour.
+            }
         }
 
         status = DisplayTopology.Supply(planned, plannedModes,
             DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
-        if (status == 0 && Confirm(layout))
+        if (status == 0)
         {
-            return ApplyPerTarget(layout, DisplayLayoutOutcome.Applied, [], "Layout applied and confirmed.");
+            // The planner put the outputs' paths first and in order, and they are the active paths now.
+            return new DisplayLayoutResult(DisplayLayoutOutcome.Applied, [], 0, false, 0,
+                ApplyExtras(layout.Outputs.Select((output, index) =>
+                    (output, (DisplayTopology.PathInfo?)planned[index]))));
         }
 
+        // A refusal can follow a partial driver change, so the captured arrangement goes back once.
         var rollbackStatus = DisplayTopology.Supply(rollback.Paths, rollback.Modes,
             DisplayTopology.SdcApply | DisplayTopology.SaveToDatabase);
         if (rollbackStatus == 0)
         {
-            // Scaling and colour follow the topology back, so the desktop is left as it was found.
-            foreach (var output in rollbackLayout.Outputs)
+            ApplyExtras(rollbackExtras);
+        }
+
+        return new DisplayLayoutResult(DisplayLayoutOutcome.Refused, [], status, true, rollbackStatus, []);
+    }
+
+    private static DisplayLayoutResult Failed(DisplayLayoutOutcome outcome, DisplayLayoutProblem problem,
+        int nativeStatus = 0, DisplayTargetIdentity? problemTarget = null, string? failureMessage = null)
+    {
+        return new DisplayLayoutResult(outcome, [], nativeStatus, false, 0, [], problem, problemTarget,
+            failureMessage);
+    }
+
+    /// <summary>The active path among <paramref name="active" /> that drives this monitor, if any.</summary>
+    private static DisplayTopology.PathInfo? Driving(DisplayTopology.PathInfo[] active,
+        Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, DisplayTargetIdentity target)
+    {
+        foreach (var path in active)
+        {
+            try
             {
-                ApplyOutputExtras(output);
+                if (target.Matches(DisplayTopology.ReadTarget(path, read)))
+                {
+                    return path;
+                }
+            }
+            catch (Win32Exception)
+            {
+                // Someone else's unreadable display.
             }
         }
 
-        return new DisplayLayoutResult(DisplayLayoutOutcome.Unconfirmed, [], status, true, rollbackStatus == 0, [],
-            rollbackStatus == 0
-                ? "The layout was not confirmed; the previous arrangement was restored."
-                : $"The layout was not confirmed and the rollback failed with status {rollbackStatus}.");
+        return null;
     }
 
     /// <summary>
-    ///     Applies the per-display settings that are not part of the topology. A refusal here
-    ///     is a warning: the desktop is already arranged, and undoing that would be worse.
+    ///     Applies the per-display settings that are not part of the topology, on the path already
+    ///     resolved for each display. A refusal here is a warning: the desktop is already arranged, and
+    ///     undoing that would be worse.
     /// </summary>
-    private static DisplayLayoutResult ApplyPerTarget(
-        DisplayLayout layout, DisplayLayoutOutcome outcome, IReadOnlyList<DisplayTargetIdentity> absent, string detail)
+    private static IReadOnlyList<DisplayOutputWarning> ApplyExtras(
+        IEnumerable<(DisplayLayoutOutput Output, DisplayTopology.PathInfo? Path)> outputs)
     {
-        List<string> warnings = [];
-        foreach (var output in layout.Outputs)
+        List<DisplayOutputWarning> warnings = [];
+        foreach (var (output, path) in outputs)
         {
-            warnings.AddRange(ApplyOutputExtras(output));
-        }
+            if (output.Hdr is { } hdr)
+            {
+                var result = path is { } colourPath
+                    ? DisplayColor.SetHdr(colourPath.TargetInfo.AdapterId, colourPath.TargetInfo.Id, hdr)
+                    : new DisplaySetResult(DisplaySetOutcome.NotActive, 0);
+                if (!result.Succeeded)
+                {
+                    warnings.Add(new DisplayOutputWarning(output.Target, DisplayOutputWarningKind.Hdr, result.Outcome,
+                        result.NativeStatus));
+                }
+            }
 
-        return new DisplayLayoutResult(outcome, absent, 0, false, false, warnings, detail);
-    }
-
-    private static IReadOnlyList<string> ApplyOutputExtras(DisplayLayoutOutput output)
-    {
-        List<string> warnings = [];
-        if (output.Hdr is { } hdr && !DisplayColor.TrySetHdr(output.Target, hdr, out var colourDetail))
-        {
-            warnings.Add($"{Describe(output.Target)}: {colourDetail}");
-        }
-
-        if (output.DpiPercent is { } percent && !DisplayScaling.TrySet(output.Target, percent, out var scaleDetail))
-        {
-            warnings.Add($"{Describe(output.Target)}: {scaleDetail}");
+            if (output.DpiPercent is { } percent)
+            {
+                var result = path is { } scalePath
+                    ? DisplayScaling.Set(scalePath.SourceInfo.AdapterId, scalePath.SourceInfo.Id, percent)
+                    : new DisplayScaleResult(DisplaySetOutcome.NotActive, 0, DisplayScaling.Snap(percent));
+                if (!result.Succeeded)
+                {
+                    warnings.Add(new DisplayOutputWarning(output.Target, DisplayOutputWarningKind.Scaling,
+                        result.Outcome, result.NativeStatus));
+                }
+            }
         }
 
         return warnings;
@@ -389,7 +519,8 @@ public static class DisplayLayouts
             if (match?.Current is not { } current
                 || current.X != output.X || current.Y != output.Y
                 || current.Width != output.Width || current.Height != output.Height
-                || !SameRefresh(current.Refresh, output.Refresh))
+                || !SameRefresh(current.Refresh, output.Refresh)
+                || (output.Rotation != 0 && current.Rotation != output.Rotation))
             {
                 return false;
             }
@@ -399,24 +530,12 @@ public static class DisplayLayouts
     }
 
     /// <summary>
-    ///     A requested rate of "default" matches whatever is running; otherwise the readback
+    ///     A requested rate of "default" matches whatever is running; otherwise the observed rate
     ///     must land within half a hertz, because the adapter reports the exact rational it chose.
     /// </summary>
     internal static bool SameRefresh(DisplayRefresh observed, DisplayRefresh requested)
     {
         return requested.Denominator == 0 || Math.Abs(observed.Hertz - requested.Hertz) < 0.5;
-    }
-
-    private static bool Confirm(DisplayLayout layout)
-    {
-        try
-        {
-            return Matches(Observe(), layout);
-        }
-        catch (Win32Exception)
-        {
-            return false;
-        }
     }
 
     /// <summary>
@@ -449,11 +568,6 @@ public static class DisplayLayouts
         return target.DevicePath.Length != 0
             ? target.DevicePath
             : $"{target.EdidManufacturerId}-{target.EdidProductCodeId}-{target.FriendlyName}";
-    }
-
-    private static string Describe(DisplayTargetIdentity target)
-    {
-        return target.FriendlyName.Length != 0 ? target.FriendlyName : Key(target);
     }
 
     private static DisplayLayoutOutput? ReadOutput(

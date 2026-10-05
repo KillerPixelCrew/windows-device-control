@@ -27,27 +27,29 @@ including callback threading, completion timing, consent, error meanings, and ow
   `CoreAudio.Native.cs` the COM declarations, native wave-format layouts, `PROPVARIANT` cleanup and
   the shared device enumerator.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
-- `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and appearance waits in
-  `DisplayTopology.cs`, and the public records in `DisplayTopology.Types.cs`.
+- `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and the one display write
+  gate in `DisplayTopology.cs`, and the public records and result types in `DisplayTopology.Types.cs`.
   `DisplayTopology.Native.cs` owns the native CCD shapes, which are internal so the layout, scaling
   and colour code share one set of offsets and one query rather than keeping second copies.
 - `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
   the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
-  state, an already-matching arrangement is not rewritten, and an unconfirmed apply rolls back once.
+  state, an already-matching arrangement is not rewritten, an accepted apply is not read back, and a
+  refused apply rolls back once.
   `Describe` exposes those rules without touching a display, so a caller's editor and its stored
   configuration check a layout the same way this library will. Keep it that way: a second copy of
   the rules in a consumer is how the two drift apart.
 - `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
-  addressed by monitor identity. Support and current value are re-read before every write, and a
-  refusal is reported rather than retried.
+  addressed by monitor identity. Support and current value are read before every write as its input,
+  nothing is read after it, and a refusal is reported with its native status rather than retried.
+  Display results are outcome codes and statuses; wording belongs to the caller.
 - `WaveOutFeedback.cs`: reusable low-latency volume cue.
 - `WindowsPower*.cs`: power-scheme enumeration, policy values, power-mode operations and hybrid
   processor core placement. Callers own policy ordering, readback confirmation and UI; the library
   preserves native error codes.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
-- `PowerRequestList.cs`: bounded system-wide wake-request decoding; an unreadable layout is unknown.
-- `WindowsWakeSecurity.cs`: wake sign-in capture/apply/restore primitives. Callers persist recovery
-  snapshots before mutation and retain them until restoration succeeds.
+- `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is unknown.
+- `WindowsWakeSecurity.cs`: wake sign-in capture, write and restore primitives. Callers compose the
+  writes, persist recovery snapshots before mutation and retain them until a restore reports no failure.
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
@@ -68,13 +70,25 @@ otherwise.
 The library targets both `net8.0-windows10.0.19041.0` and `net10.0-windows10.0.19041.0`. Keep the
 Windows platform floor and both target frameworks aligned with the APIs used.
 
-Two raw integer contracts are intentional:
+Native detail is kept, never flattened:
 
-- `WindowsRadio.ConnectWifi` returns the Windows WLAN reason code.
+- `WindowsRadio.ConnectWifi` returns a `WifiConnectResult` whose failed outcome carries the Windows
+  WLAN reason code; WLAN list and scan failures are `Win32Exception`s whose `NativeErrorCode` is the
+  WLAN status.
 - `CoreAudio` methods that return `int` return HRESULTs.
 
 Do not replace those with invented success/failure enums that discard platform detail. Preserve the
-named enums used for all other semantic state.
+named enums used for all other semantic state. Results carry codes and statuses; wording belongs to
+the caller.
+
+A Wi-Fi network is identified by `WifiNetworkKey`: its exact SSID bytes and security class. Display
+text is never an identity.
+
+Watches (`StartWifiWatch`, `StartBluetoothWatch`, the `CoreAudio` watches) return one disposable
+registration per call. Registrations are independent, disposal is idempotent and is the stop, and
+there is no process-wide feed slot. Callbacks arrive on a Windows thread, one at a time per
+registration, and a callback exception is contained. A Wi-Fi registration must not be disposed from
+inside its own callback.
 
 Public API changes require implementation, XML documentation, README usage, and focused tests. The
 package version lives in `src/WindowsDeviceControl/WindowsDeviceControl.csproj`.
@@ -174,7 +188,8 @@ every wake source, and the power button, sleep button and lid are reported by `Q
 being writable at all. Enumeration is the actionable set — programmable, plus armed-but-fixed — not
 every device that supports waking from S0; a source that cannot safely be changed is reported as
 `Fixed` instead of being written to. `TrySetWakeArmed` re-reads programmability at the moment of the
-write, so a stale record cannot drive one. Restore touches only devices the snapshot observed.
+write, so a stale record cannot drive one. Restore touches only devices the snapshot observed, attempts
+each of them once and reports the ones that failed rather than stopping at the first.
 
 The enumeration's size argument is not an output: Windows leaves it at the buffer size it was given,
 so a device name ends at its terminator. The end of the list and a genuine failure both return
@@ -184,7 +199,11 @@ reports a partial device list as a complete one.
 ## Testing
 
 Keep automated tests deterministic and hardware-independent. Extract pure decision logic behind
-internal seams when it allows safety behavior to be tested without changing the public API.
+internal seams when it allows safety behavior to be tested without changing the public API. A test
+never reaches native state: argument checks are small internal helpers tested directly, not facade
+calls that stay off the hardware only because validation happens to come first. Native layouts are
+pinned by hand-written byte buffers at the offsets the Windows headers give, never by values copied
+from the decoder, and a test that restates a source literal or predicate guards nothing.
 
 Add or update tests for:
 
@@ -200,6 +219,10 @@ also require explicit real-device validation. Report what hardware and Windows b
 not present unit-test success as proof of hardware compatibility.
 
 ## Validation
+
+`Directory.Build.props` and `.editorconfig` at the repository root are roots: nothing from a parent
+checkout applies, so the library and its tests build the same standalone and as a submodule. The
+test project targets both frameworks the library ships for.
 
 Build the multi-target library first, then run the test project:
 
@@ -221,7 +244,7 @@ Do not commit `bin/`, `obj/`, or generated package output. Keep functional chang
 unrelated formatting.
 
 DisplayModes.cs owns driver-mode enumeration, exact active-route validation and transient application
-with confirmed readback and one bounded rollback. UI and mode-selection policy remain with callers.
+with one write-back after a refusal and no readback. UI and mode-selection policy remain with callers.
 DisplayEdid.cs provides read-only timing candidates for an exact monitor interface even while its
 source is disabled. Keep checksums and block bounds strict; EDID candidates are not driver-validated
 mode snapshots and must not bypass the normal layout validation and apply path.

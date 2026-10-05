@@ -10,122 +10,124 @@ public static unsafe partial class WindowsRadio
 {
     private const uint WlanNotificationSourceNone = 0;
     private const uint WlanNotificationSourceAcm = 0x00000008;
-    private const uint WlanNotificationSourceMsm = 0x00000010;
     private const uint AcmScanComplete = 7;
     private const uint AcmConnectionComplete = 10;
     private const uint AcmConnectionAttemptFail = 11;
     private const uint AcmDisconnected = 21;
     private const uint AcmScanListRefresh = 26;
-    private static readonly object WifiWatchLock = new();
-    private static WifiWatch? _wifiWatch;
 
     /// <summary>Starts reporting Wi-Fi scan and connection changes.</summary>
     /// <param name="onEvent">
-    ///     Called on a Windows service thread, not the caller's. Marshal to your
-    ///     UI thread before touching UI state, and keep the callback short — it runs inside the WLAN
-    ///     notification path. Exceptions it throws are swallowed, because a native callback cannot
-    ///     propagate them.
+    ///     Called on a WLAN service thread, never the caller's, and one call at a time for this
+    ///     registration. Post to your own thread before touching UI state, and keep the callback
+    ///     short: it runs inside the WLAN notification path. Exceptions it throws are swallowed,
+    ///     because a native callback cannot propagate them.
     /// </param>
+    /// <returns>
+    ///     The registration. Disposing it is the stop: it unregisters, waits for a callback that is
+    ///     already running to return, then closes the WLAN handle. Disposing it again does nothing.
+    /// </returns>
     /// <exception cref="Win32Exception">
     ///     The WLAN handle could not be opened, or Windows refused to
     ///     register for notifications.
     /// </exception>
     /// <remarks>
-    ///     There is one feed per process: calling this again replaces the previous callback
-    ///     rather than adding a second one. Pair it with <see cref="StopWifiWatch" />.
+    ///     Every call creates an independent registration on a WLAN handle of its own, so several
+    ///     can run side by side and disposing one leaves the others reporting. Never dispose a
+    ///     registration from inside its own callback: Windows waits for the running callback before
+    ///     the unregister returns, so that call never completes. Post the disposal to another thread
+    ///     instead. Dispose every registration before the process exits, because native code holds
+    ///     the callback until then. A registration ends silently when the WLAN service restarts;
+    ///     start a new one when you want the feed back.
     /// </remarks>
-    public static void StartWifiWatch(Action<WifiWatchEvent> onEvent)
+    public static IDisposable StartWifiWatch(Action<WifiWatchEvent> onEvent)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
-        // Disposing the previous registration can block: unregistering waits for an in-flight
-        // callback to return, and that callback takes WifiWatchLock as its first act. Detach it
-        // under the lock, then dispose it after the lock is released so a notification delivered
-        // on the WLAN service thread at this exact moment cannot deadlock against this thread.
-        DetachWatch()?.Dispose();
         var watch = new WifiWatch(onEvent);
-        var registration = WlanNotificationRegistration.TryOpen(
-                               (data, context) => OnWifiNotification(watch, data, context),
-                               out var status)
+        var registration = WlanNotificationRegistration.TryOpen(watch.OnNotification, out var status)
                            ?? throw WlanFailure("WlanOpenHandle", status);
-        watch.Registration = registration;
-        status = registration.Register(WlanNotificationSourceAcm | WlanNotificationSourceMsm);
-        if (status != ErrorSuccess)
-        {
-            status = registration.Register(WlanNotificationSourceAcm);
-        }
-
+        status = registration.Register(WlanNotificationSourceAcm);
         if (status != ErrorSuccess)
         {
             registration.Dispose();
             throw WlanFailure("WlanRegisterNotification", status);
         }
 
-        // Published only once fully registered, so no callback can be in flight for it before
-        // this and nothing can race to dispose it out from under a not-yet-successful setup.
-        lock (WifiWatchLock)
-        {
-            _wifiWatch = watch;
-        }
-    }
-
-    /// <summary>Stops reporting Wi-Fi changes and releases the notification handle.</summary>
-    /// <remarks>
-    ///     Safe to call when no watch is running. Call it before the process exits: the
-    ///     callback is held by native code, and leaving it registered risks a call into an unloaded
-    ///     delegate.
-    /// </remarks>
-    public static void StopWifiWatch()
-    {
-        DetachWatch()?.Dispose();
+        watch.Registration = registration;
+        return watch;
     }
 
     /// <summary>
-    ///     Clears the active watch and returns its registration, still live, for the caller
-    ///     to dispose outside <see cref="WifiWatchLock" />.
+    ///     Whether an ACM completion names the profile being joined. A completion without a profile
+    ///     name could be any connection on the adapter, an unrelated auto-connect included, so it
+    ///     decides nothing; the wait then ends at its timeout and the connected network is checked.
     /// </summary>
-    private static WlanNotificationRegistration? DetachWatch()
+    internal static bool IsCompletionForProfile(string profile, string expected)
     {
-        lock (WifiWatchLock)
-        {
-            var watch = _wifiWatch;
-            _wifiWatch = null;
-            return watch?.Registration;
-        }
+        return profile.Length > 0 && string.Equals(profile, expected, StringComparison.Ordinal);
     }
 
-    private static void OnWifiNotification(WifiWatch watch, nint data, nint context)
+    /// <summary>The change an ACM notification code reports, or null for one that changes nothing.</summary>
+    private static WifiWatchEvent? MapWatchEvent(uint code)
     {
-        try
+        return code switch
         {
-            lock (WifiWatchLock)
+            AcmScanComplete or AcmScanListRefresh => WifiWatchEvent.ScanCompleted,
+            AcmConnectionComplete or AcmConnectionAttemptFail or AcmDisconnected =>
+                WifiWatchEvent.ConnectionChanged,
+            _ => null
+        };
+    }
+
+    /// <summary>One <see cref="StartWifiWatch" /> registration and its delivery gate.</summary>
+    private sealed class WifiWatch(Action<WifiWatchEvent> events) : IDisposable
+    {
+        private readonly object _gate = new();
+        private int _disposed;
+
+        internal WlanNotificationRegistration? Registration { get; set; }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-                if (!ReferenceEquals(_wifiWatch, watch) || data == 0)
+                return;
+            }
+
+            // Unregistering waits for a callback that is already running, and that callback holds
+            // _gate, so the registration is released outside it.
+            Registration?.Dispose();
+        }
+
+        internal void OnNotification(nint data, nint context)
+        {
+            try
+            {
+                // WLAN occasionally delivers a null notification pointer.
+                if (data == 0 || Volatile.Read(ref _disposed) != 0)
                 {
                     return;
                 }
 
-                var notification = Marshal.PtrToStructure<WlanNotificationData>(data);
-                if (notification.Source != WlanNotificationSourceAcm)
+                var notification = *(WlanNotificationData*)data;
+                if (notification.Source != WlanNotificationSourceAcm
+                    || MapWatchEvent(notification.Code) is not { } change)
                 {
                     return;
                 }
 
-                WifiWatchEvent? change = notification.Code switch
+                lock (_gate)
                 {
-                    AcmScanComplete or AcmScanListRefresh => WifiWatchEvent.ScanCompleted,
-                    AcmConnectionComplete or AcmConnectionAttemptFail or AcmDisconnected =>
-                        WifiWatchEvent.ConnectionChanged,
-                    _ => null
-                };
-                if (change is { } raised)
-                {
-                    watch.Events(raised);
+                    if (Volatile.Read(ref _disposed) == 0)
+                    {
+                        events(change);
+                    }
                 }
             }
-        }
-        catch
-        {
-            // A native service callback cannot propagate managed failures.
+            catch
+            {
+                // A native service callback cannot propagate managed failures.
+            }
         }
     }
 
@@ -178,16 +180,13 @@ public static unsafe partial class WindowsRadio
         {
             try
             {
-                // OnWifiNotification guards the same way. Without it, a null notification pointer
-                // (WLAN delivers one occasionally) throws ArgumentNullException, which the catch
-                // below swallows silently instead of the deliberate early return every other
-                // rejection here takes.
+                // WLAN occasionally delivers a null notification pointer.
                 if (data == 0)
                 {
                     return;
                 }
 
-                var notification = Marshal.PtrToStructure<WlanNotificationData>(data);
+                var notification = *(WlanNotificationData*)data;
                 if (notification.Source != WlanNotificationSourceAcm
                     || notification.InterfaceId != _adapter
                     || notification.Code is not AcmConnectionComplete and not AcmConnectionAttemptFail)
@@ -198,15 +197,14 @@ public static unsafe partial class WindowsRadio
                 var reason = 0u;
                 var profile = string.Empty;
                 if (notification.Data != 0
-                    && notification.DataSize >= (uint)Marshal.SizeOf<WlanConnectionNotificationData>())
+                    && notification.DataSize >= (uint)sizeof(WlanConnectionNotificationData))
                 {
-                    var payload = Marshal.PtrToStructure<WlanConnectionNotificationData>(
-                        notification.Data);
-                    reason = payload.ReasonCode;
-                    profile = NativeText.ReadFixed(payload.ProfileName, 256);
+                    var payload = (WlanConnectionNotificationData*)notification.Data;
+                    reason = payload->ReasonCode;
+                    profile = NativeText.ReadFixed(payload->ProfileName, 256);
                 }
 
-                if (profile.Length > 0 && !string.Equals(profile, _profile, StringComparison.Ordinal))
+                if (!IsCompletionForProfile(profile, _profile))
                 {
                     return;
                 }
@@ -226,13 +224,15 @@ public static unsafe partial class WindowsRadio
     /// <summary>A WLAN notification callback registered on a client handle of its own.</summary>
     /// <remarks>
     ///     Native code holds only the delegate's function pointer, so the registration keeps
-    ///     the delegate alive until disposal has unregistered it and closed the handle.
+    ///     the delegate alive until disposal has unregistered it and closed the handle. Disposal
+    ///     happens once, however often it is called.
     /// </remarks>
     private sealed class WlanNotificationRegistration : IDisposable
     {
         private readonly WlanNotificationCallback _callback;
         private readonly WlanClient _client;
         private readonly nint _pointer;
+        private int _disposed;
         private bool _registered;
 
         private WlanNotificationRegistration(
@@ -247,6 +247,13 @@ public static unsafe partial class WindowsRadio
 
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Unregister before closing: the unregister waits for a running callback, so the
+            // delegate stays rooted and the handle open until no native call can reach either.
             if (_registered)
             {
                 WlanRegisterNotification(_client.Handle, WlanNotificationSourceNone, 0, 0, 0, 0, 0);
@@ -288,12 +295,6 @@ public static unsafe partial class WindowsRadio
             _registered |= status == ErrorSuccess;
             return status;
         }
-    }
-
-    private sealed class WifiWatch(Action<WifiWatchEvent> events)
-    {
-        internal Action<WifiWatchEvent> Events { get; } = events;
-        internal WlanNotificationRegistration Registration { get; set; } = null!;
     }
 
     private readonly record struct ConnectionOutcome(bool Succeeded, uint Reason);

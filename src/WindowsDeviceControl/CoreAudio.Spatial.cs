@@ -70,9 +70,6 @@ public static partial class CoreAudio
     /// <summary>The device-interface class that turns a Core Audio render endpoint id into a WinRT device id.</summary>
     private const string AudioRenderInterfaceClass = "{e6327cad-dcec-4949-ae8a-991e976a79d2}";
 
-    /// <summary>The device-interface class that turns a Core Audio capture endpoint id into a WinRT device id.</summary>
-    private const string AudioCaptureInterfaceClass = "{2eef81be-33fa-4800-9670-1cd474972c3f}";
-
     /// <summary>Reads one playback endpoint's spatial sound state.</summary>
     /// <param name="endpointId">
     ///     The endpoint identifier from
@@ -172,7 +169,7 @@ public static partial class CoreAudio
 
             var configuration = SpatialAudioDeviceConfiguration.GetForDeviceId(ToWinRtDeviceId(endpointId));
             var result = configuration.SetDefaultSpatialAudioFormatAsync(format.ToString("B")).WaitWinRt();
-            status = (SpatialAudioSetStatus)result.Status;
+            status = MapSpatialStatus((int)result.Status);
             return 0;
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException or ArgumentException)
@@ -202,7 +199,8 @@ public static partial class CoreAudio
         IMMDevice? device = null;
         try
         {
-            var result = Enumerator().GetDevice(endpointId, out device);
+            var enumerator = Enumerator();
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
             return result < 0 ? result : device is null ? Failure : 0;
         }
         finally
@@ -212,21 +210,30 @@ public static partial class CoreAudio
     }
 
     /// <summary>
-    ///     Builds the WinRT device id for a Core Audio endpoint id. The WinRT spatial API accepts
-    ///     any string and answers "unsupported, no format" for one it cannot resolve, so a bare
-    ///     endpoint id fails silently rather than loudly; this is the form it resolves.
+    ///     Builds the WinRT device id for a Core Audio playback endpoint id. The WinRT spatial API
+    ///     accepts any string and answers "unsupported, no format" for one it cannot resolve, so a
+    ///     bare endpoint id fails silently rather than loudly; this is the form it resolves.
     /// </summary>
-    internal static string ToWinRtDeviceId(string endpointId, AudioDirection direction = AudioDirection.Render)
+    internal static string ToWinRtDeviceId(string endpointId)
     {
         if (endpointId.StartsWith(@"\\?\", StringComparison.Ordinal))
         {
             return endpointId;
         }
 
-        var interfaceClass = direction == AudioDirection.Capture
-            ? AudioCaptureInterfaceClass
-            : AudioRenderInterfaceClass;
-        return @"\\?\SWD#MMDEVAPI#" + endpointId + "#" + interfaceClass;
+        return @"\\?\SWD#MMDEVAPI#" + endpointId + "#" + AudioRenderInterfaceClass;
+    }
+
+    /// <summary>
+    ///     Maps Windows' set status onto <see cref="SpatialAudioSetStatus" />. A value this library
+    ///     does not know is reported as <see cref="SpatialAudioSetStatus.UnknownError" /> rather than
+    ///     as an undefined enum value.
+    /// </summary>
+    internal static SpatialAudioSetStatus MapSpatialStatus(int status)
+    {
+        return status is >= (int)SpatialAudioSetStatus.Succeeded and <= (int)SpatialAudioSetStatus.UnknownError
+            ? (SpatialAudioSetStatus)status
+            : SpatialAudioSetStatus.UnknownError;
     }
 
     private static Guid ParseFormat(string? value)

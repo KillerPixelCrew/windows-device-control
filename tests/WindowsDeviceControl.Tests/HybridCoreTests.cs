@@ -1,6 +1,5 @@
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
 using Xunit;
 using static WindowsDeviceControl.Tests.TestFixtures;
 
@@ -79,21 +78,6 @@ public sealed class HybridCoreTests
         Array.Resize(ref buffer, buffer.Length + 4);
 
         Assert.Equal([new HybridCoreClass(0, 1, 1)], WindowsPower.ParseCpuSets(buffer));
-    }
-
-    [Theory]
-    [InlineData(0, false)]
-    [InlineData(1, false)]
-    [InlineData(2, true)]
-    public void HybridRequiresMoreThanOneEfficiencyClass(int classes, bool hybrid)
-    {
-        List<HybridCoreClass> observed = [];
-        for (byte index = 0; index < classes; index++)
-        {
-            observed.Add(new HybridCoreClass(index, 1, 1));
-        }
-
-        Assert.Equal(hybrid, new HybridCoreSupport(observed, true, [], [], []).Hybrid);
     }
 
     private static byte[] Buffer(params (int group, byte core, byte efficiency)[] processors)

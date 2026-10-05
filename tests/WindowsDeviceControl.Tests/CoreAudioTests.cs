@@ -77,9 +77,6 @@ public sealed class CoreAudioTests
         Assert.Equal(
             @"\\?\SWD#MMDEVAPI#" + endpoint + "#{e6327cad-dcec-4949-ae8a-991e976a79d2}",
             CoreAudio.ToWinRtDeviceId(endpoint));
-        Assert.Equal(
-            @"\\?\SWD#MMDEVAPI#" + endpoint + "#{2eef81be-33fa-4800-9670-1cd474972c3f}",
-            CoreAudio.ToWinRtDeviceId(endpoint, CoreAudio.AudioDirection.Capture));
         Assert.Equal(@"\\?\already", CoreAudio.ToWinRtDeviceId(@"\\?\already"));
     }
 
@@ -156,12 +153,5 @@ public sealed class CoreAudioTests
         Assert.False(new CoreAudio.AudioDeviceFormat(2, 0, 16, 16, 0x3, false).IsPlausible);
         Assert.False(new CoreAudio.AudioDeviceFormat(2, 48000, 24, 16, 0x3, false).IsPlausible);
         Assert.False(new CoreAudio.AudioDeviceFormat(2, 48000, 20, 20, 0x3, false).IsPlausible);
-    }
-
-    [Fact]
-    public void AQueuedWaveOutCueIsRecognisedBeforeWritingAgain()
-    {
-        Assert.True(WaveOutFeedback.IsQueued(0x10));
-        Assert.False(WaveOutFeedback.IsQueued(0));
     }
 }

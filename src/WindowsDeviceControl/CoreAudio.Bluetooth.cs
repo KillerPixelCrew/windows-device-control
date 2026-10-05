@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
@@ -28,10 +29,12 @@ public static partial class CoreAudio
 
     /// <summary>Lists every audio endpoint container, including disconnected Bluetooth devices.</summary>
     /// <returns>
-    ///     One entry per container. A paired but disconnected Bluetooth headset appears with
+    ///     One entry per container, gathered from render and capture endpoints in every state.
+    ///     A paired but disconnected Bluetooth headset appears with
     ///     <see cref="BluetoothAudioContainer.Active" /> false, which is how you offer to reconnect
-    ///     it.
+    ///     it. Containers use the same lower-case GUID form as <see cref="WindowsRadio.BluetoothDevice.Container" />.
     /// </returns>
+    /// <exception cref="COMException">Core Audio could not enumerate the endpoints.</exception>
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
         var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -58,6 +61,14 @@ public static partial class CoreAudio
     ///     <see cref="ListBluetoothAudioContainers" />.
     /// </param>
     /// <param name="connect">True to connect, false to disconnect.</param>
+    /// <exception cref="ArgumentException"><paramref name="containerId" /> is null or empty.</exception>
+    /// <exception cref="COMException">
+    ///     Core Audio could not enumerate the endpoints, or the only matching endpoint refused the
+    ///     request.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    ///     The container has no audio endpoint, or none of its endpoints accepted the request.
+    /// </exception>
     /// <remarks>
     ///     The request is made to the audio endpoint's device topology; the device may take a
     ///     moment to appear or disappear afterwards, so re-read the container list rather than assuming
@@ -66,7 +77,7 @@ public static partial class CoreAudio
     public static void SetBluetoothAudioConnection(string containerId, bool connect)
     {
         ArgumentException.ThrowIfNullOrEmpty(containerId);
-        var target = containerId.Trim('{', '}').ToLowerInvariant();
+        var target = WindowsRadio.NormalizeContainer(containerId);
         var enumerator = Enumerator();
         Exception? last = null;
         var matched = false;
@@ -94,7 +105,12 @@ public static partial class CoreAudio
             return;
         }
 
-        throw last ?? new InvalidOperationException(matched
+        if (last is not null)
+        {
+            ExceptionDispatchInfo.Throw(last);
+        }
+
+        throw new InvalidOperationException(matched
             ? "No endpoint accepted the Bluetooth audio request."
             : "The Bluetooth device has no audio endpoint.");
     }
@@ -108,8 +124,9 @@ public static partial class CoreAudio
             IMMDeviceCollection? collection = null;
             try
             {
-                Marshal.ThrowExceptionForHR(
-                    enumerator.EnumAudioEndpoints(flow, DeviceStateAll, out collection));
+                Marshal.ThrowExceptionForHR(ForgetEnumeratorIfGone(
+                    enumerator,
+                    enumerator.EnumAudioEndpoints(flow, DeviceStateAll, out collection)));
                 if (collection is null)
                 {
                     continue;
@@ -144,7 +161,11 @@ public static partial class CoreAudio
 
     private static string? TryReadContainer(IMMDevice endpoint)
     {
-        return ReadStringProperty(endpoint, DeviceContainerIdKey, static value => value.GuidValue?.ToString("D"));
+        var container = ReadStringProperty(
+            endpoint,
+            DeviceContainerIdKey,
+            static value => value.GuidValue is { } id ? WindowsRadio.NormalizeContainer(id) : null);
+        return string.IsNullOrEmpty(container) ? null : container;
     }
 
     private static void SendBluetoothAudioOneShot(
@@ -176,7 +197,7 @@ public static partial class CoreAudio
                 throw new InvalidOperationException("The endpoint connector has no adapter device.");
             }
 
-            Marshal.ThrowExceptionForHR(enumerator.GetDevice(adapterId, out adapter));
+            Marshal.ThrowExceptionForHR(ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(adapterId, out adapter)));
             if (adapter is null)
             {
                 throw new InvalidOperationException("The audio adapter could not be opened.");

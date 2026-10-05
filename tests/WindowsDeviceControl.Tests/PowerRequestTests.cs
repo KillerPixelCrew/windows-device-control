@@ -53,6 +53,13 @@ public sealed class PowerRequestTests
         Assert.Equal(1, api.Sets);
     }
 
+    [Fact]
+    public void ReasonContextHasTheFullNativeUnionSize()
+    {
+        Assert.Equal(Environment.Is64BitProcess ? 32 : 24,
+            Marshal.SizeOf<NativePowerRequestApi.ReasonContext>());
+    }
+
     private sealed class FakeApi : IPowerRequestApi
     {
         internal int Creates, Sets, Clears, Closes;

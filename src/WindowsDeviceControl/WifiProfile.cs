@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Net;
 using System.Text;
-using System.Text.Unicode;
 
 namespace WindowsDeviceControl;
 
@@ -36,19 +35,17 @@ public static class WifiProfile
     ///     The name Windows stores the profile under. Conventionally the
     ///     SSID.
     /// </param>
-    /// <param name="ssid">The network name as text, used when the SSID is valid UTF-8.</param>
+    /// <param name="ssid">The network name as text, written as the SSID's display name.</param>
     /// <param name="rawSsid">
-    ///     The SSID's exact bytes. When these are not valid UTF-8 the profile
-    ///     carries them as hex instead, which is the only way to join such a network.
+    ///     The SSID's exact bytes. When known they are written as hex ahead of the name, as Windows
+    ///     itself exports a profile, so Windows matches the exact bytes rather than its own encoding
+    ///     of the name. Empty writes the name alone.
     /// </param>
     /// <param name="enhancedOpen">
     ///     True for Opportunistic Wireless Encryption (OWE), false for a
     ///     genuinely unencrypted network.
     /// </param>
-    /// <returns>
-    ///     The profile XML, ready for
-    ///     <see cref="WindowsRadio.ConnectWifi(string, string?)" />.
-    /// </returns>
+    /// <returns>The profile XML, in the form this library writes through <c>WlanSetProfile</c>.</returns>
     public static string CreateOpen(
         string profileName,
         string ssid,
@@ -70,10 +67,10 @@ public static class WifiProfile
     ///     The name Windows stores the profile under. Conventionally the
     ///     SSID.
     /// </param>
-    /// <param name="ssid">The network name as text, used when the SSID is valid UTF-8.</param>
+    /// <param name="ssid">The network name as text, written as the SSID's display name.</param>
     /// <param name="rawSsid">
-    ///     The SSID's exact bytes, carried as hex when they are not valid
-    ///     UTF-8.
+    ///     The SSID's exact bytes, written as hex ahead of the name when known. Empty writes the name
+    ///     alone.
     /// </param>
     /// <param name="passphrase">
     ///     The passphrase, or a 64-character hex key. Validate it first with
@@ -84,10 +81,7 @@ public static class WifiProfile
     ///     advertises, so try <see cref="PskFlavor.Wpa3Transition" /> and fall back if it is
     ///     refused.
     /// </param>
-    /// <returns>
-    ///     The profile XML, ready for
-    ///     <see cref="WindowsRadio.ConnectWifi(string, string?)" />.
-    /// </returns>
+    /// <returns>The profile XML, in the form this library writes through <c>WlanSetProfile</c>.</returns>
     public static string CreatePsk(
         string profileName,
         string ssid,
@@ -153,15 +147,25 @@ public static class WifiProfile
     ///     The SSID's exact bytes, or <see langword="null" /> when the document carries no
     ///     readable SSID. Bytes rather than a string, because an SSID need not be valid UTF-8.
     /// </returns>
+    /// <remarks>
+    ///     The first <c>SSID</c> element of <c>SSIDConfig</c> is read. Its <c>hex</c> form wins, because
+    ///     it carries the exact bytes; the <c>name</c> form is decoded and encoded as UTF-8 otherwise.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="xml" /> is null.</exception>
     public static byte[]? TryReadSsid(string xml)
     {
-        var config = Between(xml, "<SSIDConfig>", "</SSIDConfig>");
-        if (config is null)
+        ArgumentNullException.ThrowIfNull(xml);
+        // A profile may list several SSID elements; reading inside the first keeps one element's
+        // hex and name together.
+        var element = Between(xml, "<SSIDConfig>", "</SSIDConfig>") is { } section
+            ? Between(section, "<SSID>", "</SSID>")
+            : null;
+        if (element is null)
         {
             return null;
         }
 
-        if (Between(config, "<hex>", "</hex>") is { } hex)
+        if (Between(element, "<hex>", "</hex>") is { } hex)
         {
             var trimmed = hex.Trim();
             if ((trimmed.Length & 1) != 0)
@@ -179,7 +183,7 @@ public static class WifiProfile
             }
         }
 
-        return Between(config, "<name>", "</name>") is { } name
+        return Between(element, "<name>", "</name>") is { } name
             ? Encoding.UTF8.GetBytes(WebUtility.HtmlDecode(name))
             : null;
     }
@@ -209,8 +213,8 @@ public static class WifiProfile
 
     private static string SsidElement(string ssid, byte[] rawSsid)
     {
-        return rawSsid.Length > 0 && !Utf8.IsValid(rawSsid)
-            ? $"<hex>{Convert.ToHexString(rawSsid)}</hex>"
+        return rawSsid.Length > 0
+            ? $"<hex>{Convert.ToHexString(rawSsid)}</hex><name>{Escape(ssid)}</name>"
             : $"<name>{Escape(ssid)}</name>";
     }
 

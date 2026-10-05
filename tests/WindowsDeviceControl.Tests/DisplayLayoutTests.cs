@@ -46,11 +46,11 @@ public sealed class DisplayLayoutTests
     {
         DisplayTargetIdentity first = Target(@"\\?\a"), second = Target(@"\\?\b", id: 2);
 
-        Assert.Contains("at least one display", DisplayLayoutPlanner.Describe(new DisplayLayout([])));
-        Assert.Contains("0,0", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(first, 100), Output(second, 2020)]))!);
-        Assert.Contains("0,0", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(first), Output(second)]))!);
+        Assert.Equal(DisplayLayoutProblem.NoDisplays, DisplayLayoutPlanner.Describe(new DisplayLayout([])));
+        Assert.Equal(DisplayLayoutProblem.PrimaryNotAtOrigin, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(first, 100), Output(second, 2020)])));
+        Assert.Equal(DisplayLayoutProblem.PrimaryNotAtOrigin, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(first), Output(second)])));
     }
 
     [Fact]
@@ -58,12 +58,12 @@ public sealed class DisplayLayoutTests
     {
         DisplayTargetIdentity first = Target(@"\\?\a"), second = Target(@"\\?\b", id: 2);
 
-        Assert.Contains("overlap", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(first), Output(second, 1000)]))!);
+        Assert.Equal(DisplayLayoutProblem.Overlap, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(first), Output(second, 1000)])));
         // Windows snaps a detached desktop back against the primary, so the readback would never
         // match what was asked for.
-        Assert.Contains("touch", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(first), Output(second, 4000)]))!);
+        Assert.Equal(DisplayLayoutProblem.Detached, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(first), Output(second, 4000)])));
         Assert.Null(DisplayLayoutPlanner.Describe(new DisplayLayout([Output(first), Output(second, 1920)])));
     }
 
@@ -72,10 +72,10 @@ public sealed class DisplayLayoutTests
     {
         var target = Target(@"\\?\a");
 
-        Assert.Contains("twice", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(target), Output(target, 1920)]))!);
-        Assert.Contains("scaling", DisplayLayoutPlanner.Describe(
-            new DisplayLayout([Output(target) with { DpiPercent = 700 }]))!);
+        Assert.Equal(DisplayLayoutProblem.DuplicateDisplay, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(target), Output(target, 1920)])));
+        Assert.Equal(DisplayLayoutProblem.ScalingOutOfRange, DisplayLayoutPlanner.Describe(
+            new DisplayLayout([Output(target) with { DpiPercent = 700 }])));
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public sealed class DisplayLayoutTests
             Output(Target(@"\\?\tv", id: 10), 2560, width: 3840, height: 2160, hertz: 120)
         ]);
 
-        var (planned, modes) =
+        var (planned, modes, _, _) =
             DisplayLayoutPlanner.Plan(paths, layout, naming);
 
         Assert.Equal(2, modes.Length);
@@ -110,7 +110,7 @@ public sealed class DisplayLayoutTests
         DisplayTopology.PathInfo[] paths = [Path(0, 10, true), Path(1, 20, true)];
         var naming = Naming((10, @"\\?\keep"), (20, @"\\?\drop"));
 
-        var (planned, _) = DisplayLayoutPlanner.Plan(
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan(
             paths, new DisplayLayout([Output(Target(@"\\?\keep", id: 10))]), naming);
 
         var dropped = planned.Single(path => path.TargetInfo.Id == 20);
@@ -126,10 +126,44 @@ public sealed class DisplayLayoutTests
         DisplayTopology.PathInfo[] paths = [Path(3, 10), Path(1, 10, true)];
         var naming = Naming((10, @"\\?\a"));
 
-        var (planned, _) = DisplayLayoutPlanner.Plan(
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan(
             paths, new DisplayLayout([Output(Target(@"\\?\a", id: 10))]), naming);
 
         Assert.Equal(1u, planned[0].SourceInfo.Id);
+    }
+
+    [Fact]
+    public void RotationZeroKeepsTheActiveRotationAndAnInactiveDisplayGetsLandscape()
+    {
+        var portrait = Path(1, 10, true);
+        portrait.TargetInfo.Rotation = 2;
+        DisplayTopology.PathInfo[] paths = [portrait, Path(2, 20)];
+        var naming = Naming((10, @"\\?\a"), (20, @"\\?\b"));
+        DisplayLayout layout = new([
+            Output(Target(@"\\?\a", id: 10)) with { Rotation = 0 },
+            Output(Target(@"\\?\b", id: 20), 1920) with { Rotation = 0 }
+        ]);
+
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan(paths, layout, naming);
+
+        Assert.Equal(2u, planned[0].TargetInfo.Rotation);
+        Assert.Equal(1u, planned[1].TargetInfo.Rotation);
+    }
+
+    [Fact]
+    public void AnExplicitRotationIsWrittenAndComparedButZeroIsNot()
+    {
+        var target = Target(@"\\?\a");
+        DisplayArrangement arrangement = new(
+            [new DisplayTargetObservation(target, true, true, Output(target) with { Rotation = 2 })], "x",
+            DateTimeOffset.UnixEpoch);
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan([Path(1, 10, true)],
+            new DisplayLayout([Output(Target(@"\\?\a", id: 10)) with { Rotation = 4 }]), Naming((10, @"\\?\a")));
+
+        Assert.True(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target) with { Rotation = 0 }])));
+        Assert.True(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target) with { Rotation = 2 }])));
+        Assert.False(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target)])));
+        Assert.Equal(4u, planned[0].TargetInfo.Rotation);
     }
 
     [Fact]
@@ -143,22 +177,24 @@ public sealed class DisplayLayoutTests
             Output(Target(@"\\?\b", id: 20), 1920)
         ]);
 
-        var (planned, _) = DisplayLayoutPlanner.Plan(paths, layout, naming);
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan(paths, layout, naming);
 
         Assert.Equal(0u, planned[0].SourceInfo.Id);
         Assert.Equal(1u, planned[1].SourceInfo.Id);
     }
 
     [Fact]
-    public void ADisplayWithNoPathAtAllIsReportedByName()
+    public void ADisplayWithNoPathAtAllIsReportedWithItsIdentity()
     {
         DisplayTopology.PathInfo[] paths = [Path(0, 10)];
+        var missing = Target(@"\\?\missing", "Living room TV", 99);
 
-        var failure = Assert.Throws<InvalidOperationException>(() =>
-            DisplayLayoutPlanner.Plan(paths, new DisplayLayout([Output(Target(@"\\?\missing", "Living room TV", 99))]),
-                Naming((10, @"\\?\a"))));
+        var (planned, _, problem, problemTarget) =
+            DisplayLayoutPlanner.Plan(paths, new DisplayLayout([Output(missing)]), Naming((10, @"\\?\a")));
 
-        Assert.Contains("Living room TV", failure.Message);
+        Assert.Empty(planned);
+        Assert.Equal(DisplayLayoutProblem.NoDisplayPath, problem);
+        Assert.Same(missing, problemTarget);
     }
 
     [Fact]
@@ -168,7 +204,7 @@ public sealed class DisplayLayoutTests
         DisplayTopology.PathInfo[] paths = [Path(0, 99), Path(1, 10)];
         var naming = Naming((10, @"\\?\a"));
 
-        var (planned, _) = DisplayLayoutPlanner.Plan(
+        var (planned, _, _, _) = DisplayLayoutPlanner.Plan(
             paths, new DisplayLayout([Output(Target(@"\\?\a", id: 10))]), naming);
 
         Assert.Single(planned);
@@ -222,7 +258,7 @@ public sealed class DisplayLayoutTests
         var target = Target(@"\\?\a");
 
         Assert.Null(DisplayLayouts.Describe(new DisplayLayout([Output(target)])));
-        Assert.Contains("at least one display", DisplayLayouts.Describe(new DisplayLayout([]))!);
+        Assert.Equal(DisplayLayoutProblem.NoDisplays, DisplayLayouts.Describe(new DisplayLayout([])));
         Assert.Throws<ArgumentNullException>(() => DisplayLayouts.Describe(null!));
     }
 

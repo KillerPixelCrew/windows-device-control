@@ -43,13 +43,13 @@ public static class WindowsStorage
     private const uint IoctlStorageGetDeviceNumber = 0x2D1080;
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
-    private const uint OpenExisting = 3;
 
     /// <summary>Every mounted volume Windows will describe, with its backing disk.</summary>
     /// <returns>
     ///     One entry per volume that could be opened, in no particular order. A volume that cannot
     ///     be queried is omitted rather than reported with invented values: a caller joining on the
-    ///     disk number needs to be able to trust the ones it gets.
+    ///     disk number needs to be able to trust the ones it gets. Network drives are left out: they
+    ///     have no local disk, and probing a disconnected share can block for the network timeout.
     /// </returns>
     public static IReadOnlyList<StorageVolume> DescribeVolumes()
     {
@@ -66,7 +66,7 @@ public static class WindowsStorage
 
         foreach (var drive in drives)
         {
-            if (drive.Name.Length == 0)
+            if (drive.Name.Length == 0 || drive.DriveType == DriveType.Network)
             {
                 continue;
             }
@@ -82,8 +82,7 @@ public static class WindowsStorage
                     ready ? drive.AvailableFreeSpace : 0,
                     ready));
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                           or DriveNotFoundException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Not a volume this caller can act on, so not one worth reporting.
             }

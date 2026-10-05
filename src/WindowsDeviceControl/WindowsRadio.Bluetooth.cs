@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
@@ -24,14 +25,11 @@ public static partial class WindowsRadio
     private static readonly string[] EndpointProperties = [AepConnected, AepContainer];
 
     private static readonly TimeSpan PairingTimeout = TimeSpan.FromSeconds(90);
-    private static readonly object BluetoothWatchLock = new();
-    private static BluetoothWatch? _bluetoothWatch;
     private static int _nextPairingToken;
     private static long _nextPairingAttempt;
     private static readonly ConcurrentDictionary<uint, PendingPairing> PendingPairings = new();
     private static readonly ConcurrentDictionary<long, byte> ActivePairingAttempts = new();
     private static readonly string[] ContainerProperties = [AepContainer, DeviceContainer];
-    private static string[]? _connectedSelectors;
 
     /// <summary>Lists Bluetooth devices, classic and Low Energy alike.</summary>
     /// <param name="pairedOnly">
@@ -98,9 +96,9 @@ public static partial class WindowsRadio
     /// </returns>
     public static int ConnectedBluetoothCount()
     {
-        // Built on first use rather than in the type initializer, so a failing WinRT call cannot
-        // break every other member of this class.
-        var selectors = _connectedSelectors ??=
+        // Built per call rather than in the type initializer, so a failing WinRT call cannot
+        // break every other member of this class, and no shared cache needs guarding.
+        string[] selectors =
         [
             Windows.Devices.Bluetooth.BluetoothDevice.GetDeviceSelectorFromConnectionStatus(
                 BluetoothConnectionStatus.Connected),
@@ -126,13 +124,8 @@ public static partial class WindowsRadio
         if (properties.TryGetValue(AepContainer, out var value)
             || properties.TryGetValue(DeviceContainer, out value))
         {
-            var container = value switch
-            {
-                Guid guid => guid.ToString("D"),
-                string text when Guid.TryParse(text, out var guid) => guid.ToString("D"),
-                _ => null
-            };
-            if (container is not null)
+            var container = NormalizeContainer(value);
+            if (container.Length > 0)
             {
                 return $"container:{container}";
             }
@@ -141,333 +134,309 @@ public static partial class WindowsRadio
         return $"endpoint:{id}";
     }
 
+    /// <summary>
+    ///     The one container-identity form this library publishes: a GUID, or a string that parses as
+    ///     one with or without braces, becomes its lower-case hyphenated form. The empty GUID and
+    ///     anything else become empty, so endpoints without a real container are never merged.
+    /// </summary>
+    internal static string NormalizeContainer(object? value)
+    {
+        var container = value switch
+        {
+            Guid guid => guid,
+            string text when Guid.TryParse(text, out var parsed) => parsed,
+            _ => Guid.Empty
+        };
+        return container == Guid.Empty ? string.Empty : container.ToString("D");
+    }
+
     /// <summary>Starts a live feed of Bluetooth device changes.</summary>
     /// <param name="onChange">
-    ///     Called for each change. Raised on a Windows device-watcher thread,
-    ///     not the caller's. Post to your UI thread rather than waiting on it: the callback runs under
-    ///     the lock <see cref="StopBluetoothWatch" /> takes, so a synchronous wait on a thread that stops
-    ///     the watch deadlocks. Exceptions it throws are swallowed, because an exception escaping a
-    ///     WinRT watcher thread terminates the process.
+    ///     Called for each change on a Windows device-watcher thread, never the caller's, and one call
+    ///     at a time for this registration. Post to your own thread rather than waiting on it: the
+    ///     registration's <see cref="IDisposable.Dispose" /> waits for a running callback, so a
+    ///     synchronous wait on a thread that disposes it deadlocks. Exceptions it throws are
+    ///     swallowed, because an exception escaping a WinRT watcher thread terminates the process.
     /// </param>
+    /// <returns>
+    ///     The registration. Disposing it is the stop: every handler is revoked and the watcher
+    ///     stopped, and no callback runs once it has returned. Disposing it again does nothing.
+    /// </returns>
     /// <remarks>
-    ///     Starting again replaces the previous feed rather than adding a second one, so this is safe
-    ///     to call on every screen entry. The initial sweep reports everything already present as
-    ///     <see cref="BluetoothChangeKind.Added" /> and then one
+    ///     Every call creates an independent registration with a watcher of its own, so several can
+    ///     run side by side and disposing one leaves the others reporting. The initial sweep reports
+    ///     everything already present as <see cref="BluetoothChangeKind.Added" /> and then one
     ///     <see cref="BluetoothChangeKind.EnumerationCompleted" />; the feed stays live afterwards.
-    ///     Always pair with <see cref="StopBluetoothWatch" /> — the watcher holds callbacks alive.
+    ///     When Windows aborts the watcher the registration reports one
+    ///     <see cref="BluetoothChangeKind.Stopped" /> and nothing after it. Dispose every registration
+    ///     you start: the watcher holds the callback alive.
     /// </remarks>
-    public static void StartBluetoothWatch(Action<BluetoothChange> onChange)
+    public static IDisposable StartBluetoothWatch(Action<BluetoothChange> onChange)
     {
         ArgumentNullException.ThrowIfNull(onChange);
-        lock (BluetoothWatchLock)
-        {
-            StopBluetoothWatchCore();
-            var watcher = DeviceInformation.CreateWatcher(
-                BluetoothAqs,
-                EndpointProperties,
-                DeviceInformationKind.AssociationEndpoint);
-            var watch = new BluetoothWatch(watcher, onChange);
-            watch.Added = (_, info) => OnBluetoothAdded(watch, info);
-            watch.Updated = (_, update) => OnBluetoothUpdated(watch, update);
-            watch.Removed = (_, update) => OnBluetoothRemoved(watch, update);
-            watch.Completed = (_, _) => PublishBluetoothChange(
-                watch,
-                new BluetoothChange(BluetoothChangeKind.EnumerationCompleted, default));
-            _bluetoothWatch = watch;
-            try
-            {
-                watcher.Added += watch.Added;
-                watcher.Updated += watch.Updated;
-                watcher.Removed += watch.Removed;
-                watcher.EnumerationCompleted += watch.Completed;
-                watcher.Start();
-            }
-            catch
-            {
-                StopBluetoothWatchCore();
-                throw;
-            }
-        }
-    }
-
-    /// <summary>Stops reporting Bluetooth device changes.</summary>
-    /// <remarks>
-    ///     Safe to call when no watch is running. Every WinRT event handler is revoked before
-    ///     this returns, so once it has, no further callback can arrive — which is what makes it safe
-    ///     to tear down whatever state the callback touched.
-    /// </remarks>
-    public static void StopBluetoothWatch()
-    {
-        lock (BluetoothWatchLock)
-        {
-            StopBluetoothWatchCore();
-        }
-    }
-
-    private static void StopBluetoothWatchCore()
-    {
-        var watch = _bluetoothWatch;
-        _bluetoothWatch = null;
-        if (watch is null)
-        {
-            return;
-        }
-
-        if (watch.Added is not null)
-        {
-            watch.Watcher.Added -= watch.Added;
-        }
-
-        if (watch.Updated is not null)
-        {
-            watch.Watcher.Updated -= watch.Updated;
-        }
-
-        if (watch.Removed is not null)
-        {
-            watch.Watcher.Removed -= watch.Removed;
-        }
-
-        if (watch.Completed is not null)
-        {
-            watch.Watcher.EnumerationCompleted -= watch.Completed;
-        }
-
+        var watcher = DeviceInformation.CreateWatcher(
+            BluetoothAqs,
+            EndpointProperties,
+            DeviceInformationKind.AssociationEndpoint);
+        var watch = new BluetoothWatch(watcher, onChange);
         try
         {
-            watch.Watcher.Stop();
-        }
-        catch (InvalidOperationException)
-        {
-            // A watcher that failed during Start can already be stopped or aborted.
-        }
-    }
-
-    private static void OnBluetoothAdded(BluetoothWatch watch, DeviceInformation info)
-    {
-        lock (BluetoothWatchLock)
-        {
-            if (!ReferenceEquals(_bluetoothWatch, watch) || info.Id.Length == 0)
-            {
-                return;
-            }
-
-            watch.Records[info.Id] = info;
-            RaiseBluetoothChange(watch, new BluetoothChange(
-                BluetoothChangeKind.Added,
-                ReadBluetoothDevice(info)));
-        }
-    }
-
-    private static void OnBluetoothUpdated(
-        BluetoothWatch watch,
-        DeviceInformationUpdate update)
-    {
-        lock (BluetoothWatchLock)
-        {
-            if (!ReferenceEquals(_bluetoothWatch, watch))
-            {
-                return;
-            }
-
-            if (watch.Records.TryGetValue(update.Id, out var info))
-            {
-                info.Update(update);
-                RaiseBluetoothChange(watch, new BluetoothChange(
-                    BluetoothChangeKind.Updated,
-                    ReadBluetoothDevice(info)));
-                return;
-            }
-        }
-
-        try
-        {
-            // The lookup can block in the device stack, so it runs without the lock that stopping
-            // the watch and every other callback wait on. The result is still published under it.
-            var resolved = ReadEndpoint(update.Id);
-            lock (BluetoothWatchLock)
-            {
-                if (!ReferenceEquals(_bluetoothWatch, watch))
-                {
-                    return;
-                }
-
-                watch.Records[resolved.Id] = resolved;
-                RaiseBluetoothChange(watch, new BluetoothChange(
-                    BluetoothChangeKind.Updated,
-                    ReadBluetoothDevice(resolved)));
-            }
+            watch.Start();
         }
         catch
         {
-            // A disappearing endpoint is followed by Removed; it has no update to publish.
+            watch.Dispose();
+            throw;
         }
-    }
 
-    private static void OnBluetoothRemoved(
-        BluetoothWatch watch,
-        DeviceInformationUpdate update)
-    {
-        lock (BluetoothWatchLock)
-        {
-            if (!ReferenceEquals(_bluetoothWatch, watch))
-            {
-                return;
-            }
-
-            watch.Records.Remove(update.Id);
-            RaiseBluetoothChange(watch, new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
-                update.Id, string.Empty, false, false, false, string.Empty)));
-        }
-    }
-
-    // Callers hold BluetoothWatchLock. An exception escaping a WinRT DeviceWatcher thread ends the
-    // process, and a consumer that posts to a dispatcher that is shutting down throws exactly then.
-    private static void RaiseBluetoothChange(BluetoothWatch watch, BluetoothChange change)
-    {
-        try
-        {
-            watch.Callback(change);
-        }
-        catch
-        {
-            // Documented on StartBluetoothWatch: consumer exceptions are swallowed.
-        }
-    }
-
-    private static void PublishBluetoothChange(BluetoothWatch watch, BluetoothChange change)
-    {
-        lock (BluetoothWatchLock)
-        {
-            if (ReferenceEquals(_bluetoothWatch, watch))
-            {
-                RaiseBluetoothChange(watch, change);
-            }
-        }
+        return watch;
     }
 
     /// <summary>Pairs a Bluetooth device, running the ceremony through your own UI.</summary>
     /// <param name="deviceId">The device's <see cref="BluetoothDevice.Id" />.</param>
     /// <param name="onRequest">
-    ///     Called when Windows asks something — show it, then answer with
-    ///     <see cref="RespondToPairing" />. <b>You must answer</b>: the ceremony holds a deferral that
-    ///     expires, and an unanswered request fails the pairing.
+    ///     Called when Windows asks something: show it, then answer with
+    ///     <see cref="RespondToPairing" />. <b>You must answer</b>: the ceremony holds a deferral until
+    ///     you do, and an unanswered question runs the attempt into its deadline. Raised on a Windows
+    ///     thread, not the caller's. If it throws, the question is declined, the attempt ends and the
+    ///     returned task faults with that exception.
     /// </param>
-    /// <param name="onFinished">
-    ///     Called once when the attempt ends, with the result, or with an
-    ///     exception if one escaped. Both arguments are null only if the attempt was abandoned.
+    /// <param name="cancellationToken">
+    ///     Ends this attempt only. Its unanswered questions are declined first, so Windows is
+    ///     never left waiting on an open deferral.
     /// </param>
+    /// <returns>
+    ///     The result Windows reported. The task faults with <see cref="TimeoutException" /> when the
+    ///     attempt, including the display-PIN fallback ceremony, has not finished within 90 seconds,
+    ///     and is cancelled when <paramref name="cancellationToken" /> ends it first.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="deviceId" /> is null or empty.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="onRequest" /> is null.</exception>
     /// <remarks>
-    ///     Returns immediately; the ceremony runs on a worker thread and both callbacks are raised
-    ///     there. This is the piece that is hard to find elsewhere — Windows supports several pairing
-    ///     ceremonies, and the right one depends on the device, so
-    ///     <see cref="PairingRequest.Kind" /> tells you which prompt to show.
+    ///     Windows supports several pairing ceremonies, and the right one depends on the device, so
+    ///     <see cref="PairingRequest.Kind" /> tells you which prompt to show. A device that refuses
+    ///     the confirm and provide-PIN ceremonies is tried once more with display-PIN, inside the same
+    ///     90-second deadline.
     /// </remarks>
-    public static void PairBluetooth(
+    public static Task<PairingResult> PairBluetoothAsync(
         string deviceId,
         Action<PairingRequest> onRequest,
-        Action<PairingResult?, Exception?> onFinished)
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);
         ArgumentNullException.ThrowIfNull(onRequest);
-        ArgumentNullException.ThrowIfNull(onFinished);
-        var attempt = Interlocked.Increment(ref _nextPairingAttempt);
-        _ = Task.Run(() =>
-        {
-            ActivePairingAttempts.TryAdd(attempt, 0);
-            PairingResult? completed = null;
-            Exception? failure = null;
-            DeviceInformationCustomPairing? custom = null;
-            TypedEventHandler<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>?
-                requested = null;
-            try
-            {
-                var info = ReadEndpoint(deviceId);
-                custom = info.Pairing.Custom;
-                requested = (_, args) =>
-                {
-                    var deferral = args.GetDeferral();
-                    var pending = new PendingPairing(attempt, args, deferral);
-                    if (!ActivePairingAttempts.ContainsKey(attempt))
-                    {
-                        deferral.Complete();
-                        return;
-                    }
-
-                    var token = AddPendingPairing(pending);
-                    if (!ActivePairingAttempts.ContainsKey(attempt)
-                        && PendingPairings.TryRemove(
-                            new KeyValuePair<uint, PendingPairing>(token, pending)))
-                    {
-                        deferral.Complete();
-                        return;
-                    }
-
-                    onRequest(new PairingRequest(
-                        token,
-                        MapPairingKind(args.PairingKind),
-                        args.Pin ?? string.Empty,
-                        info.Name ?? string.Empty));
-                };
-                custom.PairingRequested += requested;
-                var result = Pair(
-                    custom,
-                    DevicePairingKinds.ConfirmOnly
-                    | DevicePairingKinds.ProvidePin
-                    | DevicePairingKinds.ConfirmPinMatch,
-                    attempt);
-                if (result.Status == DevicePairingResultStatus.RequiredHandlerNotRegistered)
-                {
-                    result = Pair(custom, DevicePairingKinds.DisplayPin, attempt);
-                }
-
-                completed = new PairingResult(
-                    MapPairingOutcome(result.Status),
-                    (int)result.Status);
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
-            finally
-            {
-                ActivePairingAttempts.TryRemove(attempt, out _);
-                if (custom is not null && requested is not null)
-                {
-                    custom.PairingRequested -= requested;
-                }
-
-                try
-                {
-                    CompletePendingPairings(attempt);
-                }
-                catch (Exception cleanupFailure)
-                {
-                    failure = failure is null
-                        ? cleanupFailure
-                        : new AggregateException(failure, cleanupFailure);
-                }
-            }
-
-            onFinished(failure is null ? completed : null, failure);
-        });
+        return PairBluetoothCoreAsync(deviceId, onRequest, PairingTimeout, cancellationToken);
     }
 
-    /// <summary>Answers a pairing question raised by <see cref="PairBluetooth" />.</summary>
+    private static async Task<PairingResult> PairBluetoothCoreAsync(
+        string deviceId,
+        Action<PairingRequest> onRequest,
+        TimeSpan deadline,
+        CancellationToken cancellationToken)
+    {
+        var attempt = Interlocked.Increment(ref _nextPairingAttempt);
+        ActivePairingAttempts.TryAdd(attempt, 0);
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var wait = new CancellationTokenSource();
+        Exception? callbackFailure = null;
+        Exception? endFailure = null;
+        // Cancellation, from the caller or the deadline, first ends the attempt and completes its
+        // pending deferrals and only then cancels the Windows wait, so the pairing operation is
+        // never left waiting on a deferral of its own when the cancellation reaches it.
+        var ending = bound.Token.Register(() =>
+        {
+            endFailure = EndPairingAttempt(attempt);
+            try
+            {
+                wait.Cancel();
+            }
+            catch (Exception)
+            {
+                // A cancellation callback runs on a timer or worker thread, where an escaping
+                // exception would end the process.
+            }
+        });
+        bound.CancelAfter(deadline);
+        DeviceInformationCustomPairing? custom = null;
+        TypedEventHandler<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>? requested = null;
+        var result = default(PairingResult);
+        Exception? failure = null;
+        try
+        {
+            var info = await DeviceInformation.CreateFromIdAsync(
+                    deviceId,
+                    EndpointProperties,
+                    DeviceInformationKind.AssociationEndpoint)
+                .AsTask(wait.Token)
+                .ConfigureAwait(false);
+            var deviceName = info.Name ?? string.Empty;
+            custom = info.Pairing.Custom;
+            requested = (sender, args) =>
+            {
+                if (OnPairingRequested(attempt, args, deviceName, onRequest) is not { } thrown)
+                {
+                    return;
+                }
+
+                callbackFailure ??= thrown;
+                try
+                {
+                    _ = bound.CancelAsync();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The attempt already ended.
+                }
+            };
+            custom.PairingRequested += requested;
+            var status = (await custom.PairAsync(
+                        DevicePairingKinds.ConfirmOnly
+                        | DevicePairingKinds.ProvidePin
+                        | DevicePairingKinds.ConfirmPinMatch,
+                        DevicePairingProtectionLevel.Default)
+                    .AsTask(wait.Token)
+                    .ConfigureAwait(false))
+                .Status;
+            if (status == DevicePairingResultStatus.RequiredHandlerNotRegistered)
+            {
+                status = (await custom.PairAsync(DevicePairingKinds.DisplayPin, DevicePairingProtectionLevel.Default)
+                        .AsTask(wait.Token)
+                        .ConfigureAwait(false))
+                    .Status;
+            }
+
+            result = new PairingResult(MapPairingOutcome(status), (int)status);
+        }
+        catch (OperationCanceledException) when (wait.IsCancellationRequested)
+        {
+            failure = cancellationToken.IsCancellationRequested
+                ? new OperationCanceledException(cancellationToken)
+                : new TimeoutException("Bluetooth pairing timed out.");
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        if (custom is not null && requested is not null)
+        {
+            custom.PairingRequested -= requested;
+        }
+
+        // Waits for a cancellation callback that is already running, so its result is visible here.
+        ending.Dispose();
+        var cleanup = EndPairingAttempt(attempt) ?? endFailure;
+        // A caller exception is the reason the attempt ended, ahead of the cancellation it caused.
+        failure = callbackFailure ?? failure;
+        if (cleanup is not null)
+        {
+            failure = failure is null ? cleanup : new AggregateException(failure, cleanup);
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
+
+        return result;
+    }
+
+    /// <summary>Registers one pairing question and hands it to the caller.</summary>
+    /// <returns>The exception the caller threw, after declining the question; otherwise null.</returns>
+    private static Exception? OnPairingRequested(
+        long attempt,
+        DevicePairingRequestedEventArgs args,
+        string deviceName,
+        Action<PairingRequest> onRequest)
+    {
+        PendingPairing? pending = null;
+        uint token = 0;
+        try
+        {
+            var deferral = args.GetDeferral();
+            var kind = MapPairingKind(args.PairingKind);
+            pending = new PendingPairing(attempt, kind, pin => Accept(args, pin), deferral.Complete);
+            if (!ActivePairingAttempts.ContainsKey(attempt))
+            {
+                deferral.Complete();
+                return null;
+            }
+
+            token = AddPendingPairing(pending);
+            if (!ActivePairingAttempts.ContainsKey(attempt)
+                && PendingPairings.TryRemove(new KeyValuePair<uint, PendingPairing>(token, pending)))
+            {
+                deferral.Complete();
+                return null;
+            }
+
+            onRequest(new PairingRequest(token, kind, args.Pin ?? string.Empty, deviceName));
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Declined without accepting: a caller that could not show the question must not leave
+            // Windows waiting on it until the deadline.
+            if (pending is not null
+                && token != 0
+                && PendingPairings.TryRemove(new KeyValuePair<uint, PendingPairing>(token, pending)))
+            {
+                try
+                {
+                    pending.Complete();
+                }
+                catch (Exception)
+                {
+                    // The attempt ends with the caller's exception either way.
+                }
+            }
+
+            return ex;
+        }
+    }
+
+    private static void Accept(DevicePairingRequestedEventArgs args, string? pin)
+    {
+        if (pin is null)
+        {
+            args.Accept();
+        }
+        else
+        {
+            args.Accept(pin);
+        }
+    }
+
+    /// <summary>Answers a pairing question raised by <see cref="PairBluetoothAsync" />.</summary>
     /// <param name="token">
     ///     The <see cref="PairingRequest.Token" /> being answered. A token that is
     ///     unknown or already answered is ignored.
     /// </param>
     /// <param name="accept">True to proceed with pairing, false to reject it.</param>
     /// <param name="pin">
-    ///     The PIN the user entered. Required when
+    ///     The PIN the user entered. Required to accept a question whose
     ///     <see cref="PairingRequest.Kind" /> is <see cref="PairingKind.ProvidePin" />, and ignored
-    ///     otherwise.
+    ///     for every other kind and for a rejection.
     /// </param>
+    /// <exception cref="ArgumentException">
+    ///     An accepted <see cref="PairingKind.ProvidePin" /> question has no PIN. The question is
+    ///     left unanswered, so the caller can still answer it.
+    /// </exception>
     /// <remarks>Safe to call from any thread, including directly from the request callback.</remarks>
     public static void RespondToPairing(uint token, bool accept, string? pin)
     {
-        if (!PendingPairings.TryRemove(token, out var pending))
+        if (!PendingPairings.TryGetValue(token, out var pending))
+        {
+            return;
+        }
+
+        var providePin = accept && pending.Kind == PairingKind.ProvidePin;
+        if (providePin)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(pin);
+        }
+
+        if (!PendingPairings.TryRemove(new KeyValuePair<uint, PendingPairing>(token, pending)))
         {
             return;
         }
@@ -476,34 +445,35 @@ public static partial class WindowsRadio
         {
             if (accept)
             {
-                if (string.IsNullOrEmpty(pin))
-                {
-                    pending.Args.Accept();
-                }
-                else
-                {
-                    pending.Args.Accept(pin);
-                }
+                pending.Accept(providePin ? pin : null);
             }
         }
         finally
         {
-            pending.Deferral.Complete();
+            pending.Complete();
         }
     }
 
     /// <summary>Removes a Bluetooth pairing.</summary>
     /// <param name="deviceId">The device's <see cref="BluetoothDevice.Id" />.</param>
     /// <returns>
-    ///     <see langword="true" /> when the device is no longer paired, including when it was
-    ///     not paired to begin with.
+    ///     Whether the device is no longer paired, including when it was not paired to begin
+    ///     with, and the status Windows reported.
     /// </returns>
-    public static bool UnpairBluetooth(string deviceId)
+    /// <exception cref="ArgumentException"><paramref name="deviceId" /> is null or empty.</exception>
+    public static BluetoothUnpairResult UnpairBluetooth(string deviceId)
     {
+        ArgumentException.ThrowIfNullOrEmpty(deviceId);
         var info = ReadEndpoint(deviceId);
         var result = info.Pairing.UnpairAsync().WaitWinRt();
-        return result.Status is DeviceUnpairingResultStatus.Unpaired
-            or DeviceUnpairingResultStatus.AlreadyUnpaired;
+        return MapUnpairing(result.Status);
+    }
+
+    internal static BluetoothUnpairResult MapUnpairing(DeviceUnpairingResultStatus status)
+    {
+        return new BluetoothUnpairResult(
+            status is DeviceUnpairingResultStatus.Unpaired or DeviceUnpairingResultStatus.AlreadyUnpaired,
+            (int)status);
     }
 
     private static DeviceInformation ReadEndpoint(string id)
@@ -515,21 +485,19 @@ public static partial class WindowsRadio
             .WaitWinRt();
     }
 
-    private static DevicePairingResult Pair(
-        DeviceInformationCustomPairing pairing,
-        DevicePairingKinds kinds,
-        long attempt)
+    /// <summary>Marks an attempt finished and completes its unanswered deferrals.</summary>
+    /// <returns>The failure completing them raised, or null.</returns>
+    private static Exception? EndPairingAttempt(long attempt)
     {
-        using var timeout = new CancellationTokenSource(PairingTimeout);
+        ActivePairingAttempts.TryRemove(attempt, out _);
         try
         {
-            return pairing.PairAsync(kinds, DevicePairingProtectionLevel.Default)
-                .WaitWinRt(timeout.Token);
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-        {
             CompletePendingPairings(attempt);
-            throw new TimeoutException("Bluetooth pairing timed out.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex;
         }
     }
 
@@ -556,7 +524,7 @@ public static partial class WindowsRadio
             {
                 try
                 {
-                    entry.Value.Deferral.Complete();
+                    entry.Value.Complete();
                 }
                 catch (Exception ex)
                 {
@@ -577,12 +545,7 @@ public static partial class WindowsRadio
                         && connectedValue is bool isConnected
                         && isConnected;
         var container = info.Properties.TryGetValue(AepContainer, out var containerValue)
-            ? containerValue switch
-            {
-                Guid id => id.ToString("D"),
-                string text => text.Trim('{', '}').ToLowerInvariant(),
-                _ => string.Empty
-            }
+            ? NormalizeContainer(containerValue)
             : string.Empty;
         return new BluetoothDevice(
             info.Id ?? string.Empty,
@@ -627,24 +590,205 @@ public static partial class WindowsRadio
         };
     }
 
-    private sealed class BluetoothWatch(
-        DeviceWatcher watcher,
-        Action<BluetoothChange> callback)
+    /// <summary>One <see cref="StartBluetoothWatch" /> registration: its watcher, records and delivery gate.</summary>
+    private sealed class BluetoothWatch : IDisposable
     {
-        internal DeviceWatcher Watcher { get; } = watcher;
-        internal Action<BluetoothChange> Callback { get; } = callback;
+        private readonly TypedEventHandler<DeviceWatcher, DeviceInformation> _added;
+        private readonly Action<BluetoothChange> _callback;
+        private readonly TypedEventHandler<DeviceWatcher, object> _completed;
+        private readonly object _gate = new();
+        private readonly Dictionary<string, DeviceInformation> _records = new(StringComparer.Ordinal);
+        private readonly TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> _removed;
+        private readonly TypedEventHandler<DeviceWatcher, object> _stopped;
+        private readonly TypedEventHandler<DeviceWatcher, DeviceInformationUpdate> _updated;
+        private readonly DeviceWatcher _watcher;
+        private int _disposed;
 
-        internal Dictionary<string, DeviceInformation> Records { get; } =
-            new(StringComparer.Ordinal);
+        /// <summary>Set under the gate once nothing more may be delivered: disposed, or stopped by Windows.</summary>
+        private bool _ended;
 
-        internal TypedEventHandler<DeviceWatcher, DeviceInformation>? Added { get; set; }
-        internal TypedEventHandler<DeviceWatcher, DeviceInformationUpdate>? Updated { get; set; }
-        internal TypedEventHandler<DeviceWatcher, DeviceInformationUpdate>? Removed { get; set; }
-        internal TypedEventHandler<DeviceWatcher, object>? Completed { get; set; }
+        internal BluetoothWatch(DeviceWatcher watcher, Action<BluetoothChange> callback)
+        {
+            _watcher = watcher;
+            _callback = callback;
+            _added = (_, info) => OnAdded(info);
+            _updated = (_, update) => OnUpdated(update);
+            _removed = (_, update) => OnRemoved(update);
+            _completed = (_, _) => Publish(new BluetoothChange(BluetoothChangeKind.EnumerationCompleted, default));
+            _stopped = (_, _) => OnStopped();
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Taking the gate waits for a callback that is delivering now; every later one sees the
+            // end and delivers nothing. The gate is reentrant, so a callback disposing its own
+            // registration does not wait on itself.
+            lock (_gate)
+            {
+                _ended = true;
+            }
+
+            _watcher.Added -= _added;
+            _watcher.Updated -= _updated;
+            _watcher.Removed -= _removed;
+            _watcher.EnumerationCompleted -= _completed;
+            _watcher.Stopped -= _stopped;
+            try
+            {
+                _watcher.Stop();
+            }
+            catch (InvalidOperationException)
+            {
+                // A watcher that failed during Start, or that Windows aborted, is already stopped.
+            }
+        }
+
+        internal void Start()
+        {
+            _watcher.Added += _added;
+            _watcher.Updated += _updated;
+            _watcher.Removed += _removed;
+            _watcher.EnumerationCompleted += _completed;
+            _watcher.Stopped += _stopped;
+            _watcher.Start();
+        }
+
+        private void OnAdded(DeviceInformation info)
+        {
+            if (info.Id.Length == 0)
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                _records[info.Id] = info;
+                Raise(new BluetoothChange(BluetoothChangeKind.Added, ReadBluetoothDevice(info)));
+            }
+        }
+
+        private void OnUpdated(DeviceInformationUpdate update)
+        {
+            lock (_gate)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                if (_records.TryGetValue(update.Id, out var info))
+                {
+                    info.Update(update);
+                    Raise(new BluetoothChange(BluetoothChangeKind.Updated, ReadBluetoothDevice(info)));
+                    return;
+                }
+            }
+
+            try
+            {
+                // The lookup can block in the device stack, so it runs outside the gate that
+                // disposal and every other callback wait on. The result is still published under it.
+                var resolved = ReadEndpoint(update.Id);
+                lock (_gate)
+                {
+                    if (_ended)
+                    {
+                        return;
+                    }
+
+                    _records[resolved.Id] = resolved;
+                    Raise(new BluetoothChange(BluetoothChangeKind.Updated, ReadBluetoothDevice(resolved)));
+                }
+            }
+            catch
+            {
+                // A disappearing endpoint is followed by Removed; it has no update to publish.
+            }
+        }
+
+        private void OnRemoved(DeviceInformationUpdate update)
+        {
+            lock (_gate)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                _records.Remove(update.Id);
+                Raise(new BluetoothChange(BluetoothChangeKind.Removed, new BluetoothDevice(
+                    update.Id, string.Empty, false, false, false, string.Empty)));
+            }
+        }
+
+        /// <summary>
+        ///     The watcher stopped while this registration still owned it, which only Windows does:
+        ///     disposal revokes this handler before it stops the watcher.
+        /// </summary>
+        private void OnStopped()
+        {
+            lock (_gate)
+            {
+                if (_ended)
+                {
+                    return;
+                }
+
+                Raise(new BluetoothChange(BluetoothChangeKind.Stopped, default));
+                _ended = true;
+            }
+        }
+
+        private void Publish(BluetoothChange change)
+        {
+            lock (_gate)
+            {
+                if (!_ended)
+                {
+                    Raise(change);
+                }
+            }
+        }
+
+        // Callers hold the gate. An exception escaping a WinRT DeviceWatcher thread ends the
+        // process, and a consumer that posts to a dispatcher that is shutting down throws exactly then.
+        private void Raise(BluetoothChange change)
+        {
+            try
+            {
+                _callback(change);
+            }
+            catch
+            {
+                // Documented on StartBluetoothWatch: consumer exceptions are swallowed.
+            }
+        }
     }
 
-    private sealed record PendingPairing(
-        long Attempt,
-        DevicePairingRequestedEventArgs Args,
-        Deferral Deferral);
+    /// <summary>One unanswered pairing question and the two ways it can be answered.</summary>
+    /// <param name="attempt">The attempt that raised it.</param>
+    /// <param name="kind">The ceremony, which decides whether an accept carries the PIN.</param>
+    /// <param name="accept">Accepts the question, with the PIN or, for null, without one.</param>
+    /// <param name="complete">Completes the question's deferral.</param>
+    private sealed class PendingPairing(
+        long attempt,
+        PairingKind kind,
+        Action<string?> accept,
+        Action complete)
+    {
+        internal long Attempt { get; } = attempt;
+        internal PairingKind Kind { get; } = kind;
+        internal Action<string?> Accept { get; } = accept;
+        internal Action Complete { get; } = complete;
+    }
 }

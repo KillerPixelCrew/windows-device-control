@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace WindowsDeviceControl;
 
@@ -46,8 +47,8 @@ public static partial class CoreAudio
     ///     because a native callback cannot propagate them.
     /// </param>
     /// <param name="watch">
-    ///     The registration. Dispose it to stop the callbacks; it is null when the return value is
-    ///     an error.
+    ///     The registration. Dispose it to stop the callbacks; disposing it again does nothing. Each
+    ///     call returns its own registration, and it is null when the return value is an error.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
@@ -66,6 +67,7 @@ public static partial class CoreAudio
 
         IMMDevice? device = null;
         IAudioEndpointVolume? volume = null;
+        VolumeWatch? registration = null;
         try
         {
             var result = OpenDefaultVolume(direction, out device, out volume);
@@ -74,7 +76,11 @@ public static partial class CoreAudio
                 return result < 0 ? result : Failure;
             }
 
-            var registration = new VolumeWatch(device, volume, onChanged);
+            // The registration owns the endpoint from here, so a failure below releases it once,
+            // through the registration's disposal.
+            registration = new VolumeWatch(device, volume, onChanged);
+            device = null;
+            volume = null;
             result = registration.Register();
             if (result < 0)
             {
@@ -82,13 +88,12 @@ public static partial class CoreAudio
                 return result;
             }
 
-            device = null;
-            volume = null;
             watch = registration;
             return 0;
         }
         catch (COMException ex)
         {
+            registration?.Dispose();
             return ex.HResult;
         }
         finally
@@ -107,8 +112,8 @@ public static partial class CoreAudio
     ///     cannot propagate them. Property changes on endpoints are not reported.
     /// </param>
     /// <param name="watch">
-    ///     The registration. Dispose it to stop the callbacks; it is null when the return value is
-    ///     an error.
+    ///     The registration. Dispose it to stop the callbacks; disposing it again does nothing. Each
+    ///     call returns its own registration, and it is null when the return value is an error.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
@@ -120,10 +125,12 @@ public static partial class CoreAudio
     {
         ArgumentNullException.ThrowIfNull(onEvent);
         watch = null;
+        EndpointWatch? registration = null;
         try
         {
-            var registration = new EndpointWatch(Enumerator(), onEvent);
-            var result = registration.Register();
+            var enumerator = Enumerator();
+            registration = new EndpointWatch(enumerator, onEvent);
+            var result = ForgetEnumeratorIfGone(enumerator, registration.Register());
             if (result < 0)
             {
                 registration.Dispose();
@@ -135,6 +142,7 @@ public static partial class CoreAudio
         }
         catch (COMException ex)
         {
+            registration?.Dispose();
             return ex.HResult;
         }
     }
@@ -212,7 +220,7 @@ public static partial class CoreAudio
         private readonly EndpointCallback _callback;
         private readonly IMMDeviceEnumerator _enumerator;
         private nint _callbackPointer;
-        private bool _disposed;
+        private int _disposed;
 
         internal EndpointWatch(IMMDeviceEnumerator enumerator, Action<AudioEndpointWatchEvent> onEvent)
         {
@@ -228,12 +236,13 @@ public static partial class CoreAudio
 
         public void Dispose()
         {
-            if (_disposed)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
                 return;
             }
 
-            _disposed = true;
+            // Unregistering waits for an in-flight callback to return, so nothing here holds a lock
+            // the callback could want.
             _callback.Detach();
             try
             {

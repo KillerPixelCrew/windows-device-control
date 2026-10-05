@@ -82,8 +82,6 @@ public static partial class WindowsPower
     private const uint CpuSetInformationType = 0;
     private const int CpuSetHeaderBytes = 8;
     private const int CpuSetEntryBytes = 32;
-    private const uint MaximumCpuSetBytes = 1 << 20;
-    private const uint MaximumPossibleValues = 64;
 
     /// <summary>Processor power settings subgroup (SUB_PROCESSOR).</summary>
     public static readonly Guid SubgroupProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
@@ -238,14 +236,10 @@ public static partial class WindowsPower
 
     private static List<uint> PossibleValues(Guid setting)
     {
+        // The enumeration ends where Windows reports no value at the next index.
         List<uint> values = [];
-        for (uint index = 0; index < MaximumPossibleValues; index++)
+        for (uint index = 0; ReadPossibleValue(SubgroupProcessor, setting, index) is { } value; index++)
         {
-            if (ReadPossibleValue(SubgroupProcessor, setting, index) is not { } value)
-            {
-                break;
-            }
-
             values.Add(value);
         }
 
@@ -268,7 +262,7 @@ public static partial class WindowsPower
             }
         }
 
-        if (required is 0 or > MaximumCpuSetBytes)
+        if (required is 0 || required > Array.MaxLength)
         {
             throw Failure(ErrorInvalidData, "GetSystemCpuSetInformation");
         }

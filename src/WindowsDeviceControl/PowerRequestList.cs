@@ -28,6 +28,25 @@ public readonly record struct PowerRequestEntry(
     uint? Pid,
     string? Reason);
 
+/// <summary>Whether <see cref="PowerRequestList.Query" /> produced a trustworthy list, and why not.</summary>
+public enum PowerRequestListStatus
+{
+    /// <summary>The list was read and decoded.</summary>
+    Read,
+
+    /// <summary>Windows refused the read; it needs administrator rights, like <c>powercfg /requests</c>.</summary>
+    AccessDenied,
+
+    /// <summary>The read failed with another NTSTATUS, carried alongside.</summary>
+    QueryFailed,
+
+    /// <summary>The returned layout did not decode safely, so the list is unknown.</summary>
+    UnrecognizedLayout,
+
+    /// <summary>The process is not 64-bit, and the decoder only knows the 64-bit layout.</summary>
+    Unsupported
+}
+
 /// <summary>
 ///     Enumerates system-wide power requests via the undocumented
 ///     <c>NtPowerInformation(GetPowerRequestList)</c> class — what `powercfg /requests`
@@ -43,24 +62,27 @@ public static partial class PowerRequestList
     private const int StatusBufferTooSmall = unchecked((int)0xC0000023);
     private const int StatusAccessDenied = unchecked((int)0xC0000022);
     private const int InitialBuffer = 4096;
-    private const int MaxBuffer = 1024 * 1024;
-
-    /// <summary>Sanity ceiling on the request count; a live system shows ~50.</summary>
-    private const int MaxRequests = 100_000;
-
-    /// <summary>Sanity ceiling on a single UTF-16 string, in code units.</summary>
-    private const int MaxStringUnits = 4096;
 
     /// <summary>
-    ///     Queries and decodes the current request list. Entries is null when
-    ///     no trustworthy answer exists; Error then carries the human reason (most
-    ///     commonly missing elevation — the same restriction powercfg has).
+    ///     Queries and decodes the current request list. Entries is null whenever Status is not
+    ///     <see cref="PowerRequestListStatus.Read" />; the most common reason is missing elevation, the same
+    ///     restriction powercfg has.
     /// </summary>
-    public static (IReadOnlyList<PowerRequestEntry>? Entries, string? Error) Query()
+    /// <returns>
+    ///     The decoded entries, the outcome, and for <see cref="PowerRequestListStatus.QueryFailed" /> the NTSTATUS
+    ///     Windows returned (zero otherwise).
+    /// </returns>
+    public static (IReadOnlyList<PowerRequestEntry>? Entries, PowerRequestListStatus Status, int NativeStatus)
+        Query()
     {
+        if (!Environment.Is64BitProcess)
+        {
+            return (null, PowerRequestListStatus.Unsupported, 0);
+        }
+
         // The call reports only that the buffer was too small, not the size it needs, so the
-        // buffer doubles up to the bound and is decoded where Windows wrote it.
-        for (var length = InitialBuffer; length <= MaxBuffer; length *= 2)
+        // buffer doubles until the list fits and is decoded where Windows wrote it.
+        for (var length = InitialBuffer;; length = checked(length * 2))
         {
             var buffer = new byte[length];
             var status = NtPowerInformation(
@@ -69,22 +91,20 @@ public static partial class PowerRequestList
             {
                 var entries = DecodeWithBuild(buffer, NtBuild());
                 return entries is null
-                    ? (null, "Unrecognized power request layout")
-                    : (entries, null);
+                    ? (null, PowerRequestListStatus.UnrecognizedLayout, 0)
+                    : (entries, PowerRequestListStatus.Read, 0);
             }
 
             if (status == StatusAccessDenied)
             {
-                return (null, "Administrator rights required");
+                return (null, PowerRequestListStatus.AccessDenied, status);
             }
 
             if (status != StatusBufferTooSmall)
             {
-                return (null, $"Query failed (NTSTATUS 0x{(uint)status:X8})");
+                return (null, PowerRequestListStatus.QueryFailed, status);
             }
         }
-
-        return (null, "Request list too large to read");
     }
 
     private static uint NtBuild()
@@ -129,13 +149,15 @@ public static partial class PowerRequestList
         var modes = ModeCount(build);
         var diagOffset = DiagOffset(modes);
 
-        if (!TryUInt64(buffer, 0, out var rawCount) || rawCount > MaxRequests)
+        // Each request needs its own 8-byte offset after the count, so a count the buffer cannot
+        // hold is a structural surprise rather than a list to truncate.
+        if (!TryUInt64(buffer, 0, out var rawCount) || rawCount > (ulong)Math.Max(0, (buffer.Length - 8) / 8))
         {
             return null;
         }
 
         var count = (int)rawCount;
-        var entries = new List<PowerRequestEntry>(Math.Min(count, 1024));
+        var entries = new List<PowerRequestEntry>(count);
         for (var i = 0; i < count; i++)
         {
             if (!TryUInt64(buffer, 8 + i * 8, out var requestOffset)
@@ -276,7 +298,7 @@ public static partial class PowerRequestList
 
     /// <summary>
     ///     Reads a NUL-terminated UTF-16 string; false if it runs off the end
-    ///     of the buffer without a terminator or exceeds the length cap.
+    ///     of the buffer without a terminator.
     /// </summary>
     private static bool TryWString(ReadOnlySpan<byte> buffer, int offset, out string value)
     {
@@ -286,9 +308,9 @@ public static partial class PowerRequestList
             return false;
         }
 
-        // Windows buffers are little-endian UTF-16. A terminator may follow the last allowed unit.
+        // Windows buffers are little-endian UTF-16.
         var units = MemoryMarshal.Cast<byte, char>(buffer[offset..]);
-        var length = units[..Math.Min(units.Length, MaxStringUnits + 1)].IndexOf('\0');
+        var length = units.IndexOf('\0');
         if (length < 0)
         {
             return false;

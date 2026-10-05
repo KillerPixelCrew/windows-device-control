@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
+
 namespace WindowsDeviceControl;
 
 /// <summary>Windows radio control: adapter power, Bluetooth discovery and pairing, and Wi-Fi.</summary>
@@ -7,9 +11,11 @@ namespace WindowsDeviceControl;
 ///     capability WinRT requires — which is why an unpackaged desktop, kiosk or service application
 ///     cannot use the WinRT Wi-Fi surface at all.
 ///     <para>
-///         Every member is synchronous and safe to call from any thread. Windows itself decides what a
-///         given process may do: <see cref="RequestAccess" /> reports whether radio power may be changed,
-///         and <see cref="GetConsent" /> reports the privacy consent recorded for a capability.
+///         Every member except <see cref="PairBluetoothAsync" /> blocks until Windows answers, so call
+///         them from a worker thread. All members are safe to call from any thread. Windows itself
+///         decides what a given process may do: <see cref="RequestAccess" /> reports whether radio power
+///         may be changed, and <see cref="GetConsent" /> reports the privacy consent recorded for a
+///         capability.
 ///     </para>
 /// </remarks>
 public static partial class WindowsRadio
@@ -52,7 +58,14 @@ public static partial class WindowsRadio
         ///     The initial sweep finished; everything already present has been reported.
         ///     The watch stays active and keeps reporting later changes.
         /// </summary>
-        EnumerationCompleted
+        EnumerationCompleted,
+
+        /// <summary>
+        ///     The watch ended on its own, for example because Windows aborted the device watcher.
+        ///     It is the last change the registration reports, and the device is default. Dispose the
+        ///     registration and start a new one to resume.
+        /// </summary>
+        Stopped
     }
 
     /// <summary>The privacy consent value reported by the diagnostic registry store.</summary>
@@ -91,7 +104,10 @@ public static partial class WindowsRadio
         /// <summary>Show the PIN and confirm it matches the one on the device.</summary>
         ConfirmPinMatch,
 
-        /// <summary>A ceremony this library does not recognize. Reject it.</summary>
+        /// <summary>
+        ///     A ceremony this library does not classify. Windows still waits for an answer; the
+        ///     caller decides whether to accept or reject it.
+        /// </summary>
         Unknown
     }
 
@@ -172,6 +188,58 @@ public static partial class WindowsRadio
 
         /// <summary>No adapter, or a state this library does not recognize.</summary>
         Unknown
+    }
+
+    /// <summary>How a <see cref="ConnectWifi" /> attempt ended.</summary>
+    public enum WifiConnectOutcome
+    {
+        /// <summary>The adapter joined the network.</summary>
+        Joined,
+
+        /// <summary>
+        ///     WLAN reported a definite failure; <see cref="WifiConnectResult.ReasonCode" /> says
+        ///     which. A replaced profile has its previous XML back, and a profile created for this
+        ///     attempt was removed when the key or the security settings were refused.
+        /// </summary>
+        Failed,
+
+        /// <summary>
+        ///     No verdict arrived before the wait ended and the adapter is not on the network yet. The
+        ///     attempt may still complete, so the profile it uses was left in place; a watch or the
+        ///     next <see cref="GetWifiStatus" /> reports how it ends.
+        /// </summary>
+        Pending,
+
+        /// <summary>
+        ///     The request was refused before anything was written;
+        ///     <see cref="WifiConnectResult.Refusal" /> says why.
+        /// </summary>
+        Refused
+    }
+
+    /// <summary>Why <see cref="ConnectWifi" /> refused a request before writing anything.</summary>
+    public enum WifiConnectRefusal
+    {
+        /// <summary>
+        ///     The passphrase is neither 8 to 63 printable ASCII characters nor 64 hex digits; see
+        ///     <see cref="WifiProfile.PassphraseIsValid" />.
+        /// </summary>
+        InvalidPassphrase,
+
+        /// <summary>
+        ///     A passphrase was given, but the network is not visible with a personal-key
+        ///     authentication method this library can build a profile for.
+        /// </summary>
+        UnsupportedAuthentication,
+
+        /// <summary>The network is protected and has no saved profile, so it needs a passphrase.</summary>
+        NeedsPassword,
+
+        /// <summary>
+        ///     The network has no saved profile, and its authentication is one this library cannot
+        ///     build a profile for, or it is not visible to read the authentication from.
+        /// </summary>
+        UnsupportedSecurity
     }
 
     /// <summary>
@@ -257,9 +325,17 @@ public static partial class WindowsRadio
     }
 
     /// <summary>One visible Wi-Fi network.</summary>
-    /// <param name="Ssid">The network name. Empty for a hidden network that advertises none.</param>
+    /// <param name="Key">
+    ///     The network's identity: its SSID bytes and security class. Pass it to
+    ///     <see cref="ConnectWifi" /> and <see cref="ForgetWifi" />. Never default, because networks
+    ///     that hide their name are not listed.
+    /// </param>
+    /// <param name="Ssid">
+    ///     The network name as text, for display. Never empty: networks that hide their name are not
+    ///     listed. Two networks can show the same text, so identify one by <paramref name="Key" />.
+    /// </param>
     /// <param name="Signal">Signal quality, 0 to 100, as Windows reports it.</param>
-    /// <param name="Security">What joining it requires.</param>
+    /// <param name="Security">What joining it requires; the same class as the key's.</param>
     /// <param name="Saved">
     ///     Whether a profile for it already exists on this machine, in which case
     ///     <see cref="ConnectWifi" /> needs no passphrase.
@@ -267,6 +343,7 @@ public static partial class WindowsRadio
     /// <param name="Connectable">Whether Windows currently considers it joinable.</param>
     /// <param name="Connected">Whether this is the network the adapter is joined to.</param>
     public readonly record struct WifiNetwork(
+        WifiNetworkKey Key,
         string Ssid,
         int Signal,
         WifiSecurity Security,
@@ -275,10 +352,135 @@ public static partial class WindowsRadio
         bool Connected);
 
     /// <summary>The Wi-Fi adapter's current state.</summary>
-    /// <param name="State">Whether the adapter is joined, joining, or neither.</param>
+    /// <param name="State">
+    ///     Whether the adapter is joined, joining, or neither;
+    ///     <see cref="WifiConnectionState.Unknown" /> on a machine without a WLAN interface.
+    /// </param>
     /// <param name="Signal">Signal quality of the joined network, 0 to 100; zero when not joined.</param>
-    /// <param name="Ssid">The joined network's name; empty when not joined.</param>
-    public readonly record struct WifiStatus(WifiConnectionState State, int Signal, string Ssid);
+    /// <param name="Ssid">The joined network's name as text; empty when not joined.</param>
+    /// <param name="Key">
+    ///     The joined network's identity, built from its SSID bytes and the security of the
+    ///     connection; <see langword="null" /> when not joined.
+    /// </param>
+    public readonly record struct WifiStatus(
+        WifiConnectionState State,
+        int Signal,
+        string Ssid,
+        WifiNetworkKey? Key);
+
+    /// <summary>How a <see cref="ConnectWifi" /> attempt ended.</summary>
+    /// <param name="Outcome">The result a caller acts on.</param>
+    /// <param name="ReasonCode">
+    ///     For <see cref="WifiConnectOutcome.Failed" />, the Windows WLAN reason code: pass it to
+    ///     <see cref="ReasonText" /> and <see cref="GetReasonVerdict" />. A failure WLAN reported
+    ///     without a reason carries <c>ERROR_NOT_FOUND</c> (1168). Zero for every other outcome.
+    /// </param>
+    /// <param name="Refusal">
+    ///     For <see cref="WifiConnectOutcome.Refused" />, why; <see langword="null" /> otherwise.
+    /// </param>
+    public readonly record struct WifiConnectResult(
+        WifiConnectOutcome Outcome,
+        uint ReasonCode,
+        WifiConnectRefusal? Refusal);
+
+    /// <summary>One profile deletion made by <see cref="ForgetWifi" />.</summary>
+    /// <param name="ProfileName">The saved profile that was deleted, or that could not be.</param>
+    /// <param name="Status">
+    ///     The Win32 status <c>WlanDeleteProfile</c> returned: zero when the profile is gone,
+    ///     otherwise why Windows kept it.
+    /// </param>
+    public readonly record struct WifiForgetResult(string ProfileName, uint Status);
+
+    /// <summary>Identifies one Wi-Fi network: its exact SSID bytes and the security class it advertises.</summary>
+    /// <remarks>
+    ///     Equality compares both. Two names that decode to the same text are told apart by their
+    ///     bytes, and the same name advertised with different security is two networks. The bytes are
+    ///     copied on construction, so a key never changes. <see langword="default" /> names no network
+    ///     and is refused by every member that takes a key.
+    /// </remarks>
+    public readonly struct WifiNetworkKey : IEquatable<WifiNetworkKey>
+    {
+        private readonly byte[]? _ssid;
+
+        /// <summary>Creates a key from a network's SSID bytes and security class.</summary>
+        /// <param name="ssid">The SSID's exact bytes. They are copied.</param>
+        /// <param name="security">The security class the network advertises.</param>
+        /// <exception cref="ArgumentException"><paramref name="ssid" /> is empty.</exception>
+        public WifiNetworkKey(ReadOnlySpan<byte> ssid, WifiSecurity security)
+        {
+            if (ssid.IsEmpty)
+            {
+                throw new ArgumentException("A Wi-Fi network key needs the SSID's bytes.", nameof(ssid));
+            }
+
+            _ssid = ssid.ToArray();
+            Security = security;
+        }
+
+        /// <summary>Gets the SSID's exact bytes. Empty only for <see langword="default" />.</summary>
+        public ReadOnlySpan<byte> Ssid => _ssid;
+
+        /// <summary>Gets the security class the network advertises.</summary>
+        public WifiSecurity Security { get; }
+
+        /// <summary>Gets the SSID bytes as upper-case hex, two digits per byte.</summary>
+        public string Hex => Convert.ToHexString(Ssid);
+
+        /// <summary>
+        ///     Gets the SSID decoded as UTF-8, for display. Invalid sequences become U+FFFD, which is
+        ///     why two keys can show the same text.
+        /// </summary>
+        public string DisplayText => Encoding.UTF8.GetString(Ssid);
+
+        /// <summary>Whether this is <see langword="default" />, which names no network.</summary>
+        internal bool IsDefault => _ssid is null;
+
+        /// <summary>Compares two keys by SSID bytes and security class.</summary>
+        /// <param name="left">The first key.</param>
+        /// <param name="right">The second key.</param>
+        /// <returns>Whether both name the same network.</returns>
+        public static bool operator ==(WifiNetworkKey left, WifiNetworkKey right)
+        {
+            return left.Equals(right);
+        }
+
+        /// <summary>Compares two keys by SSID bytes and security class.</summary>
+        /// <param name="left">The first key.</param>
+        /// <param name="right">The second key.</param>
+        /// <returns>Whether the keys name different networks.</returns>
+        public static bool operator !=(WifiNetworkKey left, WifiNetworkKey right)
+        {
+            return !left.Equals(right);
+        }
+
+        /// <inheritdoc />
+        public bool Equals(WifiNetworkKey other)
+        {
+            return Security == other.Security && Ssid.SequenceEqual(other.Ssid);
+        }
+
+        /// <inheritdoc />
+        public override bool Equals(object? obj)
+        {
+            return obj is WifiNetworkKey other && Equals(other);
+        }
+
+        /// <inheritdoc />
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(Security);
+            hash.AddBytes(Ssid);
+            return hash.ToHashCode();
+        }
+
+        /// <summary>Returns the display text and security class, for logs.</summary>
+        /// <returns>The SSID text followed by the security class.</returns>
+        public override string ToString()
+        {
+            return $"{DisplayText} ({Security})";
+        }
+    }
 
     /// <summary>One Bluetooth association endpoint.</summary>
     /// <param name="Id">The device identifier, and the handle for every other operation here.</param>
@@ -291,7 +493,9 @@ public static partial class WindowsRadio
     /// </param>
     /// <param name="Container">
     ///     The container identifier, which is what ties this device to its
-    ///     audio endpoints in <see cref="CoreAudio.ListBluetoothAudioContainers" />.
+    ///     audio endpoints in <see cref="CoreAudio.ListBluetoothAudioContainers" />. Always the
+    ///     lower-case hyphenated GUID form, or empty when Windows reports no container or the empty
+    ///     GUID, so endpoints without a real container are never grouped together.
     /// </param>
     public readonly record struct BluetoothDevice(
         string Id,
@@ -329,4 +533,36 @@ public static partial class WindowsRadio
     ///     unclassified outcome can still be diagnosed.
     /// </param>
     public readonly record struct PairingResult(PairingOutcome Outcome, int RawStatus);
+
+    /// <summary>How an unpairing request ended.</summary>
+    /// <param name="Unpaired">
+    ///     True when the device is no longer paired, including when it was not paired to
+    ///     begin with.
+    /// </param>
+    /// <param name="NativeStatus">
+    ///     Windows' own <c>DeviceUnpairingResultStatus</c> value, kept so a refusal can be
+    ///     diagnosed.
+    /// </param>
+    public readonly record struct BluetoothUnpairResult(bool Unpaired, int NativeStatus);
+
+    /// <summary>How a radio power change went, adapter by adapter.</summary>
+    /// <param name="Access">
+    ///     <see cref="WindowsRadio.Access.Allowed" /> only when every adapter accepted the state.
+    ///     Otherwise the first refusal an adapter reported, or
+    ///     <see cref="WindowsRadio.Access.Unspecified" /> when an adapter failed without a refusal.
+    /// </param>
+    /// <param name="Adapters">
+    ///     One entry per adapter, in the order they were written. Empty when Windows refused
+    ///     access before any adapter was written; <paramref name="Access" /> then says why.
+    /// </param>
+    public sealed record RadioPowerResult(Access Access, IReadOnlyList<RadioAdapterResult> Adapters);
+
+    /// <summary>One adapter's answer to a radio power change.</summary>
+    /// <param name="Name">The adapter's name as Windows reports it; empty when it could not be read.</param>
+    /// <param name="Access">
+    ///     The adapter's answer, or <see langword="null" /> when the write failed instead of
+    ///     answering. The answer is the write's own status; nothing is read back.
+    /// </param>
+    /// <param name="HResult">The failure's HRESULT when <paramref name="Access" /> is null; otherwise zero.</param>
+    public readonly record struct RadioAdapterResult(string Name, Access? Access, int HResult);
 }

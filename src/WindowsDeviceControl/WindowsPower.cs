@@ -10,10 +10,10 @@ namespace WindowsDeviceControl;
 public static partial class WindowsPower
 {
     private const uint AccessScheme = 16;
-    private const uint MaximumNameBytes = 65536;
 
     /// <summary>Returns one installed scheme, or null at the end. Native failures throw Win32Exception.</summary>
     /// <param name="index">Zero-based enumeration index.</param>
+    /// <returns>The scheme at <paramref name="index" />, or null past the last one.</returns>
     public static Guid? EnumerateScheme(uint index)
     {
         uint size = 16;
@@ -32,8 +32,9 @@ public static partial class WindowsPower
         return id;
     }
 
-    /// <summary>Every installed scheme, in enumeration order.</summary>
-    internal static List<Guid> EnumerateSchemes()
+    /// <summary>Every installed scheme, in enumeration order. Native failures throw Win32Exception.</summary>
+    /// <returns>The installed scheme identities; empty only when Windows lists none.</returns>
+    public static IReadOnlyList<Guid> EnumerateSchemes()
     {
         List<Guid> schemes = [];
         for (uint index = 0; EnumerateScheme(index) is { } scheme; index++)
@@ -44,8 +45,10 @@ public static partial class WindowsPower
         return schemes;
     }
 
-    /// <summary>Reads a localized scheme name with bounded buffer retries.</summary>
+    /// <summary>Reads a localized scheme name, sizing the buffer from what Windows reports.</summary>
     /// <param name="id">Installed scheme identity.</param>
+    /// <returns>The scheme's name, or its identity text when the name is blank.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">The name could not be read.</exception>
     public static unsafe string ReadSchemeName(Guid id)
     {
         uint size = 0;
@@ -55,15 +58,16 @@ public static partial class WindowsPower
             Check(status, "PowerReadFriendlyName");
         }
 
-        // A rename can grow the buffer between reads. Retry reads only, with a bounded allocation.
+        // A rename can grow the buffer between reads, so the read is repeated a few times. The
+        // allocation follows the size Windows reports.
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            if (size < 2 || size > MaximumNameBytes || size % 2 != 0)
+            if (size < 2 || size % 2 != 0)
             {
                 throw Failure(ErrorInvalidData, "PowerReadFriendlyName");
             }
 
-            var buffer = new byte[size];
+            var buffer = new byte[checked((int)size)];
             fixed (byte* pointer = buffer)
             {
                 status = PowerReadFriendlyName(0, in id, 0, 0, (nint)pointer, ref size);
@@ -94,6 +98,8 @@ public static partial class WindowsPower
     }
 
     /// <summary>Reads the active scheme and releases the native allocation on every outcome.</summary>
+    /// <returns>The active scheme identity.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">The active scheme could not be read.</exception>
     public static Guid GetActiveScheme()
     {
         var status = PowerGetActiveScheme(0, out var pointer);
@@ -122,8 +128,9 @@ public static partial class WindowsPower
         }
     }
 
-    /// <summary>Requests a scheme once; failures throw Win32Exception. Read back to confirm.</summary>
+    /// <summary>Activates a scheme once. Does not retry; a failed request throws.</summary>
     /// <param name="id">Installed scheme identity.</param>
+    /// <exception cref="System.ComponentModel.Win32Exception">Windows refused the request.</exception>
     public static void SetActiveScheme(Guid id)
     {
         Check(PowerSetActiveScheme(0, in id), "PowerSetActiveScheme");

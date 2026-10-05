@@ -1,22 +1,36 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 
 namespace WindowsDeviceControl;
 
 /// <summary>Owns one local audio preview through Windows Media Foundation and the default audio route.</summary>
+/// <remarks>
+///     Single owner: <see cref="Play" />, <see cref="Stop" /> and <see cref="Dispose" /> are called from
+///     one thread at a time. Only <see cref="Failed" /> arrives on another thread.
+/// </remarks>
 public sealed class AudioFilePreview : IDisposable
 {
     private MediaPlayer? _player;
     private bool _disposed;
 
     /// <summary>Raised on the media callback thread when the file or codec cannot be played.</summary>
-    public event Action<string>? Failed;
+    /// <remarks>
+    ///     Carries Windows' error class, the extended HRESULT and its message. Exceptions the
+    ///     handler throws are swallowed, because they cannot cross the native media callback.
+    /// </remarks>
+    public event Action<AudioPreviewFailure>? Failed;
 
     /// <summary>Stops the preceding preview and starts a local file without altering system volume.</summary>
     /// <param name="path">An absolute path to an existing audio file.</param>
     /// <exception cref="ArgumentException">The path is not absolute or does not exist.</exception>
+    /// <exception cref="COMException">
+    ///     Windows media playback is unavailable, as on N editions without the Media Feature Pack,
+    ///     or the file could not be opened as a media source.
+    /// </exception>
     public void Play(string path)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -27,18 +41,21 @@ public sealed class AudioFilePreview : IDisposable
 
         Stop();
         var player = new MediaPlayer { AutoPlay = false };
-        _player = player;
+        Volatile.Write(ref _player, player);
         player.MediaFailed += (_, args) =>
         {
             // A queued failure from a retired preview cannot replace the next preview's status.
-            if (!ReferenceEquals(_player, player))
+            if (!ReferenceEquals(Volatile.Read(ref _player), player))
             {
                 return;
             }
 
             try
             {
-                Failed?.Invoke(args.ErrorMessage);
+                Failed?.Invoke(new AudioPreviewFailure(
+                    args.Error,
+                    args.ExtendedErrorCode?.HResult ?? 0,
+                    args.ErrorMessage ?? string.Empty));
             }
             catch
             {
@@ -60,8 +77,7 @@ public sealed class AudioFilePreview : IDisposable
     /// <summary>Stops playback and releases its source.</summary>
     public void Stop()
     {
-        var player = _player;
-        _player = null;
+        var player = Interlocked.Exchange(ref _player, null);
         if (player is null)
         {
             return;
@@ -89,3 +105,9 @@ public sealed class AudioFilePreview : IDisposable
         Stop();
     }
 }
+
+/// <summary>Why an <see cref="AudioFilePreview" /> could not play.</summary>
+/// <param name="Error">Windows' class of media failure.</param>
+/// <param name="HResult">The extended error's HRESULT; zero when Windows supplied none.</param>
+/// <param name="Message">Windows' description of the failure; empty when it supplied none.</param>
+public readonly record struct AudioPreviewFailure(MediaPlayerError Error, int HResult, string Message);

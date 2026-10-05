@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Text;
 using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
@@ -20,9 +20,11 @@ public static unsafe partial class WindowsRadio
 
     /// <summary>Reads the Wi-Fi adapter's current state and joined network.</summary>
     /// <returns>
-    ///     The state, signal and network name. On a machine with several adapters this
-    ///     reports the one Windows is actually using.
+    ///     The state, signal and network. On a machine with several adapters this reports the one
+    ///     Windows is actually using. On a machine without a WLAN interface the state is
+    ///     <see cref="WifiConnectionState.Unknown" /> and nothing is joined.
     /// </returns>
+    /// <exception cref="Win32Exception">The WLAN service could not be opened or enumerated.</exception>
     public static WifiStatus GetWifiStatus()
     {
         lock (StatusClientLock)
@@ -43,12 +45,18 @@ public static unsafe partial class WindowsRadio
                 interfaces = _statusClient.Interfaces();
             }
 
+            if (interfaces.Count == 0)
+            {
+                return new WifiStatus(WifiConnectionState.Unknown, 0, string.Empty, null);
+            }
+
             var selected = SelectInterface(interfaces);
             var current = TryCurrentConnection(_statusClient.Handle, selected.Id);
             return new WifiStatus(
                 MapInterfaceState(selected.State),
                 current?.Signal ?? 0,
-                current?.Ssid ?? string.Empty);
+                current?.Key.DisplayText ?? string.Empty,
+                current?.Key);
         }
     }
 
@@ -59,7 +67,11 @@ public static unsafe partial class WindowsRadio
     ///     calling <see cref="ListWifiNetworks" /> immediately, which would return the previous
     ///     results.
     /// </remarks>
-    /// <exception cref="InvalidOperationException">No adapter accepted the scan request.</exception>
+    /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
+    /// <exception cref="Win32Exception">
+    ///     The WLAN service could not be opened, or no adapter accepted the scan request; the native
+    ///     status is <see cref="Win32Exception.NativeErrorCode" />.
+    /// </exception>
     public static void RequestWifiScan()
     {
         using var client = WlanClient.Open();
@@ -68,95 +80,113 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Lists the Wi-Fi networks currently visible.</summary>
-    /// <returns>Networks from every adapter, merged by SSID and ordered strongest first.</returns>
+    /// <returns>
+    ///     Networks from every adapter, one per <see cref="WifiNetworkKey" />, ordered strongest
+    ///     first. Networks that hide their name are not listed.
+    /// </returns>
     /// <remarks>
     ///     Returns the last scan's results rather than scanning — call
     ///     <see cref="RequestWifiScan" /> first for fresh ones. An empty list on a machine that clearly
     ///     has networks nearby usually means location consent is denied; see
     ///     <see cref="GetConsent" />.
     /// </remarks>
+    /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
+    /// <exception cref="Win32Exception">
+    ///     The WLAN service could not be opened, or no adapter's list could be read; the native
+    ///     status is <see cref="Win32Exception.NativeErrorCode" />. Windows 11 24H2 answers
+    ///     <c>ERROR_ACCESS_DENIED</c> (5) while location access is off.
+    /// </exception>
     public static IReadOnlyList<WifiNetwork> ListWifiNetworks()
     {
         using var client = WlanClient.Open();
-        var merged = new Dictionary<string, WifiNetworkFacts>(StringComparer.Ordinal);
+        var merged = new Dictionary<WifiNetworkKey, WifiNetworkFacts>();
         ForEachAdapter(client, false,
             adapter => MergeNetworks(client.Handle, adapter.Id, merged));
         return merged.Values
             .OrderByDescending(network => network.Signal)
-            .ThenBy(network => network.Ssid, StringComparer.Ordinal)
+            .ThenBy(network => network.Key.DisplayText, StringComparer.Ordinal)
+            .ThenBy(network => network.Key.Security)
+            .ThenBy(network => network.Key.Hex, StringComparer.Ordinal)
             .Select(network => new WifiNetwork(
-                network.Ssid,
+                network.Key,
+                network.Key.DisplayText,
                 network.Signal,
-                network.Ambiguous ? WifiSecurity.Unsupported : network.Security,
+                network.Key.Security,
                 network.Saved,
-                network.Connectable && !network.Ambiguous,
+                network.Connectable,
                 network.Connected))
             .ToArray();
     }
 
     /// <summary>Joins a Wi-Fi network, creating or reusing its profile, and waits for the result.</summary>
-    /// <param name="ssid">The network name to join.</param>
+    /// <param name="network">The network to join, as a listed <see cref="WifiNetwork.Key" />.</param>
     /// <param name="passphrase">
     ///     The passphrase, or <see langword="null" /> to use the saved profile
     ///     — which is what <see cref="WifiNetwork.Saved" /> tells you exists. Required for a protected
     ///     network with no saved profile.
     /// </param>
     /// <returns>
-    ///     Zero when joined; otherwise the WLAN reason code. Pass it to
-    ///     <see cref="ReasonText" /> for a message and <see cref="GetReasonVerdict" /> to decide whether
-    ///     retrying or re-prompting for the passphrase is worthwhile.
+    ///     How the attempt ended. For <see cref="WifiConnectOutcome.Failed" /> pass
+    ///     <see cref="WifiConnectResult.ReasonCode" /> to <see cref="ReasonText" /> for a message and to
+    ///     <see cref="GetReasonVerdict" /> to decide whether re-prompting for the passphrase is
+    ///     worthwhile.
     /// </returns>
-    /// <exception cref="ArgumentException"><paramref name="ssid" /> is null or empty.</exception>
+    /// <exception cref="ArgumentException"><paramref name="network" /> is <see langword="default" />.</exception>
+    /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
+    /// <exception cref="Win32Exception">
+    ///     A WLAN call failed: the service could not be opened, the available-network or profile list
+    ///     could not be read (<c>ERROR_ACCESS_DENIED</c> while location access is off on Windows 11
+    ///     24H2), a profile could not be written, or the connection request was refused. Nothing was
+    ///     left changed: a profile written for the attempt was rolled back first.
+    /// </exception>
+    /// <exception cref="AggregateException">
+    ///     The attempt failed and rolling its profile back failed too; both failures are inside.
+    ///     The rollback is not retried.
+    /// </exception>
     /// <remarks>
     ///     Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
     ///     a stored profile before joining a protected network, so one is written first when needed.
-    ///     If an existing profile must be overwritten, its exact XML is restored when the connection
-    ///     fails; a failed key or security negotiation also removes a newly-created profile.
+    ///     A saved profile is chosen as Windows would: the one the adapter is connected with, else the
+    ///     first matching profile in Windows' own priority order. When WLAN reports a definite failure,
+    ///     an overwritten profile gets its exact XML back, and a newly created one is removed when the
+    ///     key or the security settings were refused. A timeout is not a failure: the attempt may still
+    ///     complete, so the profile stays and the result is <see cref="WifiConnectOutcome.Pending" />.
     /// </remarks>
-    public static uint ConnectWifi(string ssid, string? passphrase)
+    public static WifiConnectResult ConnectWifi(WifiNetworkKey network, string? passphrase)
     {
-        ArgumentException.ThrowIfNullOrEmpty(ssid);
+        ThrowIfDefault(network);
         if (passphrase is not null && !WifiProfile.PassphraseIsValid(passphrase))
         {
-            throw new ArgumentException(
-                "The password must be 8-63 printable ASCII characters, or 64 hex digits.",
-                nameof(passphrase));
+            return Refused(WifiConnectRefusal.InvalidPassphrase);
         }
 
         using var client = WlanClient.Open();
         // This call writes profiles, so its name checks and rollback snapshot come from what is
         // stored now. Reads within the call then share one parse of each profile.
         InvalidateSavedProfiles(null);
-        var interfaces = client.Interfaces();
-        var choice = ChooseInterface(client.Handle, interfaces, ssid, passphrase is null);
-        var facts = choice.Facts;
-        if (facts.Ambiguous)
+        var choice = ChooseInterface(client.Handle, client.RequireInterfaces(), network, passphrase is null);
+        var adapterId = choice.Adapter.Id;
+        var targetSsid = network.Ssid.ToArray();
+        var displayName = network.DisplayText;
+        if (passphrase is not null
+            && (!choice.Facts.Visible || network.Security != WifiSecurity.PersonalPsk))
         {
-            throw new InvalidOperationException(
-                "More than one network advertises this display name; it cannot be identified safely.");
+            return Refused(WifiConnectRefusal.UnsupportedAuthentication);
         }
 
-        if (passphrase is not null && facts.Security != WifiSecurity.PersonalPsk)
-        {
-            throw new InvalidOperationException(
-                "This network does not advertise a supported personal-key authentication method.");
-        }
-
-        var targetSsid = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
-        var profiles = ReadProfileSsids(client.Handle, choice.Adapter.Id, true);
-        var profileName = facts.ProfileName;
+        var profileName = choice.ProfileName;
         ProfileMutation? mutation = null;
 
         // Every failure below rolls the profile back once before it is reported.
         Exception Fail(Exception failure)
         {
-            return CombineFailure(failure, TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation));
+            return CombineFailure(failure, TryRollBackProfile(client.Handle, adapterId, mutation));
         }
 
         if (passphrase is not null)
         {
-            mutation = FindFreeProfileName(profiles, ssid, targetSsid);
-            var flavors = facts.Authentication == Dot11AuthWpaPsk
+            mutation = FindFreeProfileName(choice.Profiles, displayName, targetSsid);
+            var flavors = choice.Facts.Authentication == Dot11AuthWpaPsk
                 ? new[]
                 {
                     WifiProfile.PskFlavor.WpaTkip, WifiProfile.PskFlavor.Wpa2Aes,
@@ -168,8 +198,8 @@ public static unsafe partial class WindowsRadio
             {
                 try
                 {
-                    SetProfile(client.Handle, choice.Adapter.Id, WifiProfile.CreatePsk(
-                        mutation.Value.Name, ssid, facts.RawSsid, passphrase, flavor));
+                    SetProfile(client.Handle, adapterId, WifiProfile.CreatePsk(
+                        mutation.Value.Name, displayName, targetSsid, passphrase, flavor));
                     last = null;
                     break;
                 }
@@ -181,12 +211,16 @@ public static unsafe partial class WindowsRadio
 
             if (last is not null)
             {
-                var cleanup = TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation);
-                if (last is WlanReasonException reason
-                    && GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown
-                    && cleanup is null)
+                var cleanup = TryRollBackProfile(client.Handle, adapterId, mutation);
+                if (cleanup is null)
                 {
-                    return reason.ReasonCode;
+                    if (last is WlanReasonException reason
+                        && GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
+                    {
+                        return Failed(reason.ReasonCode);
+                    }
+
+                    ExceptionDispatchInfo.Throw(last);
                 }
 
                 throw CombineFailure(last, cleanup);
@@ -196,30 +230,31 @@ public static unsafe partial class WindowsRadio
         }
         else if (profileName is null)
         {
-            if (facts.Security is not WifiSecurity.Open and not WifiSecurity.EnhancedOpen)
+            // Without a visible network there is no advertised authentication to build a profile for.
+            var security = choice.Facts.Visible ? network.Security : WifiSecurity.Unsupported;
+            if (security is not WifiSecurity.Open and not WifiSecurity.EnhancedOpen)
             {
-                throw new InvalidOperationException(
-                    facts.Security == WifiSecurity.Unsupported
-                        ? "This network's authentication method is not supported."
-                        : "This network needs a password and has no saved profile.");
+                return Refused(security == WifiSecurity.Unsupported
+                    ? WifiConnectRefusal.UnsupportedSecurity
+                    : WifiConnectRefusal.NeedsPassword);
             }
 
-            mutation = FindFreeProfileName(profiles, ssid, targetSsid);
+            mutation = FindFreeProfileName(choice.Profiles, displayName, targetSsid);
             try
             {
-                SetProfile(client.Handle, choice.Adapter.Id, WifiProfile.CreateOpen(
+                SetProfile(client.Handle, adapterId, WifiProfile.CreateOpen(
                     mutation.Value.Name,
-                    ssid,
-                    facts.RawSsid,
-                    facts.Security == WifiSecurity.EnhancedOpen));
+                    displayName,
+                    targetSsid,
+                    security == WifiSecurity.EnhancedOpen));
             }
             catch (WlanReasonException reason)
                 when (GetReasonVerdict(reason.ReasonCode) != WifiFailureKind.Unknown)
             {
-                var cleanup = TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation);
+                var cleanup = TryRollBackProfile(client.Handle, adapterId, mutation);
                 if (cleanup is null)
                 {
-                    return reason.ReasonCode;
+                    return Failed(reason.ReasonCode);
                 }
 
                 throw CombineFailure(reason, cleanup);
@@ -232,15 +267,11 @@ public static unsafe partial class WindowsRadio
             profileName = mutation.Value.Name;
         }
 
-        profileName ??= ssid;
         ConnectionVerdict? verdict;
         uint verdictRegistrationStatus;
         try
         {
-            verdict = ConnectionVerdict.TryStart(
-                choice.Adapter.Id,
-                profileName,
-                out verdictRegistrationStatus);
+            verdict = ConnectionVerdict.TryStart(adapterId, profileName, out verdictRegistrationStatus);
         }
         catch (Exception ex)
         {
@@ -274,7 +305,6 @@ public static unsafe partial class WindowsRadio
             };
             try
             {
-                var adapterId = choice.Adapter.Id;
                 var accepted = WlanConnect(client.Handle, in adapterId, in parameters, 0);
                 if (accepted != ErrorSuccess)
                 {
@@ -282,41 +312,33 @@ public static unsafe partial class WindowsRadio
                 }
 
                 var outcome = verdict.Wait(ConnectTimeout);
-                if (outcome is { Succeeded: true })
+                if (outcome is { Succeeded: true } || IsConnectedTo(client.Handle, adapterId, targetSsid))
                 {
-                    return 0;
+                    return new WifiConnectResult(WifiConnectOutcome.Joined, 0, null);
                 }
 
-                if (outcome is { } failed)
+                if (outcome is not { } failed)
                 {
-                    if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
-                    {
-                        return 0;
-                    }
-
-                    var reason = failed.Reason == 0 ? ErrorNotFound : failed.Reason;
-                    var kind = GetReasonVerdict(reason);
-                    var mustRestore = mutation?.Existed == true
-                                      || kind is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch;
-                    var cleanup = mustRestore
-                        ? TryRollBackProfile(client.Handle, choice.Adapter.Id, mutation)
-                        : null;
-                    if (cleanup is not null)
-                    {
-                        throw CombineFailure(
-                            new WlanReasonException(reason, ReasonText(reason)),
-                            cleanup);
-                    }
-
-                    return reason;
+                    // No verdict is not a failure: the attempt may still complete, so the profile
+                    // it is using stays and nothing is undone.
+                    return new WifiConnectResult(WifiConnectOutcome.Pending, 0, null);
                 }
 
-                if (IsConnectedTo(client.Handle, choice.Adapter.Id, targetSsid))
+                var reason = failed.Reason == 0 ? ErrorNotFound : failed.Reason;
+                var kind = GetReasonVerdict(reason);
+                var mustRestore = mutation?.Existed == true
+                                  || kind is WifiFailureKind.KeyRejected or WifiFailureKind.SecurityMismatch;
+                var cleanup = mustRestore
+                    ? TryRollBackProfile(client.Handle, adapterId, mutation)
+                    : null;
+                if (cleanup is not null)
                 {
-                    return 0;
+                    throw CombineFailure(
+                        new WlanReasonException(reason, ReasonText(reason)),
+                        cleanup);
                 }
 
-                throw Fail(new TimeoutException("The Wi-Fi connection attempt did not complete."));
+                return Failed(reason);
             }
             finally
             {
@@ -330,6 +352,7 @@ public static unsafe partial class WindowsRadio
     ///     Leaves saved profiles in place, so Windows may reconnect automatically. Use
     ///     <see cref="ForgetWifi" /> to stop that.
     /// </remarks>
+    /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
     /// <exception cref="Win32Exception">An adapter refused to disconnect.</exception>
     public static void DisconnectWifi()
     {
@@ -345,46 +368,63 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Forgets a network by deleting every saved profile for it.</summary>
-    /// <param name="ssid">The network name to forget.</param>
+    /// <param name="network">The network to forget, as a listed <see cref="WifiNetwork.Key" />.</param>
+    /// <returns>
+    ///     One entry per profile whose deletion was attempted, with Windows' status. Empty when no
+    ///     profile matched, which is success, not an error.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="network" /> is <see langword="default" />.</exception>
+    /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
+    /// <exception cref="Win32Exception">
+    ///     The WLAN service could not be opened, or an adapter's profile list could not be read.
+    /// </exception>
     /// <remarks>
-    ///     Matches on the SSID inside each profile document rather than on the profile's
-    ///     name, so a profile Windows saved under a different name is still removed. Doing nothing
-    ///     because no profile matched is success, not an error.
+    ///     Matches on the SSID bytes inside each profile document rather than on the profile's name,
+    ///     so a profile Windows saved under a different name is still removed. Every matching profile
+    ///     on every adapter is deleted once, and a failed deletion does not stop the others. A profile
+    ///     whose XML cannot be read is never deleted, because nothing proves which network it is for.
     /// </remarks>
-    public static void ForgetWifi(string ssid)
+    public static IReadOnlyList<WifiForgetResult> ForgetWifi(WifiNetworkKey network)
     {
+        ThrowIfDefault(network);
+        var target = network.Ssid.ToArray();
         using var client = WlanClient.Open();
         // Deletion is chosen from the SSIDs inside stored profiles, so those are read fresh.
         InvalidateSavedProfiles(null);
+        var results = new List<WifiForgetResult>();
         ForEachAdapter(client, true, adapter =>
         {
-            var facts = ReadScanFacts(client.Handle, adapter.Id, ssid);
-            if (facts.Ambiguous)
+            foreach (var profile in ReadProfileSsids(client.Handle, adapter.Id, true))
             {
-                throw new InvalidOperationException(
-                    "More than one network advertises this display name; it cannot be identified safely.");
-            }
+                if (profile.Ssid is not { } ssid || !ssid.AsSpan().SequenceEqual(target))
+                {
+                    continue;
+                }
 
-            var target = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
-            var names = ReadProfileSsids(client.Handle, adapter.Id, true)
-                .Where(profile => profile.Ssid is { } profileSsid
-                                  && profileSsid.AsSpan().SequenceEqual(target))
-                .Select(profile => profile.Name)
-                .Where(name => name is not null)
-                .Select(name => name!)
-                .ToHashSet(StringComparer.Ordinal);
-            if (facts.ProfileName is { Length: > 0 } bound)
-            {
-                names.Add(bound);
-            }
-
-            foreach (var name in names)
-            {
-                var status = WlanDeleteProfile(client.Handle, in adapter.Id, name, 0);
+                var status = WlanDeleteProfile(client.Handle, in adapter.Id, profile.Name, 0);
                 InvalidateSavedProfiles(adapter.Id);
-                CheckWlan("WlanDeleteProfile", status);
+                results.Add(new WifiForgetResult(profile.Name, status));
             }
         });
+        return results;
+    }
+
+    private static void ThrowIfDefault(WifiNetworkKey network)
+    {
+        if (network.IsDefault)
+        {
+            throw new ArgumentException("The Wi-Fi network key names no network.", nameof(network));
+        }
+    }
+
+    private static WifiConnectResult Refused(WifiConnectRefusal refusal)
+    {
+        return new WifiConnectResult(WifiConnectOutcome.Refused, 0, refusal);
+    }
+
+    private static WifiConnectResult Failed(uint reason)
+    {
+        return new WifiConnectResult(WifiConnectOutcome.Failed, reason, null);
     }
 
     /// <summary>
@@ -399,7 +439,7 @@ public static unsafe partial class WindowsRadio
     {
         Exception? last = null;
         var succeeded = false;
-        foreach (var adapter in client.Interfaces())
+        foreach (var adapter in client.RequireInterfaces())
         {
             try
             {
@@ -414,14 +454,14 @@ public static unsafe partial class WindowsRadio
 
         if (last is not null && (requireEvery || !succeeded))
         {
-            throw last;
+            ExceptionDispatchInfo.Throw(last);
         }
     }
 
     private static bool IsConnectedTo(nint client, Guid adapter, byte[] targetSsid)
     {
         return TryCurrentConnection(client, adapter) is { } current
-               && current.RawSsid.AsSpan().SequenceEqual(targetSsid);
+               && current.Key.Ssid.SequenceEqual(targetSsid);
     }
 
     /// <summary>Looks up Windows' own description of a WLAN reason code.</summary>
@@ -456,6 +496,7 @@ public static unsafe partial class WindowsRadio
             : interfaces[0];
     }
 
+    /// <summary>The adapter's joined network, or null when it is not joined to a named one.</summary>
     private static CurrentConnection? TryCurrentConnection(nint client, Guid adapter)
     {
         var status = WlanQueryInterface(
@@ -480,10 +521,18 @@ public static unsafe partial class WindowsRadio
             }
 
             var rawSsid = ReadSsidBytes(current.Association.Ssid);
+            if (rawSsid.Length == 0)
+            {
+                return null;
+            }
+
+            var security = ClassifySecurity(
+                current.Security.SecurityEnabled != 0,
+                current.Security.AuthAlgorithm);
             return new CurrentConnection(
-                Encoding.UTF8.GetString(rawSsid),
-                rawSsid,
-                (int)current.Association.SignalQuality);
+                new WifiNetworkKey(rawSsid, security),
+                (int)current.Association.SignalQuality,
+                NativeText.ReadFixed(current.ProfileName, 256));
         }
         finally
         {
@@ -494,13 +543,9 @@ public static unsafe partial class WindowsRadio
     private static void MergeNetworks(
         nint client,
         Guid adapter,
-        IDictionary<string, WifiNetworkFacts> merged)
+        IDictionary<WifiNetworkKey, WifiNetworkFacts> merged)
     {
-        CheckWlan("WlanGetAvailableNetworkList", ReadAvailableNetworks(
-            client,
-            adapter,
-            static count => $"WLANAPI reported an invalid network count ({count}).",
-            out var networks));
+        CheckWlan("WlanGetAvailableNetworkList", ReadAvailableNetworks(client, adapter, out var networks));
         if (networks.Length == 0)
         {
             return;
@@ -510,49 +555,36 @@ public static unsafe partial class WindowsRadio
             .Where(profile => profile.Ssid is not null)
             .Select(profile => Convert.ToHexString(profile.Ssid!))
             .ToHashSet(StringComparer.Ordinal);
-        var connected = TryCurrentConnection(client, adapter)?.RawSsid;
+        var connected = TryCurrentConnection(client, adapter)?.Key;
         foreach (var network in networks)
         {
-            if (network.Ssid.Length == 0)
+            if (network.RawSsid.Length == 0)
             {
                 continue;
             }
 
-            var raw = network.RawSsid;
-            var key = Convert.ToHexString(raw);
-            var saved = network.ProfileName is not null || savedSsids.Contains(key);
+            var key = new WifiNetworkKey(network.RawSsid, network.Security);
             var facts = new WifiNetworkFacts(
-                network.Ssid,
-                raw,
+                key,
                 network.Signal,
-                network.Security,
-                network.Authentication,
-                saved,
+                network.ProfileName is not null || savedSsids.Contains(key.Hex),
                 network.Connectable,
-                connected is not null && connected.AsSpan().SequenceEqual(raw),
-                network.ProfileName,
-                false);
-            if (merged.TryGetValue(key, out var existing))
-            {
-                merged[key] = MergeNetworkFacts(existing, facts);
-            }
-            else
-            {
-                merged.Add(key, facts);
-            }
+                // By bytes: the connection's own security attributes can classify a transition
+                // network differently from its advertisement, and it is still the joined network.
+                connected is { } joined && joined.Ssid.SequenceEqual(network.RawSsid));
+            merged[key] = merged.TryGetValue(key, out var existing)
+                ? MergeNetworkFacts(existing, facts)
+                : facts;
         }
     }
 
     /// <summary>
-    ///     Reads and decodes one adapter's available networks. Failure handling stays with
-    ///     the caller: a failed status comes back with an empty list, and
-    ///     <paramref name="rejection" /> decides whether an oversized count throws or is cut to the
-    ///     bound.
+    ///     Reads and decodes one adapter's available networks. A failed status comes back with an
+    ///     empty list, for the caller to report.
     /// </summary>
     private static uint ReadAvailableNetworks(
         nint client,
         Guid adapter,
-        Func<uint, string>? rejection,
         out AvailableNetwork[] networks)
     {
         networks = [];
@@ -564,13 +596,11 @@ public static unsafe partial class WindowsRadio
 
         try
         {
-            networks = ReadWlanList(list, 4096, rejection, static (WlanAvailableNetwork item) =>
+            networks = ReadWlanList(list, static (WlanAvailableNetwork item) =>
             {
-                var raw = ReadSsidBytes(item.Ssid);
                 var profileName = NativeText.ReadFixed(item.ProfileName, 256);
                 return new AvailableNetwork(
-                    raw,
-                    Encoding.UTF8.GetString(raw),
+                    ReadSsidBytes(item.Ssid),
                     (int)item.SignalQuality,
                     ClassifySecurity(item.SecurityEnabled != 0, item.DefaultAuthAlgorithm),
                     item.DefaultAuthAlgorithm,
@@ -586,22 +616,25 @@ public static unsafe partial class WindowsRadio
         return status;
     }
 
+    /// <summary>
+    ///     Picks the adapter a join runs on and the saved profile it uses. An adapter that sees the
+    ///     network and has a profile for it wins, then one with a profile when no passphrase was
+    ///     given, then one that sees it.
+    /// </summary>
     private static InterfaceChoice ChooseInterface(
         nint client,
         IReadOnlyList<WlanInterfaceInfo> interfaces,
-        string ssid,
+        WifiNetworkKey network,
         bool needsSavedProfile)
     {
         InterfaceChoice? best = null;
         var bestRank = -1;
-        var observations = new List<WifiNetworkFacts>(interfaces.Count);
         foreach (var adapter in interfaces)
         {
-            var facts = ReadScanFacts(client, adapter.Id, ssid);
-            observations.Add(facts);
-            var visible = facts.RawSsid.Length > 0;
-            var saved = facts.ProfileName is not null;
-            var rank = (visible, saved, needsSavedProfile) switch
+            var facts = ReadScanFacts(client, adapter.Id, network);
+            var profiles = ReadProfileSsids(client, adapter.Id, true);
+            var profileName = ChooseProfile(client, adapter.Id, network, facts, profiles);
+            var rank = (facts.Visible, profileName is not null, needsSavedProfile) switch
             {
                 (true, true, _) => 4,
                 (false, true, true) => 3,
@@ -612,84 +645,83 @@ public static unsafe partial class WindowsRadio
             if (rank > bestRank)
             {
                 bestRank = rank;
-                best = new InterfaceChoice(adapter, facts);
+                best = new InterfaceChoice(adapter, facts, profiles, profileName);
             }
         }
 
-        var selected = best ?? new InterfaceChoice(interfaces[0], WifiNetworkFacts.Empty(ssid));
-        var visibleObservations = observations.Where(item => item.RawSsid.Length > 0).ToArray();
-        if (visibleObservations.Any(item => item.Ambiguous)
-            || visibleObservations.Skip(1).Any(item =>
-                !item.RawSsid.AsSpan().SequenceEqual(visibleObservations[0].RawSsid)
-                || item.Security != visibleObservations[0].Security
-                || item.Authentication != visibleObservations[0].Authentication
-                || (visibleObservations[0].ProfileName is { Length: > 0 } firstProfile
-                    && item.ProfileName is { Length: > 0 } itemProfile
-                    && !string.Equals(firstProfile, itemProfile, StringComparison.Ordinal))))
-        {
-            selected = selected with
-            {
-                Facts = selected.Facts with
-                {
-                    Ambiguous = true,
-                    Security = WifiSecurity.Unsupported,
-                    Authentication = 0,
-                    Connectable = false,
-                    ProfileName = null
-                }
-            };
-        }
-
-        return selected;
+        // RequireInterfaces gave at least one adapter, and every rank beats -1.
+        return best!.Value;
     }
 
-    private static WifiNetworkFacts ReadScanFacts(nint client, Guid adapter, string ssid)
+    /// <summary>What one adapter's scan says about one network.</summary>
+    private static ScanFacts ReadScanFacts(nint client, Guid adapter, WifiNetworkKey network)
     {
-        var facts = WifiNetworkFacts.Empty(ssid);
-        ReadAvailableNetworks(client, adapter, null, out var networks);
-        foreach (var network in networks)
+        // A failed list is reported, not read as "not visible": a scan blocked by location
+        // consent must not turn into a security refusal or a write.
+        CheckWlan("WlanGetAvailableNetworkList", ReadAvailableNetworks(client, adapter, out var networks));
+        var visible = false;
+        var authentication = 0;
+        var strongest = -1;
+        List<string> boundProfiles = [];
+        foreach (var entry in networks)
         {
-            if (!string.Equals(network.Ssid, ssid, StringComparison.Ordinal))
+            if (entry.Security != network.Security || !network.Ssid.SequenceEqual(entry.RawSsid))
             {
                 continue;
             }
 
-            var raw = network.RawSsid;
-            var profileName = network.ProfileName;
-            var sameRaw = facts.RawSsid.Length == 0
-                          || facts.RawSsid.AsSpan().SequenceEqual(raw);
-            var conflictingIdentity = facts.RawSsid.Length > 0
-                                      && (!sameRaw
-                                          || facts.Security != network.Security
-                                          || facts.Authentication != network.Authentication
-                                          || (facts.ProfileName is { Length: > 0 } existingProfile
-                                              && profileName is { Length: > 0 }
-                                              && !string.Equals(
-                                                  existingProfile,
-                                                  profileName,
-                                                  StringComparison.Ordinal)));
-            facts = facts with
+            visible = true;
+            if (entry.Signal > strongest)
             {
-                RawSsid = facts.RawSsid.Length == 0 ? raw : facts.RawSsid,
-                Ambiguous = facts.Ambiguous || conflictingIdentity,
-                Security = conflictingIdentity ? WifiSecurity.Unsupported : network.Security,
-                Authentication = conflictingIdentity ? 0 : network.Authentication,
-                ProfileName = conflictingIdentity ? null : profileName ?? facts.ProfileName
-            };
+                strongest = entry.Signal;
+                authentication = entry.Authentication;
+            }
+
+            if (entry.ProfileName is { } bound && !boundProfiles.Contains(bound))
+            {
+                boundProfiles.Add(bound);
+            }
         }
 
-        if (facts.ProfileName is null)
+        return new ScanFacts(visible, authentication, boundProfiles);
+    }
+
+    /// <summary>
+    ///     The saved profile a join uses: the one the adapter is connected with when it is joined to
+    ///     this network, else the first in Windows' own priority order that Windows matched to the
+    ///     network or that carries its SSID bytes.
+    /// </summary>
+    private static string? ChooseProfile(
+        nint client,
+        Guid adapter,
+        WifiNetworkKey network,
+        ScanFacts facts,
+        IReadOnlyList<SavedProfile> profiles)
+    {
+        if (TryCurrentConnection(client, adapter) is { } current
+            && current.Key == network
+            && current.ProfileName.Length > 0)
         {
-            var target = facts.RawSsid.Length == 0 ? Encoding.UTF8.GetBytes(ssid) : facts.RawSsid;
-            facts = facts with
-            {
-                ProfileName = ReadProfileSsids(client, adapter, false)
-                    .FirstOrDefault(profile => profile.Ssid is { } profileSsid
-                                               && profileSsid.AsSpan().SequenceEqual(target)).Name
-            };
+            return current.ProfileName;
         }
 
-        return facts;
+        foreach (var profile in profiles)
+        {
+            if (facts.BoundProfiles.Contains(profile.Name))
+            {
+                return profile.Name;
+            }
+        }
+
+        foreach (var profile in profiles)
+        {
+            if (profile.Ssid is { } ssid && network.Ssid.SequenceEqual(ssid))
+            {
+                return profile.Name;
+            }
+        }
+
+        return facts.BoundProfiles.Count > 0 ? facts.BoundProfiles[0] : null;
     }
 
     private static IReadOnlyList<SavedProfile> ReadProfileSsids(
@@ -716,8 +748,7 @@ public static unsafe partial class WindowsRadio
         string[] names;
         try
         {
-            names = ReadWlanList(list, 4096, null,
-                static (WlanProfileInfo record) => NativeText.ReadFixed(record.Name, 256));
+            names = ReadWlanList(list, static (WlanProfileInfo record) => NativeText.ReadFixed(record.Name, 256));
         }
         finally
         {
@@ -806,7 +837,9 @@ public static unsafe partial class WindowsRadio
 
     private static string? TryReadProfileXml(nint client, Guid adapter, string name)
     {
-        var status = WlanGetProfile(client, in adapter, name, 0, out var xml, out _, out _);
+        // In and out: zero asks for the key protected, never in plain text.
+        var flags = 0u;
+        var status = WlanGetProfile(client, in adapter, name, 0, out var xml, ref flags, out _);
         if (status != ErrorSuccess || xml == 0)
         {
             return null;
@@ -836,6 +869,7 @@ public static unsafe partial class WindowsRadio
             : WlanFailure("WlanSetProfile", status);
     }
 
+    /// <summary>Puts a replaced profile's XML back, or deletes a profile the attempt created.</summary>
     private static void RollBackProfile(
         nint client,
         Guid adapter,
@@ -846,15 +880,9 @@ public static unsafe partial class WindowsRadio
             return;
         }
 
-        if (authored.Existed)
+        if (authored.PreviousXml is { } previous)
         {
-            if (authored.PreviousXml is null)
-            {
-                throw new InvalidOperationException(
-                    $"The previous Wi-Fi profile '{authored.Name}' was not available for rollback.");
-            }
-
-            SetProfile(client, adapter, authored.PreviousXml);
+            SetProfile(client, adapter, previous);
             return;
         }
 
@@ -887,18 +915,27 @@ public static unsafe partial class WindowsRadio
         return cleanupFailure is null ? failure : new AggregateException(failure, cleanupFailure);
     }
 
-    private readonly record struct CurrentConnection(string Ssid, byte[] RawSsid, int Signal);
+    private readonly record struct CurrentConnection(WifiNetworkKey Key, int Signal, string ProfileName);
 
     private readonly record struct AvailableNetwork(
         byte[] RawSsid,
-        string Ssid,
         int Signal,
         WifiSecurity Security,
         int Authentication,
         bool Connectable,
         string? ProfileName);
 
-    private readonly record struct InterfaceChoice(WlanInterfaceInfo Adapter, WifiNetworkFacts Facts);
+    /// <summary>What one adapter's scan says about one network.</summary>
+    /// <param name="Visible">Whether the adapter sees the network now.</param>
+    /// <param name="Authentication">The strongest observation's default authentication algorithm.</param>
+    /// <param name="BoundProfiles">Profile names Windows matched to the network, in list order.</param>
+    private readonly record struct ScanFacts(bool Visible, int Authentication, IReadOnlyList<string> BoundProfiles);
+
+    private readonly record struct InterfaceChoice(
+        WlanInterfaceInfo Adapter,
+        ScanFacts Facts,
+        IReadOnlyList<SavedProfile> Profiles,
+        string? ProfileName);
 
     private sealed class WlanReasonException(uint reasonCode, string message)
         : Win32Exception((int)reasonCode, message)

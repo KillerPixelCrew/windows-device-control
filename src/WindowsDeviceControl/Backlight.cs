@@ -5,8 +5,8 @@ namespace WindowsDeviceControl;
 
 /// <summary>Flat Win32 control of the internal panel's backlight through <c>\\.\LCD</c>.</summary>
 /// <remarks>
-///     The ACPI backlight driver's legacy device interface. Device verification on the reference Claw
-///     showed that values written here read back identically through
+///     The ACPI backlight driver's legacy device interface. Verified on a device whose AC and DC levels
+///     track one slider: values written here read back identically through
 ///     <c>WmiMonitorBrightnessMethods</c>; the direct interface reaches the same driver with one small,
 ///     synchronous Win32 transaction and no WMI session.
 ///     <para>
@@ -28,11 +28,17 @@ public static class Backlight
     private const uint IoctlVideoQueryDisplayBrightness = 0x230498;
     private const uint IoctlVideoSetDisplayBrightness = 0x23049C;
 
+    /// <summary>DISPLAYPOLICY_DC: the driver reports the battery level only.</summary>
+    private const byte PolicyDc = 0x02;
+
     /// <summary>DISPLAYPOLICY_AC | DISPLAYPOLICY_DC: apply to both power sources.</summary>
     private const byte PolicyBoth = 0x03;
 
     /// <summary>Reads the panel's current backlight level.</summary>
-    /// <param name="percent">The level, 0 to 100, when this returns true.</param>
+    /// <param name="percent">
+    ///     The level, 0 to 100, when this returns true: the level of the power source the driver's
+    ///     policy byte names, which is the AC level unless the driver reports DC only.
+    /// </param>
     /// <returns>Whether the panel exposes a readable backlight.</returns>
     public static unsafe bool TryReadBrightness(out int percent)
     {
@@ -59,9 +65,17 @@ public static class Backlight
             return false;
         }
 
-        // The AC level; on the reference device both levels track the same slider.
-        percent = buffer[1];
+        percent = LevelFor(new ReadOnlySpan<byte>(buffer, 3));
         return percent is >= 0 and <= 100;
+    }
+
+    /// <summary>
+    ///     The level a <c>DISPLAY_BRIGHTNESS</c> reply reports for its own policy: the DC byte for a
+    ///     DC-only policy, the AC byte for AC and for both.
+    /// </summary>
+    internal static byte LevelFor(ReadOnlySpan<byte> brightness)
+    {
+        return brightness[0] == PolicyDc ? brightness[2] : brightness[1];
     }
 
     /// <summary>Sets the panel's backlight level on both power sources.</summary>

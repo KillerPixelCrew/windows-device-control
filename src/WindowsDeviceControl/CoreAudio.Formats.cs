@@ -16,6 +16,9 @@ public static partial class CoreAudio
     private const ushort WaveFormatExtensibleExtraSize = 22;
     private const uint ShareModeExclusive = 1;
 
+    /// <summary>AUDCLNT_E_DEVICE_INVALIDATED: the endpoint went away.</summary>
+    private const int DeviceInvalidated = unchecked((int)0x88890004);
+
     private static readonly Guid AudioClientId =
         new("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
 
@@ -140,7 +143,11 @@ public static partial class CoreAudio
     ///     The accepted formats, channel count first, then sample rate, then bit depth; empty
     ///     when the call fails.
     /// </param>
-    /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <returns>
+    ///     Zero on success, otherwise the HRESULT Core Audio returned. A device invalidated or an
+    ///     audio service that stopped during the probe fails the whole call with that HRESULT rather
+    ///     than reporting the formats probed so far as complete.
+    /// </returns>
     /// <remarks>
     ///     Each candidate from 1 to 8 channels, 44.1 to 192 kHz and 16 to 32 bits is offered to
     ///     the driver in exclusive mode, which is the documented question behind that tab. The
@@ -149,8 +156,7 @@ public static partial class CoreAudio
     /// </remarks>
     public static int ListSupportedDeviceFormats(string endpointId, out IReadOnlyList<AudioDeviceFormat> formats)
     {
-        var accepted = new List<AudioDeviceFormat>();
-        formats = accepted;
+        formats = [];
         if (string.IsNullOrEmpty(endpointId))
         {
             return InvalidArgument;
@@ -161,7 +167,8 @@ public static partial class CoreAudio
         var candidate = nint.Zero;
         try
         {
-            var result = Enumerator().GetDevice(endpointId, out device);
+            var enumerator = Enumerator();
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
             if (result < 0 || device is null)
             {
                 return result < 0 ? result : Failure;
@@ -174,26 +181,21 @@ public static partial class CoreAudio
             }
 
             candidate = Marshal.AllocCoTaskMem(Marshal.SizeOf<WaveFormatExtensible>());
-            foreach (var channels in CandidateChannelCounts)
-            {
-                foreach (var rate in CandidateSampleRates)
+            var probe = client;
+            var buffer = candidate;
+            result = ProbeDeviceFormats(
+                format =>
                 {
-                    foreach (var bits in CandidateBitDepths)
-                    {
-                        var format = AudioDeviceFormat.Pcm(channels, rate, bits);
-                        Marshal.StructureToPtr(BuildFormat(format), candidate, false);
-                        var closest = nint.Zero;
-                        var verdict = client.IsFormatSupported(ShareModeExclusive, candidate, out closest);
-                        Marshal.FreeCoTaskMem(closest);
-                        if (verdict == 0)
-                        {
-                            accepted.Add(format);
-                        }
-                    }
-                }
+                    Marshal.StructureToPtr(BuildFormat(format), buffer, false);
+                    return probe.IsFormatSupported(ShareModeExclusive, buffer, 0);
+                },
+                out var accepted);
+            if (result == 0)
+            {
+                formats = accepted;
             }
 
-            return 0;
+            return result;
         }
         catch (COMException ex)
         {
@@ -205,6 +207,45 @@ public static partial class CoreAudio
             Release(client);
             Release(device);
         }
+    }
+
+    /// <summary>Offers every candidate format to the driver's verdict and keeps the accepted ones.</summary>
+    /// <param name="verdict">Answers one candidate with the HRESULT <c>IsFormatSupported</c> returned.</param>
+    /// <param name="formats">The accepted formats in candidate order; empty when the probe fails.</param>
+    /// <returns>
+    ///     Zero, or the HRESULT that says the device or the audio service went away, which ends
+    ///     the probe at once. Every other refusal only skips its candidate: unsupported formats,
+    ///     exclusive mode turned off for the device, and drivers that answer E_INVALIDARG for a
+    ///     single layout.
+    /// </returns>
+    internal static int ProbeDeviceFormats(
+        Func<AudioDeviceFormat, int> verdict,
+        out IReadOnlyList<AudioDeviceFormat> formats)
+    {
+        formats = [];
+        var accepted = new List<AudioDeviceFormat>();
+        foreach (var channels in CandidateChannelCounts)
+        {
+            foreach (var rate in CandidateSampleRates)
+            {
+                foreach (var bits in CandidateBitDepths)
+                {
+                    var format = AudioDeviceFormat.Pcm(channels, rate, bits);
+                    var answer = verdict(format);
+                    if (answer == 0)
+                    {
+                        accepted.Add(format);
+                    }
+                    else if (answer is DeviceInvalidated or AudioServiceNotRunning)
+                    {
+                        return answer;
+                    }
+                }
+            }
+        }
+
+        formats = accepted;
+        return 0;
     }
 
     /// <summary>The speaker mask Windows pairs with a channel count when the caller has no better one.</summary>

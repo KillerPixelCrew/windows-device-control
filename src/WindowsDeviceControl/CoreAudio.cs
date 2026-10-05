@@ -219,14 +219,17 @@ public static partial class CoreAudio
 
     /// <summary>Lists the active audio endpoints in one direction.</summary>
     /// <param name="direction">Playback or recording endpoints.</param>
-    /// <param name="endpoints">The endpoints found, newest state; empty when the call fails.</param>
+    /// <param name="endpoints">
+    ///     The endpoints found, newest state; empty when the call fails. An endpoint Windows
+    ///     gives no friendly name has an empty <see cref="AudioEndpoint.Name" />.
+    /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int ListEndpoints(
         AudioDirection direction,
         out IReadOnlyList<AudioEndpoint> endpoints)
     {
+        endpoints = [];
         var records = new List<AudioEndpoint>();
-        endpoints = records;
         if (!IsDirection(direction))
         {
             return InvalidArgument;
@@ -238,16 +241,16 @@ public static partial class CoreAudio
         {
             var enumerator = Enumerator();
             var dataFlow = (DataFlow)direction;
-            var result = enumerator.EnumAudioEndpoints(
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.EnumAudioEndpoints(
                 dataFlow,
                 DeviceStateActive,
-                out collection);
+                out collection));
             string? defaultId = null;
             if (result >= 0
-                && enumerator.GetDefaultAudioEndpoint(
+                && ForgetEnumeratorIfGone(enumerator, enumerator.GetDefaultAudioEndpoint(
                     dataFlow,
                     AudioRole.Console,
-                    out defaultDevice) >= 0
+                    out defaultDevice)) >= 0
                 && defaultDevice is not null)
             {
                 defaultDevice.GetId(out defaultId);
@@ -277,9 +280,7 @@ public static partial class CoreAudio
                     }
 
                     var name = ReadStringProperty(device, DeviceFriendlyNameKey, static value => value.StringValue)
-                        is { Length: > 0 } friendlyName
-                        ? friendlyName
-                        : "Audio device";
+                               ?? string.Empty;
                     records.Add(new AudioEndpoint(
                         id,
                         name,
@@ -292,6 +293,7 @@ public static partial class CoreAudio
             }
 
             records.Sort(CompareEndpoints);
+            endpoints = records;
             return result;
         }
         catch (COMException ex)
@@ -430,7 +432,7 @@ public static partial class CoreAudio
         IMMDevice? device = null;
         try
         {
-            var result = enumerator.GetDevice(endpointId, out device);
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
             if (result < 0)
             {
                 return result;
@@ -454,7 +456,7 @@ public static partial class CoreAudio
         IMMDevice? device = null;
         try
         {
-            var result = enumerator.GetDefaultAudioEndpoint(flow, role, out device);
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDefaultAudioEndpoint(flow, role, out device));
             return result < 0 || device is null ? result : device.GetId(out endpointId);
         }
         finally
@@ -535,7 +537,8 @@ public static partial class CoreAudio
         IAudioEndpointVolume? volume = null;
         try
         {
-            var result = Enumerator().GetDevice(endpointId, out device);
+            var enumerator = Enumerator();
+            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
             if (result < 0 || device is null)
             {
                 return result < 0 ? result : Failure;
@@ -630,10 +633,11 @@ public static partial class CoreAudio
         out IAudioEndpointVolume? volume)
     {
         volume = null;
-        var result = Enumerator().GetDefaultAudioEndpoint(
+        var enumerator = Enumerator();
+        var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDefaultAudioEndpoint(
             (DataFlow)direction,
             AudioRole.Console,
-            out device);
+            out device));
         if (result < 0 || device is null)
         {
             return result;
@@ -666,7 +670,10 @@ public static partial class CoreAudio
 
     /// <summary>One active Core Audio endpoint.</summary>
     /// <param name="Id">The opaque endpoint identifier used when selecting it.</param>
-    /// <param name="Name">The friendly name shown to the user.</param>
+    /// <param name="Name">
+    ///     The friendly name Windows reports, for display; empty when Windows has none, so the
+    ///     caller chooses its own fallback wording.
+    /// </param>
     /// <param name="IsDefault">Whether it is the current console default.</param>
     public readonly record struct AudioEndpoint(string Id, string Name, bool IsDefault);
 

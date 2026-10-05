@@ -4,6 +4,10 @@ using System.Runtime.InteropServices;
 namespace WindowsDeviceControl;
 
 /// <summary>One pre-opened waveOut stream for the short volume feedback cue.</summary>
+/// <remarks>
+///     Single owner and not thread-safe: <see cref="Play" /> and <see cref="Dispose" /> are called from
+///     one thread at a time.
+/// </remarks>
 public sealed partial class WaveOutFeedback : IDisposable
 {
     private const uint WaveMapper = uint.MaxValue;
@@ -45,6 +49,10 @@ public sealed partial class WaveOutFeedback : IDisposable
 
         if (!driverReleasedBuffers)
         {
+            // Forget the pointers rather than keep them: a later Dispose must find nothing to free,
+            // or it would undo the deliberate leak and hand the driver freed heap after all.
+            _header = 0;
+            _samples = 0;
             return;
         }
 
@@ -67,8 +75,9 @@ public sealed partial class WaveOutFeedback : IDisposable
     ///     caller owns it and must dispose it.
     /// </param>
     /// <returns>
-    ///     Zero on success, otherwise an HRESULT containing the <c>MMRESULT</c> waveOut
-    ///     returned.
+    ///     Zero on success, otherwise an HRESULT built from the <c>MMRESULT</c> waveOut returned:
+    ///     the Win32 facility with the <c>MMRESULT</c> in its low word, so it is not a Win32 error
+    ///     code despite the facility.
     /// </returns>
     /// <remarks>
     ///     Opening is separated from playing on purpose: opening a waveOut endpoint takes
@@ -105,8 +114,15 @@ public sealed partial class WaveOutFeedback : IDisposable
             return HResultFromMultimedia(1);
         }
 
-        var header = Marshal.PtrToStructure<WaveHeader>(_header);
-        if (IsQueued(header.Flags))
+        uint flags;
+        unsafe
+        {
+            // A direct read of the blittable header the driver updates; a volume key repeats this
+            // faster than the cue lasts, so it copies no structure through the marshaller.
+            flags = ((WaveHeader*)_header)->Flags;
+        }
+
+        if (IsQueued(flags))
         {
             return 0;
         }
@@ -117,7 +133,7 @@ public sealed partial class WaveOutFeedback : IDisposable
 
     private int OpenCore()
     {
-        var format = new WaveFormat
+        var format = new CoreAudio.WaveFormat
         {
             FormatTag = PcmFormat,
             Channels = 1,
@@ -188,7 +204,7 @@ public sealed partial class WaveOutFeedback : IDisposable
     private static partial uint WaveOutOpen(
         out nint output,
         uint deviceId,
-        ref WaveFormat format,
+        ref CoreAudio.WaveFormat format,
         nint callback,
         nint instance,
         uint flags);
@@ -207,18 +223,6 @@ public sealed partial class WaveOutFeedback : IDisposable
 
     [LibraryImport("winmm.dll", EntryPoint = "waveOutClose")]
     private static partial uint WaveOutClose(nint output);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WaveFormat
-    {
-        internal ushort FormatTag;
-        internal ushort Channels;
-        internal uint SamplesPerSecond;
-        internal uint AverageBytesPerSecond;
-        internal ushort BlockAlign;
-        internal ushort BitsPerSample;
-        internal ushort ExtraSize;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WaveHeader

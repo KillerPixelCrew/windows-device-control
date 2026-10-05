@@ -43,29 +43,33 @@ using WindowsDeviceControl;
 var status   = WindowsRadio.GetWifiStatus();
 var networks = WindowsRadio.ListWifiNetworks();
 WindowsRadio.RequestWifiScan();
-uint reason  = WindowsRadio.ConnectWifi("MyNetwork", "passphrase");   // 0 = joined
-if (reason != 0)
+var network  = networks[0].Key;                                       // SSID bytes + security
+var joined   = WindowsRadio.ConnectWifi(network, "passphrase");      // Joined, Failed, Pending, Refused
+if (joined.Outcome == WindowsRadio.WifiConnectOutcome.Failed)
 {
-    Console.WriteLine(WindowsRadio.ReasonText(reason));               // Windows' own wording
+    Console.WriteLine(WindowsRadio.ReasonText(joined.ReasonCode));    // Windows' own wording
     // ...and only re-prompt when the key was actually the problem.
-    if (WindowsRadio.GetReasonVerdict(reason) == WindowsRadio.WifiFailureKind.KeyRejected)
+    if (WindowsRadio.GetReasonVerdict(joined.ReasonCode) == WindowsRadio.WifiFailureKind.KeyRejected)
         AskForPassphraseAgain();
 }
-WindowsRadio.ForgetWifi("MyNetwork");
+WindowsRadio.ForgetWifi(network);                                    // every matching profile
+
+// Change feeds: one disposable registration per call; disposing it is the stop
+using var wifiWatch = WindowsRadio.StartWifiWatch(change => Post(change));
 
 // Bluetooth, including the pairing ceremony
 foreach (var d in WindowsRadio.ListBluetoothDevices(pairedOnly: false))
     Console.WriteLine($"{d.Name} paired={d.Paired} connected={d.Connected}");
 
-WindowsRadio.PairBluetooth(deviceId, onRequest: request =>
+var paired = await WindowsRadio.PairBluetoothAsync(deviceId, onRequest: request =>
 {
-    // Show request.Pin in your own UI, then answer before the deferral expires.
+    // Show request.Pin in your own UI, then answer before the attempt's deadline.
     WindowsRadio.RespondToPairing(request.Token, accept: true, pin: null);
-});
+}, cancellationToken);                                                // TimeoutException after 90 s
 
-// Radio power (airplane-mode aware)
+// Radio power (airplane-mode aware), with each adapter's answer
 WindowsRadio.GetPower(WindowsRadio.RadioKind.Bluetooth);
-WindowsRadio.SetPower(WindowsRadio.RadioKind.WiFi, on: true);
+var power = WindowsRadio.SetPower(WindowsRadio.RadioKind.WiFi, on: true); // power.Access, power.Adapters
 
 // Audio
 CoreAudio.ListEndpoints(CoreAudio.AudioDirection.Render, out var outputs);
@@ -83,11 +87,11 @@ CoreAudio.SetDeviceFormat(outputs[0].Id, CoreAudio.AudioDeviceFormat.Pcm(channel
 if (Backlight.TryReadBrightness(out int percent))
     Backlight.TrySetBrightness(Math.Min(100, percent + 10));
 
-// Active CCD topology and a hotplug-safe wait. Persist DevicePath and EDID IDs,
-// then discard saved adapter/target coordinates after every topology change.
+// Active CCD topology. Persist DevicePath and EDID IDs, then discard saved
+// adapter/target coordinates after every topology change.
 DisplayTopologySnapshot topology = DisplayTopology.CaptureActive();
 DisplayTargetIdentity television = topology.Paths[0].Target;
-var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSeconds(15), cancellationToken);
+DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, AlreadySet, Refused, ...
 ```
 
 | Type                  | Role                                                                                                                                         |
@@ -97,10 +101,10 @@ var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSe
 | `CoreAudio`           | Endpoints, default-endpoint switching, volume and mute per direction, change watches (`StartVolumeWatch`, `StartEndpointWatch`), spatial sound, default format and channel layout, Bluetooth audio connect and disconnect |
 | `Backlight`           | Internal panel brightness over the ACPI backlight device                                                                                     |
 | `WaveOutFeedback`     | The short click Windows itself plays for volume feedback                                                                                     |
-| `DisplayTopology`     | Active CCD paths, rematchable monitor identities, and cancellable display-appearance waits                                                   |
+| `DisplayTopology`     | Active CCD paths and rematchable monitor identities                                                                                          |
 | `DisplayLayouts`      | Complete desktop arrangements by value: which monitors are on, which is primary, position, mode, scaling and HDR                             |
 | `DisplayScaling`      | One display's Windows scaling percentage, read and written through the relative-step packets                                                 |
-| `DisplayColor`        | One display's advanced colour (HDR) state, with support re-read before every write                                                           |
+| `DisplayColor`        | One display's advanced colour (HDR) state, with support read before every write                                                              |
 | `WindowsPower`        | Schemes, AC and DC values, effective mode overlays, suspend and shutdown, hybrid core placement                                              |
 | `WindowsPowerRequest` | A display or system wake request and its reason string                                                                                       |
 | `WindowsWakeSecurity` | Wake-policy recovery values, capture and restore                                                                                             |
@@ -109,11 +113,16 @@ var wait = await DisplayTopology.WaitForPresentAsync(television, TimeSpan.FromSe
 Every public member is documented and the build fails on one that is not, so IntelliSense is the reference, including
 which callbacks arrive on a Windows service thread and which calls return before the work they started has finished.
 
-Two integer contracts are kept on purpose, because renaming them would hide what they are.
-`ConnectWifi` returns Windows' raw WLAN reason code, which you pass to `ReasonText` or
-`GetReasonVerdict`, and the `CoreAudio` methods returning `int` return HRESULTs. Everything else is a named enum: radio
-kind, audio direction, network security, connection state, pairing kind and outcome, watch events, volume-key commands
-and Wi-Fi failure classification.
+Native codes are kept on purpose, because renaming them would hide what they are. A failed `ConnectWifi` carries
+Windows' raw WLAN reason code, which you pass to `ReasonText` or `GetReasonVerdict`; a failed WLAN list or scan is a
+`Win32Exception` whose `NativeErrorCode` is the WLAN status (5 is the Windows 11 24H2 location gate); and the
+`CoreAudio` methods returning `int` return HRESULTs. Everything else is a named enum: radio kind, audio direction,
+network security, connection state and outcome, pairing kind and outcome, watch events, volume-key commands and Wi-Fi
+failure classification.
+
+A Wi-Fi network is identified by its `WifiNetworkKey`, the SSID's exact bytes plus its security class, never by display
+text: two names can decode to the same text, and the same name can be advertised with different security. Every watch
+returns a registration of its own; several can run side by side, and disposing one is that registration's stop.
 
 ## What Windows will still refuse you
 
@@ -138,16 +147,20 @@ not work. Read it before changing how a Windows API is called.
 Display identity uses the monitor device-interface path as its primary rematching key. EDID manufacturer and product IDs
 are a fallback for when neither observation has a device path. Friendly names and `DISPLAY1` numbering are presentation
 data. Adapter LUID and target ID describe the current route and have to be refreshed after hotplug. Enumeration retries
-the documented sizing race and stays read-only.
-
-`WaitForPresentAsync` polls fresh complete CCD snapshots, and timeout and cancellation never change display state.
-`WaitForAvailableAsync` queries all CCD paths and requires target availability instead, so a caller can wait for a
-connected but disabled display before applying a layout.
-
-Display discovery bounds CCD buffers at 4,096 possible routes and 8,192 mode records. Possible source and target
+the documented sizing race, sizes its buffers from what Windows reports and stays read-only. Possible source and target
 combinations can be far larger than the active display count: a desktop query on 2026-09-13 returned 284 possible routes
-and three active ones. The bound applies to both the editable layout and the native topology paths, before allocating
-their buffers.
+and three active ones.
+
+One display whose name cannot be read (a monitor dropping out, an indirect or virtual display) does not hide the others:
+`CaptureActive` leaves it out, and a lookup by identity reports that display as unreadable rather than inactive only
+when the unreadable path sits on its last known route.
+
+The library has no wait of its own. A caller waiting for a monitor to arrive repeats `DisplayLayouts.Observe()` and acts
+once two fingerprints a moment apart agree, on whatever timing and cancellation it needs.
+
+Every display write in the process (layout apply, mode apply, the transient primary mode, scaling and advanced colour)
+takes one shared gate, so two writers never interleave; reads take no lock. A write Windows accepts is the result and is
+not read back. Results carry outcome codes and native statuses, not text: the caller words them.
 
 ### Editable display layouts
 
@@ -156,24 +169,26 @@ their buffers.
 `Observe()` reports every monitor the adapter can see, active or not, with a fingerprint that only changes when the
 observation does; two equal fingerprints a moment apart are what a caller waits for before acting on an arrival.
 `Capture()` returns the current desktop as values: identity, position, resolution, refresh, rotation, scaling and HDR.
-`Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies and confirms by readback.
+`Validate(layout)` asks Windows without changing anything, and `Apply(layout)` applies once. A layout output's rotation
+of zero keeps whatever rotation the display runs at; any other value is written and compared.
 
-`Describe(layout)` is the rule set on its own. It is pure and touches no display, so an editor can refuse a layout as it
-is typed and a stored layout can be checked while the monitors it names are unplugged.
+`Describe(layout)` is the rule set on its own, returning the `DisplayLayoutProblem` the layout breaks or null. It is
+pure and touches no display, so an editor can refuse a layout as it is typed and a stored layout can be checked while the
+monitors it names are unplugged.
 
 A layout is checked before Windows sees it: at least one display, exactly one at 0,0 as the primary, no duplicates, no
-overlaps, and every display touching the arrangement, because Windows snaps a detached desktop and the readback would
-then never match. A requested monitor that is not connected returns `TargetsAbsent` rather than throwing, so a caller
+overlaps, and every display touching the arrangement, because Windows snaps a detached desktop to something other than
+what was asked for. A requested monitor that is not connected returns `TargetsAbsent` rather than throwing, so a caller
 can wait for a television that only appears once an HDMI switch selects this machine. An arrangement that already
-matches returns
-`AlreadyActive` without writing, which makes compensation idempotent.
+matches returns `AlreadyActive` without writing, which makes compensation idempotent.
 
 The planner supplies a complete configuration: the path already driving a monitor keeps its source, a second display
 never shares one, monitors left out of the layout are supplied inactive, and the target mode index is left invalid so
 the driver picks a signal for the requested resolution and rate. Scaling and HDR are applied per display afterwards, and
-a refusal there is a warning rather than a reason to undo an arrangement that is already on screen. An unconfirmed
-application gets exactly one rollback, and nothing is ever retried automatically. `SDC_TOPOLOGY_SUPPLIED` is
-deliberately not used, because it takes modes from the Windows database and so cannot express position or resolution.
+a refusal there is a typed warning rather than a reason to undo an arrangement that is already on screen. An
+application Windows refuses gets exactly one rollback to the arrangement captured before it, scaling and colour
+included, and nothing is ever retried automatically. `SDC_TOPOLOGY_SUPPLIED` is deliberately not used, because it
+takes modes from the Windows database and so cannot express position or resolution.
 
 Planned source modes use `DISPLAYCONFIG_PIXELFORMAT_32BPP` (4), and requested refresh rates use progressive scan
 ordering. On 2026-09-13, a connected but inactive HISENSE on Windows build 26200 rejected a 3840x2160 at 60 Hz layout
@@ -188,16 +203,17 @@ and [ColorControl's CCD implementation](https://github.com/Maassoft/ColorControl
 ### Supported display modes
 
 `DisplayModes.Read(target)` returns fresh current and driver-validated modes for an active CCD target.
-`DisplayModes.Apply(snapshot, mode)` rechecks the exact route and advertised mode, applies without persisting registry
-settings, confirms readback, and attempts one rollback after an unconfirmed write. Run these blocking driver operations
-on a worker thread. Clone sources are refused, because changing one source affects several targets. Physical visibility
-still needs confirmation at the application level.
+`DisplayModes.Apply(snapshot, mode)` rechecks the exact route and advertised mode and applies once without persisting
+registry settings. A write Windows accepts is `Applied`; a refused one gets one write-back of the captured mode while the
+route is unchanged. Run these blocking driver operations on a worker thread. Clone sources are refused, because changing
+one source affects several targets. Driver acceptance does not prove that a picture is visible.
 
 Native API reference:
 https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
 
 `DisplayEdid.ReadModes(target)` reads recognized progressive timings from the exact monitor's EDID, including when
-Windows has disabled its source. Call it on a worker. It uses
+Windows has disabled its source, with a status that separates a missing monitor, a timed-out lookup and a missing
+descriptor. Call it on a worker. It uses
 [DisplayMonitor.FromInterfaceIdAsync and GetDescriptor](https://learn.microsoft.com/en-us/uwp/api/windows.devices.display.displaymonitor)
 with a three-second interface lookup budget, and no display is activated or tested against the driver. These are
 candidates for a saved layout; the apply path still has to validate the complete arrangement.
@@ -239,19 +255,25 @@ will leave the value alone.
 `RequestActionAsync` supports shutdown, restart and sign-out using the absolute system tool path, and completion means
 the tool accepted the request. Cancellation cannot undo a dispatched operation.
 `TryGetStatus` reports source and battery values with Windows' unknown sentinels intact. Window owners can register
-power-setting notifications and suspend and resume notifications and must unregister their returned handles; the
-suspend and resume registration is what delivers PBT_APMSUSPEND and the resume codes to a message-only window, which
-the broadcast alone never reaches.
+power-setting notifications and suspend and resume notifications. Each returns a `PowerNotificationRegistration` that
+unregisters when disposed, and a refused registration throws `Win32Exception` with the native error. The suspend and
+resume registration is what delivers PBT_APMSUSPEND and the resume codes to a message-only window, which the broadcast
+alone never reaches.
 
 `WindowsPowerRequest` owns a display or system wake request and its reason string. Acquire and Release are idempotent,
 failures throw with native error codes, and a failed release stays held until an explicit retry or disposal. Disposal
-closes the kernel handle without repeating a failed clear. `PowerRequestList.Query` returns null entries and a
-diagnostic when the undocumented Windows layout cannot be read safely, and request-list reads may need elevation.
+closes the kernel handle without repeating a failed clear. `PowerRequestList.Query` returns the entries with a
+`PowerRequestListStatus`: anything other than `Read` comes with null entries, `AccessDenied` when the read needs
+elevation, `QueryFailed` with the NTSTATUS, `UnrecognizedLayout` when the undocumented layout cannot be decoded safely,
+and `Unsupported` in a 32-bit process. The buffer grows until the whole list fits; nothing is truncated.
 
-`WindowsWakeSecurity.Capture` returns wake-policy recovery values, absent values included. Persist that snapshot before
-`DisableSignIn` and keep it until `Restore` succeeds. Registry writes need elevation, and this library never elevates
-and never stores application configuration. Some Windows editions ignore personalization policy even after accepting its
-registry value.
+`WindowsWakeSecurity.Capture` returns wake-policy recovery values, absent values included, and refuses a value that is
+not a DWORD because it could not be restored exactly. Persist that snapshot before writing with `SetConsoleLockPolicy`,
+`SetSchemeConsoleLock` (each scheme from `WindowsPower.EnumerateSchemes`, then `WindowsPower.RefreshActiveScheme`) and
+`SetNoLockScreen`, where -1 deletes a value. `Restore` writes only what the snapshot recorded, skips a scheme removed
+since, attempts every step once and returns the ones that failed; keep the snapshot until it reports none. Registry
+writes need elevation, and this library never elevates and never stores application configuration. Some Windows
+editions ignore personalization policy even after accepting its registry value.
 
 ### Modern Standby wake sources
 
@@ -274,14 +296,15 @@ foreach (WakeDevice device in ModernStandby.EnumerateWakeDevices())
         ModernStandby.TrySetWakeArmed(device.Name, armed: false);
     }
 }
-ModernStandby.RestoreWakeDevices(snapshot);
+IReadOnlyList<WakeDeviceRestoreFailure> failures = ModernStandby.RestoreWakeDevices(snapshot);
 ```
 
 `TrySetWakeArmed` re-reads programmability rather than trusting the caller's record, returns false for a device Windows
 no longer offers, and is idempotent. Writes need elevation: unelevated, Windows fails the set with
 `ERROR_WMI_SET_FAILURE` (4214), which surfaces as a `Win32Exception`.
 `RestoreWakeDevices` touches only devices the snapshot observed, because a device that appeared since has no prior state
-to restore.
+to restore. It enumerates once, attempts every write even after one fails, and returns the devices whose write failed
+with their native error; keep the snapshot until that list is empty.
 
 `WasLastResumeUnattended` reports whether Windows attributes the last resume to something other than the user, meaning a
 wake timer, a device or background work rather than a button, key or lid. It is the one call that separates a wake worth
@@ -329,7 +352,8 @@ preserved as its raw number rather than replaced.
 `AudioFilePreview` owns local audio preview through Windows Media Foundation and the default audio
 route. `Play` takes an existing absolute path; `Stop` releases playback and `Dispose` ends the owner.
 It changes neither endpoint selection nor system volume. Unsupported or corrupt media raises
-`Failed` on the media callback thread. Consumers serialize owner calls and marshal failures to
+`Failed` on the media callback thread with an `AudioPreviewFailure`: Windows' error class, the
+extended HRESULT and its message. Consumers serialize owner calls and marshal failures to
 their UI. A stopped preview's queued failure cannot replace a newer preview's status.
 
 Pre-1.0. The surface can still move before it is frozen, so pin an exact version if that matters to you.

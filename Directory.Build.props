@@ -1,0 +1,15 @@
+<Project>
+  <!-- The repository root. Nothing above it is imported, so the library builds the same standalone
+       and inside a parent checkout. -->
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Builds are deterministic and offline-capable; an unavailable NuGet advisory endpoint must
+         not turn into a compiler failure. -->
+    <NuGetAudit>false</NuGetAudit>
+    <!-- The projects target Windows only. Let the SDK on Linux or macOS restore and analyze them;
+         the Windows build is unchanged. -->
+    <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
+  </PropertyGroup>
+</Project>

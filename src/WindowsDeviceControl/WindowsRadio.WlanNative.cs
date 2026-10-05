@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
@@ -13,30 +14,14 @@ public static unsafe partial class WindowsRadio
 
     /// <summary>Reads the records of a WLAN list: a count, an index, then fixed-size records.</summary>
     /// <param name="list">The list WLANAPI returned. The caller still frees it.</param>
-    /// <param name="maximum">The largest count accepted.</param>
-    /// <param name="rejection">
-    ///     The failure message for a larger count, or null to read only the
-    ///     first <paramref name="maximum" /> records.
-    /// </param>
     /// <param name="read">Decodes one record while the list is still allocated.</param>
-    private static TResult[] ReadWlanList<TRecord, TResult>(
+    /// <remarks>Every record Windows counted is read; the list carries its own count.</remarks>
+    internal static TResult[] ReadWlanList<TRecord, TResult>(
         nint list,
-        uint maximum,
-        Func<uint, string>? rejection,
         Func<TRecord, TResult> read)
         where TRecord : struct
     {
-        var count = (uint)Marshal.ReadInt32(list);
-        if (count > maximum)
-        {
-            if (rejection is not null)
-            {
-                throw new InvalidOperationException(rejection(count));
-            }
-
-            count = maximum;
-        }
-
+        var count = checked((int)(uint)Marshal.ReadInt32(list));
         var start = list + 8;
         var stride = Marshal.SizeOf<TRecord>();
         var results = new TResult[count];
@@ -48,7 +33,7 @@ public static unsafe partial class WindowsRadio
         return results;
     }
 
-    private static byte[] ReadSsidBytes(Dot11Ssid ssid)
+    internal static byte[] ReadSsidBytes(Dot11Ssid ssid)
     {
         var length = Math.Min((int)ssid.Length, 32);
         var bytes = new byte[length];
@@ -89,7 +74,7 @@ public static unsafe partial class WindowsRadio
         string profileName,
         nint reserved,
         out nint profileXml,
-        out uint flags,
+        ref uint flags,
         out uint access);
 
     [LibraryImport("wlanapi.dll", StringMarshalling = StringMarshalling.Utf16)]
@@ -141,8 +126,11 @@ public static unsafe partial class WindowsRadio
     private static partial uint WlanReasonCodeToString(
         uint reasonCode, uint bufferSize, char* buffer, nint reserved);
 
+    /// <summary>One WLAN client handle, closed once however often it is disposed.</summary>
     private sealed class WlanClient : IDisposable
     {
+        private int _closed;
+
         private WlanClient(nint handle)
         {
             Handle = handle;
@@ -152,7 +140,11 @@ public static unsafe partial class WindowsRadio
 
         public void Dispose()
         {
-            WlanCloseHandle(Handle, 0);
+            // A second close of the same raw value could close a handle another client now owns.
+            if (Interlocked.Exchange(ref _closed, 1) == 0)
+            {
+                WlanCloseHandle(Handle, 0);
+            }
         }
 
         public static WlanClient Open()
@@ -166,28 +158,34 @@ public static unsafe partial class WindowsRadio
             return status == ErrorSuccess ? new WlanClient(handle) : null;
         }
 
+        /// <summary>Every WLAN interface; empty on a machine without one.</summary>
         internal IReadOnlyList<WlanInterfaceInfo> Interfaces()
         {
             var status = WlanEnumInterfaces(Handle, 0, out var list);
             CheckWlan("WlanEnumInterfaces", status);
             if (list == 0)
             {
-                throw new InvalidOperationException("Windows reported no WLAN interface.");
+                return [];
             }
 
             try
             {
-                var adapters = ReadWlanList(list, 64,
-                    static count => $"Windows reported {count} WLAN interfaces.",
-                    static (WlanInterfaceInfo adapter) => adapter);
-                return adapters.Length == 0
-                    ? throw new InvalidOperationException("Windows reported 0 WLAN interfaces.")
-                    : adapters;
+                return ReadWlanList(list, static (WlanInterfaceInfo adapter) => adapter);
             }
             finally
             {
                 WlanFreeMemory(list);
             }
+        }
+
+        /// <summary>Every WLAN interface, for an operation that needs at least one.</summary>
+        /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
+        internal IReadOnlyList<WlanInterfaceInfo> RequireInterfaces()
+        {
+            var adapters = Interfaces();
+            return adapters.Count == 0
+                ? throw new InvalidOperationException("Windows reported no WLAN interface.")
+                : adapters;
         }
     }
 
@@ -195,14 +193,14 @@ public static unsafe partial class WindowsRadio
     private delegate void WlanNotificationCallback(nint data, nint context);
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct Dot11Ssid
+    internal struct Dot11Ssid
     {
         internal uint Length;
         internal fixed byte Value[32];
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WlanInterfaceInfo
+    internal struct WlanInterfaceInfo
     {
         internal Guid Id;
         internal fixed char Description[256];
@@ -210,14 +208,14 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WlanProfileInfo
+    internal struct WlanProfileInfo
     {
         internal fixed char Name[256];
         internal uint Flags;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WlanAvailableNetwork
+    internal struct WlanAvailableNetwork
     {
         internal fixed char ProfileName[256];
         internal Dot11Ssid Ssid;
@@ -241,7 +239,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct WlanAssociationAttributes
+    internal struct WlanAssociationAttributes
     {
         internal Dot11Ssid Ssid;
         internal int BssType;
@@ -254,7 +252,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct WlanSecurityAttributes
+    internal struct WlanSecurityAttributes
     {
         internal int SecurityEnabled;
         internal int OneXEnabled;
@@ -263,7 +261,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WlanConnectionAttributes
+    internal struct WlanConnectionAttributes
     {
         internal int State;
         internal int Mode;
@@ -273,7 +271,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct WlanConnectionParameters
+    internal struct WlanConnectionParameters
     {
         internal int Mode;
         internal nint Profile;
@@ -284,7 +282,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct WlanNotificationData
+    internal struct WlanNotificationData
     {
         internal uint Source;
         internal uint Code;
@@ -294,7 +292,7 @@ public static unsafe partial class WindowsRadio
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WlanConnectionNotificationData
+    internal struct WlanConnectionNotificationData
     {
         internal int Mode;
         internal fixed char ProfileName[256];

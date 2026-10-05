@@ -33,10 +33,19 @@ it.
 ## Wi-Fi
 
 Wi-Fi enumeration and connection use the WLAN API. Every WLAN interface participates: scans are
-requested on all adapters, results are merged by their raw SSID bytes, and the strongest observation
-supplies the display signal. Saved profiles are matched through the SSID inside their XML rather than
-by assuming the profile name equals the SSID, which matters after Windows or an administrator renames
-a profile.
+requested on all adapters, results are merged by `WifiNetworkKey` (the raw SSID bytes plus the
+security class), and the strongest observation supplies the display signal. The same name advertised
+with different security is two networks; display text never identifies one. Saved profiles are
+matched through the SSID inside their XML rather than by assuming the profile name equals the SSID,
+which matters after Windows or an administrator renames a profile.
+
+When several saved profiles match, a join uses the one the adapter is connected with, else the first
+in Windows' own priority order. Forget deletes every matching profile on every adapter and reports
+each deletion's status; one refusal does not stop the others.
+
+A failed available-network or profile list is reported with its WLAN status rather than read as an
+empty list, so a scan blocked by location consent never turns into a security refusal or a profile
+write. A machine without a WLAN interface reports an unknown state rather than failing.
 
 ### `WiFiAdapter` is not a replacement for WLANAPI
 
@@ -52,8 +61,8 @@ API is the authoritative answer for an unpackaged process; the store is never us
 
 ### Profile generation rules
 
-- XML-escape every display value and include `<hex>` for the exact SSID bytes, so non-ASCII and
-  otherwise ambiguous network names survive.
+- XML-escape every display value and write `<hex>` for the exact SSID bytes ahead of `<name>`, as
+  Windows itself exports a profile, so non-ASCII and otherwise ambiguous network names survive.
 - Validate personal-network keys before asking Windows to connect: 8-63 printable characters, or
   exactly 64 hexadecimal characters for a raw PSK. Windows' own refusal for a bad key arrives from
   the driver and says nothing a user can act on.
@@ -61,20 +70,26 @@ API is the authoritative answer for an unpackaged process; the store is never us
   additionally gets the WPA-TKIP form Windows expects.
 - Enhanced Open uses OWE and is not presented as an unsecured legacy network. Enterprise and WEP
   networks stay visible, but the library does not invent an EAP or WEP credential flow.
-- Pick a collision-free temporary profile name and fail if the bounded suffix space is exhausted.
+- Pick a collision-free profile name: the network's name, then "name 2", "name 3" and so on. A name
+  held by another network's profile or by an unreadable one is skipped, never overwritten.
 - Create all-user profiles. A user-scope profile cannot be used from a shell-less or elevated
   context and would not appear in Windows' normal network list.
 
 When credentials replace a profile for the same exact SSID, its XML is snapshotted first and
-restored on failure. Unreadable profile XML is never treated as an SSID and is never overwritten or
-deleted by inference. A failed key or authentication attempt removes a newly authored profile.
+restored once when WLAN reports a definite failure. Unreadable profile XML is never treated as an
+SSID and is never overwritten or deleted by inference. A failed key or authentication attempt
+removes a newly authored profile. A request refused before anything is written returns a typed
+refusal (invalid passphrase, unsupported authentication, password needed, unsupported security);
+the caller words it.
 
 ### `WlanConnect` accepting a request is not success
 
 The connection path registers a callback before issuing the request, scopes the verdict to the
 selected interface and profile, waits for the ACM completion or failure notification, and falls back
 to reading the current interface state only when the event does not arrive. When the callback cannot
-be registered, the request is not sent and the failure carries the registration status.
+be registered, the request is not sent and the failure carries the registration status. A wait that
+ends without a verdict is `Pending`, not a failure: the attempt may still complete, so the profile it
+uses stays and nothing is rolled back.
 
 ### Only an authentication or key failure re-prompts for the password
 
@@ -84,10 +99,14 @@ a password that was already correct, while the real cause — range — goes unm
 
 ### Change notification
 
-Live change notification uses ACM and MSM sources, with an ACM-only fallback for drivers that reject
-the combined subscription. Connection-attempt failures are observable changes too. Watch start, stop
-and callback delivery are serialized so replacing or stopping a watch cannot leave a native callback
-targeting discarded state.
+Live change notification registers the ACM source only; scan completion and connection changes,
+connection-attempt failures included, all arrive there. Every `StartWifiWatch` call opens its own
+WLAN handle and returns its own registration, so two consumers never replace each other's feed.
+Disposal is idempotent: it unregisters first, which waits for a running callback, and closes the
+handle after, so the native delegate stays rooted until no call can reach it. Because the unregister
+waits for the running callback, a registration must never be disposed from inside its own callback;
+post the disposal to another thread. Delivery is one callback at a time per registration, and a
+callback exception is contained. The WLAN service ends a registration silently when it restarts.
 
 ## Bluetooth discovery and pairing
 
@@ -95,8 +114,11 @@ Discovery queries classic and LE Association Endpoints through one combined sele
 snapshot groups duplicate endpoints by container identity, while the live watcher keys records by
 Windows AEP id and publishes Added, Updated, and Removed changes as Windows emits them. Device rows
 retain the endpoint id, container id, display name, paired/can-pair flags, and connectivity state.
-Stop revokes every event handler before returning, because `DeviceWatcher.Stop()` is asynchronous
-and can otherwise deliver an event into an object that has already been disposed.
+Every `StartBluetoothWatch` call owns its own watcher and records and returns its own registration.
+Disposal revokes every event handler and waits for a callback that is delivering before returning,
+because `DeviceWatcher.Stop()` is asynchronous and can otherwise deliver an event into an object
+that has already been disposed. A watcher Windows aborts reports one `Stopped` change and nothing
+after it; the consumer disposes that registration and starts a new one.
 
 ### The legacy Win32 Bluetooth API cannot discover LE devices
 
@@ -118,10 +140,12 @@ DisplayPin, ProvidePin and ConfirmPinMatch. Two constraints hang pairing rather 
 - Each request token must complete that deferral at most once, including when a timeout races a
   late UI answer.
 
-Pairing is bounded to 90 seconds. A cancel or timeout completes only that attempt's pending
-deferrals before cancelling the operation; concurrent attempts cannot cancel one another. Repeating
-an answer for an expired token is harmless. Some devices reject the first ceremony mask but accept
-DisplayPin, so one retry with that ceremony is retained. Unpairing uses the same Association Endpoint
+Pairing is bounded by one 90-second deadline that covers both ceremonies, and the caller's token
+can end it sooner. A cancel or timeout completes only that attempt's pending deferrals before
+cancelling the operation; concurrent attempts cannot cancel one another. A request callback that
+throws declines its question and ends the attempt with that exception. Repeating an answer for an
+expired token is harmless. Some devices reject the first ceremony mask but accept DisplayPin, so
+one retry with that ceremony is retained. Unpairing uses the same Association Endpoint
 id and is a separate, destructive action from an audio disconnect.
 
 ## Bluetooth audio

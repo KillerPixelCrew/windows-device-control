@@ -25,6 +25,7 @@ public static partial class WindowsRadio
     /// </exception>
     public static Power GetPower(RadioKind kind)
     {
+        ValidateRadioKind(kind);
         var radios = GetRadios(kind, out var states);
         var power = Power.Absent;
         for (var index = 0; index < radios.Count; index++)
@@ -52,24 +53,23 @@ public static partial class WindowsRadio
     /// <param name="kind">Which radio family to change.</param>
     /// <param name="on">True to turn the radios on, false to turn them off.</param>
     /// <returns>
-    ///     <see cref="Access.Allowed" /> when the change was permitted; otherwise why Windows
-    ///     refused. A refusal is reported, not thrown.
+    ///     Each adapter's answer and the combined <see cref="RadioPowerResult.Access" />. Every
+    ///     adapter is written once; a refusal or a failed write on one adapter is reported in its
+    ///     entry rather than thrown, so a caller can tell a partial change from none. Nothing is
+    ///     read back: each write's own status is its result.
     /// </returns>
-    /// <exception cref="InvalidOperationException">
-    ///     The machine has no adapter of this kind, or no
-    ///     adapter accepted the requested state.
-    /// </exception>
+    /// <exception cref="InvalidOperationException">The machine has no adapter of this kind.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     ///     <paramref name="kind" /> is not a defined
     ///     <see cref="RadioKind" /> value.
     /// </exception>
-    public static Access SetPower(RadioKind kind, bool on)
+    public static RadioPowerResult SetPower(RadioKind kind, bool on)
     {
         ValidateRadioKind(kind);
         var access = RequestAccess();
         if (access != Access.Allowed)
         {
-            return access;
+            return new RadioPowerResult(access, []);
         }
 
         var radios = GetRadios(kind, out _);
@@ -78,32 +78,46 @@ public static partial class WindowsRadio
             throw new InvalidOperationException("Windows reported no radio of the requested kind.");
         }
 
-        Access? refusal = null;
-        Exception? lastFailure = null;
-        foreach (var radio in radios)
+        var adapters = new RadioAdapterResult[radios.Count];
+        for (var index = 0; index < radios.Count; index++)
         {
+            var name = string.Empty;
             try
             {
-                var result = MapAccess(radio.SetStateAsync(on ? RadioState.On : RadioState.Off)
+                name = radios[index].Name ?? string.Empty;
+                var result = MapAccess(radios[index].SetStateAsync(on ? RadioState.On : RadioState.Off)
                     .WaitWinRt());
-                if (result != Access.Allowed)
-                {
-                    refusal ??= result;
-                }
+                adapters[index] = new RadioAdapterResult(name, result, 0);
             }
             catch (Exception ex)
             {
-                lastFailure = ex;
+                adapters[index] = new RadioAdapterResult(name, null, ex.HResult);
             }
         }
 
-        if (lastFailure is not null)
+        return new RadioPowerResult(CombineAdapterAccess(adapters), adapters);
+    }
+
+    /// <summary>
+    ///     Folds adapter answers into one: allowed only when every adapter allowed, otherwise the
+    ///     first refusal, or <see cref="Access.Unspecified" /> when an adapter failed without one.
+    /// </summary>
+    internal static Access CombineAdapterAccess(IReadOnlyList<RadioAdapterResult> adapters)
+    {
+        var failed = false;
+        foreach (var adapter in adapters)
         {
-            throw new InvalidOperationException(
-                "At least one radio did not accept the requested power state.", lastFailure);
+            if (adapter.Access is not { } answer)
+            {
+                failed = true;
+            }
+            else if (answer != Access.Allowed)
+            {
+                return answer;
+            }
         }
 
-        return refusal ?? Access.Allowed;
+        return failed ? Access.Unspecified : Access.Allowed;
     }
 
     /// <summary>Reads the privacy consent recorded for a capability.</summary>
@@ -112,6 +126,10 @@ public static partial class WindowsRadio
     ///     <c>location</c> or <c>radios</c>.
     /// </param>
     /// <returns>The user-scope and machine-scope consent values.</returns>
+    /// <exception cref="ArgumentException">
+    ///     <paramref name="capability" /> is null, empty or white space, which would read the
+    ///     consent store's root instead of a capability.
+    /// </exception>
     /// <remarks>
     ///     Diagnostic only: the owning API remains the authority on what is permitted, and this can
     ///     disagree with it. It exists to answer "why did enumeration return nothing" — on a
@@ -120,6 +138,7 @@ public static partial class WindowsRadio
     /// </remarks>
     public static (Consent User, Consent Machine) GetConsent(string capability)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(capability);
         return (
             ReadConsent(Registry.CurrentUser, capability),
             ReadConsent(Registry.LocalMachine, capability));
@@ -133,8 +152,7 @@ public static partial class WindowsRadio
     /// </param>
     private static IReadOnlyList<Radio> GetRadios(RadioKind kind, out RadioState[]? states)
     {
-        ValidateRadioKind(kind);
-        Radio[] all;
+        Radio[]? all = null;
         RadioState[]? observed = null;
         lock (RadioCacheLock)
         {
@@ -144,11 +162,18 @@ public static partial class WindowsRadio
             {
                 all = cached.Radios;
             }
-            else
+        }
+
+        if (all is null)
+        {
+            // Enumeration can stall in the radio stack, so it runs outside the lock: one stalled
+            // enumeration must not hold up a caller the cache can still serve. Two concurrent misses
+            // may both enumerate; the last one published wins, and both lists are fresh.
+            all = Radio.GetRadiosAsync().WaitWinRt().ToArray();
+            observed = null;
+            lock (RadioCacheLock)
             {
-                all = Radio.GetRadiosAsync().WaitWinRt().ToArray();
                 _radioCache = (Stopwatch.GetTimestamp(), all);
-                observed = null;
             }
         }
 
@@ -171,7 +196,8 @@ public static partial class WindowsRadio
         return radios;
     }
 
-    private static void ValidateRadioKind(RadioKind kind)
+    /// <summary>Refuses an undefined radio kind. Every public member checks it before enumerating.</summary>
+    internal static void ValidateRadioKind(RadioKind kind)
     {
         if (kind is not RadioKind.WiFi and not RadioKind.Bluetooth)
         {

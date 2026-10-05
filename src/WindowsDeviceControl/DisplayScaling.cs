@@ -45,59 +45,67 @@ public static partial class DisplayScaling
                && TryRead(adapter, source, out current, out recommended, out maximum);
     }
 
-    /// <summary>Sets a display's scaling percentage and confirms it by readback.</summary>
+    /// <summary>Sets a display's scaling percentage with one write.</summary>
     /// <param name="target">Monitor identity.</param>
     /// <param name="percent">Requested percentage; snapped to the nearest step this display offers.</param>
-    /// <param name="detail">Set to why the write did not happen, when it did not.</param>
-    /// <returns>True when the display now reports the requested step, or already did.</returns>
-    public static bool TrySet(DisplayTargetIdentity target, int percent, out string detail)
+    /// <returns>
+    ///     <see cref="DisplaySetOutcome.Written" /> when Windows accepted the write, which is not read back;
+    ///     <see cref="DisplaySetOutcome.AlreadySet" /> when the display already ran at that step;
+    ///     <see cref="DisplaySetOutcome.Unsupported" /> when the display's recommended step is not one this
+    ///     library knows; otherwise why nothing was written. <see cref="DisplayScaleResult.Percent" /> is the
+    ///     snapped step.
+    /// </returns>
+    /// <remarks>
+    ///     The current and recommended steps are read first because the write is relative to the
+    ///     recommended one. Serialized with every other display write in the process; a refusal is reported
+    ///     with its native status and never retried here.
+    /// </remarks>
+    public static DisplayScaleResult Set(DisplayTargetIdentity target, int percent)
     {
         ArgumentNullException.ThrowIfNull(target);
-        detail = "";
-        if (!TryFindSource(target, out var adapter, out var source))
+        lock (DisplayTopology.WriteGate)
         {
-            detail = "the display is not active, so its scaling was left alone";
-            return false;
+            return DisplayTopology.FindActive(target, out var path) switch
+            {
+                ActiveLookup.Found => Set(path.SourceInfo.AdapterId, path.SourceInfo.Id, percent),
+                ActiveLookup.NotActive => new DisplayScaleResult(DisplaySetOutcome.NotActive, 0, Snap(percent)),
+                _ => new DisplayScaleResult(DisplaySetOutcome.Unreadable, 0, Snap(percent))
+            };
         }
+    }
 
-        if (!TryRead(adapter, source, out var current, out var recommended, out var maximum))
+    /// <summary>Sets the scaling of a source route the caller already resolved.</summary>
+    internal static DisplayScaleResult Set(DisplayTopology.Luid adapter, uint source, int percent)
+    {
+        lock (DisplayTopology.WriteGate)
         {
-            detail = "its scaling could not be read";
-            return false;
+            if (!TryRead(adapter, source, out var current, out var recommended, out var maximum))
+            {
+                return new DisplayScaleResult(DisplaySetOutcome.Unreadable, 0, Snap(percent));
+            }
+
+            var wanted = Snap(Math.Min(percent, maximum));
+            if (wanted == current)
+            {
+                return new DisplayScaleResult(DisplaySetOutcome.AlreadySet, 0, wanted);
+            }
+
+            var index = Array.IndexOf(Steps, wanted);
+            var recommendedIndex = Array.IndexOf(Steps, recommended);
+            if (index < 0 || recommendedIndex < 0)
+            {
+                return new DisplayScaleResult(DisplaySetOutcome.Unsupported, 0, wanted);
+            }
+
+            DpiScaleSet packet = new()
+            {
+                Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
+                ScaleRelative = index - recommendedIndex
+            };
+            var status = DisplayConfigSetDeviceInfo(ref packet);
+            return new DisplayScaleResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused,
+                status, wanted);
         }
-
-        var wanted = Snap(Math.Min(percent, maximum));
-        if (wanted == current)
-        {
-            return true;
-        }
-
-        var index = Array.IndexOf(Steps, wanted);
-        var recommendedIndex = Array.IndexOf(Steps, recommended);
-        if (index < 0 || recommendedIndex < 0)
-        {
-            detail = $"{percent}% is not a scaling step this display offers";
-            return false;
-        }
-
-        DpiScaleSet packet = new()
-        {
-            Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
-            ScaleRelative = index - recommendedIndex
-        };
-        if (DisplayConfigSetDeviceInfo(ref packet) != 0)
-        {
-            detail = $"Windows refused the {wanted}% scaling change";
-            return false;
-        }
-
-        if (TryRead(adapter, source, out var readback, out _, out _) && readback == wanted)
-        {
-            return true;
-        }
-
-        detail = "the scaling change was not confirmed";
-        return false;
     }
 
     /// <summary>Snaps a percentage to the nearest step Windows offers.</summary>
@@ -141,7 +149,7 @@ public static partial class DisplayScaling
     /// </summary>
     private static bool TryFindSource(DisplayTargetIdentity target, out DisplayTopology.Luid adapter, out uint source)
     {
-        var found = DisplayTopology.TryFindActive(target, out var path);
+        var found = DisplayTopology.FindActive(target, out var path) == ActiveLookup.Found;
         adapter = path.SourceInfo.AdapterId;
         source = path.SourceInfo.Id;
         return found;

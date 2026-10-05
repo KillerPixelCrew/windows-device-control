@@ -11,6 +11,11 @@ public static partial class CoreAudio
 {
     private const int ClsctxAll = 23;
     private const uint StorageModeRead = 0;
+    private const int RpcDisconnected = unchecked((int)0x80010108);
+    private const int RpcServerUnavailable = unchecked((int)0x800706BA);
+
+    /// <summary>AUDCLNT_E_SERVICE_NOT_RUNNING: the Windows audio service is not running.</summary>
+    private const int AudioServiceNotRunning = unchecked((int)0x88890010);
 
     private static readonly object EnumeratorGate = new();
     private static IMMDeviceEnumerator? _enumerator;
@@ -40,6 +45,35 @@ public static partial class CoreAudio
     private static IMMDeviceEnumerator CreateEnumerator()
     {
         return (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
+    }
+
+    /// <summary>
+    ///     Drops the cached enumerator when a call on it says the audio service or its connection is
+    ///     gone, so the next call creates a fresh one instead of failing until the process exits.
+    /// </summary>
+    /// <returns><paramref name="result" />, unchanged: the current call still reports its failure.</returns>
+    /// <remarks>
+    ///     The dropped enumerator is not released. Concurrent callers and every live endpoint watch
+    ///     may still hold the same RCW, and releasing it would make their next call throw; the
+    ///     runtime releases it once nothing references it.
+    /// </remarks>
+    private static int ForgetEnumeratorIfGone(IMMDeviceEnumerator enumerator, int result)
+    {
+        if (IsEnumeratorGone(result))
+        {
+            Interlocked.CompareExchange(ref _enumerator, null, enumerator);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    ///     RPC_E_DISCONNECTED, RPC_S_SERVER_UNAVAILABLE and AUDCLNT_E_SERVICE_NOT_RUNNING: the
+    ///     results that mean the enumerator's service went away rather than one device.
+    /// </summary>
+    internal static bool IsEnumeratorGone(int result)
+    {
+        return result is RpcDisconnected or RpcServerUnavailable or AudioServiceNotRunning;
     }
 
     /// <summary>
@@ -439,11 +473,11 @@ public static partial class CoreAudio
         [PreserveSig]
         int GetCurrentPadding(out uint paddingFrameCount);
 
-        // A format the driver accepts answers S_OK; S_FALSE with a closest match, or
-        // AUDCLNT_E_UNSUPPORTED_FORMAT with none, are the refusals. The closest match is
-        // CoTaskMem the caller frees.
+        // A format the driver accepts answers S_OK; AUDCLNT_E_UNSUPPORTED_FORMAT is the refusal.
+        // Exclusive mode takes a NULL closest-match pointer, because it never proposes one, so the
+        // pointer is passed by value rather than declared out.
         [PreserveSig]
-        int IsFormatSupported(uint shareMode, nint format, out nint closestMatch);
+        int IsFormatSupported(uint shareMode, nint format, nint closestMatch);
 
         [PreserveSig]
         int GetMixFormat(out nint format);

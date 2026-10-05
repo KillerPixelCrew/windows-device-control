@@ -22,7 +22,11 @@ public sealed record DisplayTargetIdentity(
 {
     /// <summary>Returns whether this saved identity describes the same physical monitor observation.</summary>
     /// <param name="other">Current observation to compare.</param>
-    /// <remarks>The device path wins. EDID manufacturer/product is a fallback only when both sides lack a path.</remarks>
+    /// <remarks>
+    ///     The device path wins. EDID manufacturer/product is a fallback only when both sides lack a path. An
+    ///     identity with neither a path nor EDID ids matches nothing, itself included, so it cannot be found again
+    ///     and should not be persisted.
+    /// </remarks>
     public bool Matches(DisplayTargetIdentity other)
     {
         ArgumentNullException.ThrowIfNull(other);
@@ -56,25 +60,89 @@ public sealed record ActiveDisplayPath(
 /// <param name="CapturedAt">Time after the native query and target-name reads completed.</param>
 public sealed record DisplayTopologySnapshot(IReadOnlyList<ActiveDisplayPath> Paths, DateTimeOffset CapturedAt);
 
-/// <summary>Result of validating or applying a display change.</summary>
-/// <param name="Applied">Whether the requested change was applied and confirmed active.</param>
-/// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
-/// <param name="RollbackAttempted">Whether failure triggered restoration of the captured topology.</param>
-/// <param name="RollbackSucceeded">Whether rollback returned success.</param>
-/// <param name="Detail">Bounded diagnostic suitable for a log or UI.</param>
-public sealed record DisplayProfileResult(
-    bool Applied,
+/// <summary>How a <see cref="DisplayModes.Apply" /> call ended.</summary>
+public enum DisplayModeOutcome
+{
+    /// <summary>Windows accepted the mode change (status zero). Nothing is read back to confirm it.</summary>
+    Applied,
+
+    /// <summary>
+    ///     Windows refused the mode change. The captured original was written back once when the route was
+    ///     unchanged; see <see cref="DisplayModeResult.RollbackAttempted" />. Never retried.
+    /// </summary>
+    Refused,
+
+    /// <summary>The display changed since the observation, or the selected mode was not in it. Nothing was written.</summary>
+    Stale,
+
+    /// <summary>The display's route changed between validation and the write. Nothing was written.</summary>
+    RouteChanged,
+
+    /// <summary>The driver no longer advertises the selected mode. Nothing was written.</summary>
+    NotAdvertised,
+
+    /// <summary>The driver's test of the selected mode failed. Nothing was written.</summary>
+    ValidationRefused,
+
+    /// <summary>The display's current mode could not be read, so nothing was written.</summary>
+    Unreadable
+}
+
+/// <summary>Result of applying a display mode.</summary>
+/// <param name="Outcome">What happened.</param>
+/// <param name="NativeStatus">
+///     The <c>ChangeDisplaySettingsEx</c> status (a <c>DISP_CHANGE_*</c> value) of the refused test or write,
+///     or zero when no native call refused.
+/// </param>
+/// <param name="RollbackAttempted">Whether the captured original mode was written back after a refusal.</param>
+/// <param name="RollbackSucceeded">Whether that write-back returned success. Its own status, not a readback.</param>
+public sealed record DisplayModeResult(
+    DisplayModeOutcome Outcome,
     int NativeStatus,
     bool RollbackAttempted,
-    bool RollbackSucceeded,
-    string Detail);
-
-/// <summary>Result of waiting for a saved display identity.</summary>
-public enum DisplayWaitOutcome
+    bool RollbackSucceeded)
 {
-    /// <summary>A matching monitor satisfying the requested active/available wait was observed.</summary>
-    Present,
+    /// <summary>Whether Windows accepted the requested mode.</summary>
+    public bool Applied => Outcome is DisplayModeOutcome.Applied;
+}
 
-    /// <summary>The deadline elapsed without a matching active monitor.</summary>
-    TimedOut
+/// <summary>How a per-display scaling or advanced colour write ended.</summary>
+public enum DisplaySetOutcome
+{
+    /// <summary>The display already had the requested value; nothing was written.</summary>
+    AlreadySet,
+
+    /// <summary>Windows accepted the write (status zero). Nothing is read back to confirm it.</summary>
+    Written,
+
+    /// <summary>Windows refused the write; the native status says why. Never retried.</summary>
+    Refused,
+
+    /// <summary>The display is not part of the desktop, so nothing was written.</summary>
+    NotActive,
+
+    /// <summary>The display does not offer the requested value, so nothing was written.</summary>
+    Unsupported,
+
+    /// <summary>The display, or the current value the write is computed from, could not be read. Nothing was written.</summary>
+    Unreadable
+}
+
+/// <summary>Result of one per-display write.</summary>
+/// <param name="Outcome">What happened.</param>
+/// <param name="NativeStatus"><c>DisplayConfigSetDeviceInfo</c> status of a refused write, or zero.</param>
+public readonly record struct DisplaySetResult(DisplaySetOutcome Outcome, int NativeStatus)
+{
+    /// <summary>Whether the display has, or was sent, the requested value.</summary>
+    public bool Succeeded => Outcome is DisplaySetOutcome.AlreadySet or DisplaySetOutcome.Written;
+}
+
+/// <summary>Result of one scaling write.</summary>
+/// <param name="Outcome">What happened.</param>
+/// <param name="NativeStatus"><c>DisplayConfigSetDeviceInfo</c> status of a refused write, or zero.</param>
+/// <param name="Percent">The scaling step the request was snapped to.</param>
+public readonly record struct DisplayScaleResult(DisplaySetOutcome Outcome, int NativeStatus, int Percent)
+{
+    /// <summary>Whether the display has, or was sent, the requested step.</summary>
+    public bool Succeeded => Outcome is DisplaySetOutcome.AlreadySet or DisplaySetOutcome.Written;
 }

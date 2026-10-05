@@ -1,46 +1,85 @@
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace WindowsDeviceControl;
+
+/// <summary>
+///     One WM_POWERBROADCAST registration for a caller-owned window. Disposing it unregisters it with
+///     the matching Windows call.
+/// </summary>
+/// <remarks>
+///     Created only by <see cref="WindowsPower.RegisterSettingNotification" /> and
+///     <see cref="WindowsPower.RegisterSuspendResumeNotification(nint)" />. Release has no failure channel: an
+///     unregistration Windows refuses is not reported, since nothing could act on it.
+/// </remarks>
+public sealed class PowerNotificationRegistration : SafeHandleZeroOrMinusOneIsInvalid
+{
+    private readonly bool _suspendResume;
+
+    private PowerNotificationRegistration(nint handle, bool suspendResume)
+        : base(true)
+    {
+        _suspendResume = suspendResume;
+        SetHandle(handle);
+    }
+
+    internal static PowerNotificationRegistration Create(nint handle, bool suspendResume, string operation)
+    {
+        if (handle == 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            throw new Win32Exception(error, $"{operation} failed (Win32 {error}).");
+        }
+
+        return new PowerNotificationRegistration(handle, suspendResume);
+    }
+
+    /// <inheritdoc />
+    protected override bool ReleaseHandle()
+    {
+        return _suspendResume
+            ? WindowsPower.UnregisterSuspendResume(handle)
+            : WindowsPower.UnregisterPowerSetting(handle);
+    }
+}
 
 public static partial class WindowsPower
 {
     /// <summary>Registers a window for WM_POWERBROADCAST setting notifications.</summary>
     /// <param name="window">The caller-owned message window.</param>
     /// <param name="setting">Windows power-setting identity.</param>
-    /// <returns>A registration to release with UnregisterSettingNotification, or zero on failure.</returns>
-    /// <remarks>The caller owns window dispatch and registration lifetime. Marshal.GetLastPInvokeError preserves failures.</remarks>
-    public static nint RegisterSettingNotification(nint window, Guid setting)
+    /// <returns>The registration; dispose it to unregister.</returns>
+    /// <remarks>The caller owns window dispatch and the registration's lifetime.</remarks>
+    /// <exception cref="Win32Exception">Windows refused the registration; the native error is preserved.</exception>
+    public static PowerNotificationRegistration RegisterSettingNotification(nint window, Guid setting)
     {
-        return RegisterPowerSettingNotification(window, in setting, 0);
-    }
-
-    /// <summary>Unregisters a previously acquired setting notification.</summary>
-    /// <param name="registration">The handle returned by RegisterSettingNotification.</param>
-    /// <returns>Whether Windows released the registration; inspect Marshal.GetLastPInvokeError on failure.</returns>
-    public static bool UnregisterSettingNotification(nint registration)
-    {
-        return UnregisterPowerSettingNotification(registration);
+        return PowerNotificationRegistration.Create(
+            RegisterPowerSettingNotification(window, in setting, 0), false, "RegisterPowerSettingNotification");
     }
 
     /// <summary>Registers a window for WM_POWERBROADCAST suspend and resume notifications.</summary>
     /// <param name="window">The caller-owned message window.</param>
-    /// <returns>A registration to release with UnregisterSuspendResumeNotification, or zero on failure.</returns>
+    /// <returns>The registration; dispose it to unregister.</returns>
     /// <remarks>
     ///     Windows broadcasts PBT_APMSUSPEND, PBT_APMRESUMEAUTOMATIC and PBT_APMRESUMESUSPEND to top-level windows
     ///     only; a message-only window never receives them unless it is registered here. Modern Standby entry and
-    ///     exit are delivered the same way. The caller owns window dispatch and registration lifetime.
-    ///     Marshal.GetLastPInvokeError preserves failures.
+    ///     exit are delivered the same way. The caller owns window dispatch and the registration's lifetime.
     /// </remarks>
-    public static nint RegisterSuspendResumeNotification(nint window)
+    /// <exception cref="Win32Exception">Windows refused the registration; the native error is preserved.</exception>
+    public static PowerNotificationRegistration RegisterSuspendResumeNotification(nint window)
     {
-        return RegisterSuspendResumeNotification(window, 0);
+        return PowerNotificationRegistration.Create(
+            RegisterSuspendResumeNotification(window, 0), true, "RegisterSuspendResumeNotification");
     }
 
-    /// <summary>Unregisters a previously acquired suspend and resume notification.</summary>
-    /// <param name="registration">The handle returned by RegisterSuspendResumeNotification.</param>
-    /// <returns>Whether Windows released the registration; inspect Marshal.GetLastPInvokeError on failure.</returns>
-    public static bool UnregisterSuspendResumeNotification(nint registration)
+    internal static bool UnregisterPowerSetting(nint registration)
+    {
+        return UnregisterPowerSettingNotification(registration);
+    }
+
+    internal static bool UnregisterSuspendResume(nint registration)
     {
         return UnregisterSuspendResumeNotificationNative(registration);
     }

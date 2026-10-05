@@ -6,9 +6,9 @@ namespace WindowsDeviceControl;
 /// <summary>
 ///     Reads and writes a monitor's advanced colour (HDR) state.
 ///     Advanced colour belongs to the CCD target, not to its GDI source name, so it is addressed by the
-///     same monitor identity the rest of this library uses. Support is re-read immediately before a
-///     write: a monitor that reports no support must never be written to, and support can change when a
-///     cable or a mode changes.
+///     same monitor identity the rest of this library uses. Support is read immediately before a write as
+///     its input: a monitor that reports no support must never be written to, and support can change when a
+///     cable or a mode changes. Nothing is read after a write to confirm it.
 /// </summary>
 public static partial class DisplayColor
 {
@@ -26,68 +26,67 @@ public static partial class DisplayColor
     {
         ArgumentNullException.ThrowIfNull(target);
         enabled = supported = false;
-        return DisplayTopology.TryFindActive(target, out var path)
+        return DisplayTopology.FindActive(target, out var path) == ActiveLookup.Found
                && TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out enabled, out supported);
     }
 
-    /// <summary>Sets a monitor's advanced colour state and confirms it by readback.</summary>
+    /// <summary>Sets a monitor's advanced colour state with one write.</summary>
     /// <param name="target">Monitor identity.</param>
     /// <param name="enabled">The state to apply.</param>
-    /// <param name="detail">Set to why the write did not happen, when it did not.</param>
-    /// <returns>True when the monitor now reports the requested state, or already did.</returns>
+    /// <returns>
+    ///     <see cref="DisplaySetOutcome.Written" /> when Windows accepted the write, which is not read back;
+    ///     <see cref="DisplaySetOutcome.AlreadySet" /> when the monitor already had that state, or has no
+    ///     advanced colour and off was requested; <see cref="DisplaySetOutcome.Unsupported" /> when on was
+    ///     requested for a monitor without it; otherwise why nothing was written.
+    /// </returns>
     /// <remarks>
-    ///     A monitor that does not support advanced colour is left alone and reported, not
-    ///     written to. An uncertain write is never retried here.
+    ///     Serialized with every other display write in the process. A refusal is reported with its
+    ///     native status and never retried here.
     /// </remarks>
-    public static bool TrySetHdr(DisplayTargetIdentity target, bool enabled, out string detail)
+    public static DisplaySetResult SetHdr(DisplayTargetIdentity target, bool enabled)
     {
         ArgumentNullException.ThrowIfNull(target);
-        detail = "";
-        if (!DisplayTopology.TryFindActive(target, out var path))
+        lock (DisplayTopology.WriteGate)
         {
-            detail = "the display is not active, so its colour state was left alone";
-            return false;
+            return DisplayTopology.FindActive(target, out var path) switch
+            {
+                ActiveLookup.Found => SetHdr(path.TargetInfo.AdapterId, path.TargetInfo.Id, enabled),
+                ActiveLookup.NotActive => new DisplaySetResult(DisplaySetOutcome.NotActive, 0),
+                _ => new DisplaySetResult(DisplaySetOutcome.Unreadable, 0)
+            };
         }
+    }
 
-        var adapter = path.TargetInfo.AdapterId;
-        var id = path.TargetInfo.Id;
-        if (!TryRead(adapter, id, out var current, out var supported))
+    /// <summary>Sets the advanced colour state of a target route the caller already resolved.</summary>
+    internal static DisplaySetResult SetHdr(DisplayTopology.Luid adapter, uint id, bool enabled)
+    {
+        lock (DisplayTopology.WriteGate)
         {
-            detail = "its colour state could not be read";
-            return false;
+            // The support bit and current state are the write's input, not a confirmation of it.
+            if (!TryRead(adapter, id, out var current, out var supported))
+            {
+                return new DisplaySetResult(DisplaySetOutcome.Unreadable, 0);
+            }
+
+            if (!supported)
+            {
+                // Not a failure of the caller: the display simply has no HDR to turn on.
+                return new DisplaySetResult(enabled ? DisplaySetOutcome.Unsupported : DisplaySetOutcome.AlreadySet, 0);
+            }
+
+            if (current == enabled)
+            {
+                return new DisplaySetResult(DisplaySetOutcome.AlreadySet, 0);
+            }
+
+            AdvancedColorState packet = new()
+            {
+                Header = DisplayTopology.Header<AdvancedColorState>(SetAdvancedColorState, adapter, id),
+                EnableAdvancedColor = enabled ? 1u : 0u
+            };
+            var status = DisplayConfigSetDeviceInfo(ref packet);
+            return new DisplaySetResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused, status);
         }
-
-        if (!supported)
-        {
-            // Not a failure of the layout: the display simply has no HDR to turn on.
-            detail = enabled ? "this display does not support HDR" : "";
-            return !enabled;
-        }
-
-        if (current == enabled)
-        {
-            return true;
-        }
-
-        AdvancedColorState packet = new()
-        {
-            Header = DisplayTopology.Header<AdvancedColorState>(SetAdvancedColorState, adapter, id),
-            EnableAdvancedColor = enabled ? 1u : 0u
-        };
-        var status = DisplayConfigSetDeviceInfo(ref packet);
-        if (status != 0)
-        {
-            detail = $"Windows refused the HDR change (status {status})";
-            return false;
-        }
-
-        if (TryRead(adapter, id, out var readback, out _) && readback == enabled)
-        {
-            return true;
-        }
-
-        detail = "the HDR change was not confirmed";
-        return false;
     }
 
     internal static bool TryRead(DisplayTopology.Luid adapter, uint id, out bool enabled, out bool supported)

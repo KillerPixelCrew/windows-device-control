@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Globalization;
 using System.Linq;
 
 namespace WindowsDeviceControl;
@@ -16,29 +15,24 @@ internal static class DisplayLayoutPlanner
 {
     /// <summary>Why this layout cannot describe a desktop, or null when it can.</summary>
     /// <param name="layout">The layout to check.</param>
-    /// <returns>A user-facing reason, or null.</returns>
-    internal static string? Describe(DisplayLayout layout)
+    /// <returns>The first rule the layout breaks, or null.</returns>
+    internal static DisplayLayoutProblem? Describe(DisplayLayout layout)
     {
         if (layout.Outputs is not { Count: > 0 })
         {
-            return "A layout needs at least one display.";
-        }
-
-        if (layout.Outputs.Count > 16)
-        {
-            return "A layout cannot hold more than 16 displays.";
+            return DisplayLayoutProblem.NoDisplays;
         }
 
         if (layout.Outputs.Any(output => output.Width < 320 || output.Height < 200
                                                             || output.Width > 32768 || output.Height > 32768))
         {
-            return "Every display needs a resolution between 320x200 and 32768x32768.";
+            return DisplayLayoutProblem.ResolutionOutOfRange;
         }
 
         if (layout.Outputs.Count(output => output.IsPrimary) != 1)
         {
             // Windows puts the primary display at the origin, so exactly one output must sit there.
-            return "Exactly one display must sit at 0,0 as the primary display.";
+            return DisplayLayoutProblem.PrimaryNotAtOrigin;
         }
 
         for (var index = 0; index < layout.Outputs.Count; index++)
@@ -47,22 +41,22 @@ internal static class DisplayLayoutPlanner
             {
                 if (layout.Outputs[index].Target.Matches(layout.Outputs[other].Target))
                 {
-                    return "A layout cannot list the same display twice.";
+                    return DisplayLayoutProblem.DuplicateDisplay;
                 }
 
                 if (Overlaps(layout.Outputs[index], layout.Outputs[other]))
                 {
-                    return "Displays cannot overlap.";
+                    return DisplayLayoutProblem.Overlap;
                 }
             }
         }
 
         if (layout.Outputs.Any(output => output.DpiPercent is { } percent && (percent < 100 || percent > 500)))
         {
-            return "Display scaling must be between 100 and 500 percent.";
+            return DisplayLayoutProblem.ScalingOutOfRange;
         }
 
-        return Connected(layout) ? null : "Every display must touch another one; Windows snaps a detached desktop.";
+        return Connected(layout) ? null : DisplayLayoutProblem.Detached;
     }
 
     private static bool Overlaps(DisplayLayoutOutput first, DisplayLayoutOutput second)
@@ -104,9 +98,13 @@ internal static class DisplayLayoutPlanner
     /// <param name="paths">Every path the adapter advertises, from a QDC_ALL_PATHS query.</param>
     /// <param name="layout">The layout to express.</param>
     /// <param name="readTarget">Reads a path's monitor identity.</param>
-    /// <returns>The configuration to supply to Windows.</returns>
-    /// <exception cref="InvalidOperationException">No usable path or source exists for a display.</exception>
-    internal static (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes) Plan(
+    /// <returns>
+    ///     The configuration to supply to Windows, whose first paths follow the layout's outputs in order;
+    ///     or, with empty arrays, the problem (<see cref="DisplayLayoutProblem.NoDisplayPath" /> or
+    ///     <see cref="DisplayLayoutProblem.NoFreeSource" />) and the display it concerns.
+    /// </returns>
+    internal static (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes, DisplayLayoutProblem? Problem,
+        DisplayTargetIdentity? ProblemTarget) Plan(
         DisplayTopology.PathInfo[] paths,
         DisplayLayout layout,
         Func<DisplayTopology.PathInfo, DisplayTargetIdentity> readTarget)
@@ -125,8 +123,7 @@ internal static class DisplayLayoutPlanner
             var matching = candidates.Where(candidate => output.Target.Matches(candidate.Target!)).ToArray();
             if (matching.Length == 0)
             {
-                throw new InvalidOperationException(
-                    $"No display path reaches {Name(output.Target)} on this adapter.");
+                return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
             }
 
             // The path that already drives this monitor first: keeping its source avoids asking the
@@ -143,11 +140,18 @@ internal static class DisplayLayoutPlanner
 
             if (chosen.Target is null)
             {
-                throw new InvalidOperationException(
-                    $"No free display source is available for {Name(output.Target)}.");
+                return ([], [], DisplayLayoutProblem.NoFreeSource, output.Target);
             }
 
             takenSources.Add(SourceKey(chosen.Path));
+            // Rotation 0 keeps the rotation the display runs at now. It is read from the path that drives it
+            // before any flag below changes, as input to the write; a display that is off gets landscape.
+            var current = matching.FirstOrDefault(candidate =>
+                (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0);
+            var rotation = output.Rotation != 0 ? output.Rotation
+                : current.Target is not null && current.Path.TargetInfo.Rotation != 0
+                    ? current.Path.TargetInfo.Rotation
+                    : 1;
 
             var path = chosen.Path;
             path.Flags |= DisplayLayouts.PathActiveFlag;
@@ -163,7 +167,7 @@ internal static class DisplayLayoutPlanner
             // Inactive CCD paths have unspecified scan ordering. Pair the requested refresh with
             // progressive scan instead of replaying that placeholder (Windows rejects it with 87).
             path.TargetInfo.ScanLineOrdering = 1;
-            path.TargetInfo.Rotation = output.Rotation == 0 ? 1 : output.Rotation;
+            path.TargetInfo.Rotation = rotation;
             plannedPaths.Add(path);
 
             plannedModes.Add(new DisplayTopology.ModeInfo
@@ -201,7 +205,7 @@ internal static class DisplayLayoutPlanner
             plannedPaths.Add(path);
         }
 
-        return ([.. plannedPaths], [.. plannedModes]);
+        return ([.. plannedPaths], [.. plannedModes], null, null);
     }
 
     private static bool Free(DisplayTopology.PathInfo path, HashSet<(uint, int, uint)> taken)
@@ -235,14 +239,5 @@ internal static class DisplayLayoutPlanner
         {
             return null;
         }
-    }
-
-    private static string Name(DisplayTargetIdentity target)
-    {
-        return target.FriendlyName.Length != 0
-            ? target.FriendlyName
-            : target.DevicePath.Length != 0
-                ? target.DevicePath
-                : string.Create(CultureInfo.InvariantCulture, $"target {target.TargetId}");
     }
 }
