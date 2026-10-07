@@ -12,6 +12,7 @@ public static partial class WindowsPower
     /// <param name="setting">Policy setting identity.</param>
     /// <param name="onBattery">True selects the DC value; false selects AC.</param>
     /// <returns>The raw Windows policy value in the setting's units.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">The stored value could not be read.</exception>
     public static uint ReadSetting(Guid scheme, Guid subgroup, Guid setting, bool onBattery)
     {
         var status = onBattery
@@ -27,6 +28,8 @@ public static partial class WindowsPower
     /// <param name="setting">Policy setting identity.</param>
     /// <param name="onBattery">True selects DC; false selects AC.</param>
     /// <param name="value">Raw value in the setting's units.</param>
+    /// <exception cref="System.ComponentModel.Win32Exception">Windows refused the write.</exception>
+    /// <remarks>Return means Windows accepted the stored value; it is not read back.</remarks>
     public static void WriteSetting(Guid scheme, Guid subgroup, Guid setting, bool onBattery, uint value)
     {
         Check(onBattery

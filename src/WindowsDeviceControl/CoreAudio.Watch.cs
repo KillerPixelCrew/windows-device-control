@@ -4,9 +4,6 @@ using System.Threading;
 
 namespace WindowsDeviceControl;
 
-// Change notifications: the default endpoint's volume and mute, and the endpoint set itself.
-// A consumer that polled these once a second paid a COM round trip per second for the whole
-// session; Core Audio tells us instead.
 public static partial class CoreAudio
 {
     /// <summary>What an endpoint watch observed.</summary>
@@ -39,7 +36,7 @@ public static partial class CoreAudio
     /// <summary>
     ///     Starts reporting master volume and mute changes of the default endpoint in one direction.
     /// </summary>
-    /// <param name="direction">Playback or recording endpoint.</param>
+    /// <param name="direction">Playback or recording endpoint; an undefined value returns E_INVALIDARG.</param>
     /// <param name="onChanged">
     ///     Called on a Core Audio thread, not the caller's, whenever the endpoint's master volume,
     ///     mute or channel levels change, including changes this process makes. Marshal to your UI
@@ -51,10 +48,13 @@ public static partial class CoreAudio
     ///     call returns its own registration, and it is null when the return value is an error.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="onChanged" /> is null.</exception>
     /// <remarks>
     ///     The watch is bound to the endpoint that is the default when it starts. When the default
     ///     changes, which <see cref="StartEndpointWatch" /> reports, dispose this watch and start a
-    ///     new one; the old endpoint keeps reporting its own changes until then.
+    ///     new one; the old endpoint keeps reporting its own changes until then. No initial state is
+    ///     delivered. Do not dispose or synchronously wait for disposal inside a callback; native
+    ///     unregistration can wait for callback completion.
     /// </remarks>
     public static int StartVolumeWatch(AudioDirection direction, Action onChanged, out IDisposable? watch)
     {
@@ -76,8 +76,7 @@ public static partial class CoreAudio
                 return result < 0 ? result : Failure;
             }
 
-            // The registration owns the endpoint from here, so a failure below releases it once,
-            // through the registration's disposal.
+            // Transfer both COM references to the registration before attempting registration.
             registration = new VolumeWatch(device, volume, onChanged);
             device = null;
             volume = null;
@@ -116,10 +115,13 @@ public static partial class CoreAudio
     ///     call returns its own registration, and it is null when the return value is an error.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="onEvent" /> is null.</exception>
     /// <remarks>
     ///     Default changes are reported for the console role only, which default-volume reads and watches
     ///     use. SetDefaultEndpoint writes all three roles, but multimedia and communications notifications
     ///     are filtered here. Consumers needing those roles require their own role-specific observation.
+    ///     No initial enumeration is delivered. Dispose outside callbacks; native unregistration can
+    ///     wait for callback completion.
     /// </remarks>
     public static int StartEndpointWatch(Action<AudioEndpointWatchEvent> onEvent, out IDisposable? watch)
     {

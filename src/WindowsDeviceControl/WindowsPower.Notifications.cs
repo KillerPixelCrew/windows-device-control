@@ -12,7 +12,7 @@ namespace WindowsDeviceControl;
 /// <remarks>
 ///     Created only by <see cref="WindowsPower.RegisterSettingNotification" /> and
 ///     <see cref="WindowsPower.RegisterSuspendResumeNotification(nint)" />. Release has no failure channel: an
-///     unregistration Windows refuses is not reported, since nothing could act on it.
+///     unregistration Windows refuses is not surfaced to the caller. Disposal is idempotent.
 /// </remarks>
 public sealed class PowerNotificationRegistration : SafeHandleZeroOrMinusOneIsInvalid
 {
@@ -51,7 +51,10 @@ public static partial class WindowsPower
     /// <param name="window">The caller-owned message window.</param>
     /// <param name="setting">Windows power-setting identity.</param>
     /// <returns>The registration; dispose it to unregister.</returns>
-    /// <remarks>The caller owns window dispatch and the registration's lifetime.</remarks>
+    /// <remarks>
+    ///     Messages arrive through the window's own message loop. The caller owns the window and must
+    ///     retain this registration while listening, then dispose it before destroying the window.
+    /// </remarks>
     /// <exception cref="Win32Exception">Windows refused the registration; the native error is preserved.</exception>
     public static PowerNotificationRegistration RegisterSettingNotification(nint window, Guid setting)
     {

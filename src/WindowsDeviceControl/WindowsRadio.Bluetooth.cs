@@ -96,8 +96,7 @@ public static partial class WindowsRadio
     /// </returns>
     public static int ConnectedBluetoothCount()
     {
-        // Built per call rather than in the type initializer, so a failing WinRT call cannot
-        // break every other member of this class, and no shared cache needs guarding.
+        // Keep fallible WinRT calls out of the type initializer.
         string[] selectors =
         [
             Windows.Devices.Bluetooth.BluetoothDevice.GetDeviceSelectorFromConnectionStatus(
@@ -117,6 +116,10 @@ public static partial class WindowsRadio
         return identities.Count;
     }
 
+    /// <summary>Builds a cross-transport identity for connected-device counting.</summary>
+    /// <param name="id">Association endpoint ID used when no container is usable.</param>
+    /// <param name="properties">Requested AEP/container properties.</param>
+    /// <returns>A container-prefixed normalized GUID or endpoint-prefixed ID; friendly names never determine identity.</returns>
     internal static string BluetoothIdentity(
         string id,
         IReadOnlyDictionary<string, object> properties)
@@ -139,6 +142,8 @@ public static partial class WindowsRadio
     ///     one with or without braces, becomes its lower-case hyphenated form. The empty GUID and
     ///     anything else become empty, so endpoints without a real container are never merged.
     /// </summary>
+    /// <param name="value">A GUID, GUID text or unreadable/missing property value.</param>
+    /// <returns>A nonempty GUID in hyphenated form, or empty when no usable identity is available.</returns>
     internal static string NormalizeContainer(object? value)
     {
         var container = value switch
@@ -169,8 +174,10 @@ public static partial class WindowsRadio
     ///     <see cref="BluetoothChangeKind.EnumerationCompleted" />; the feed stays live afterwards.
     ///     When Windows aborts the watcher the registration reports one
     ///     <see cref="BluetoothChangeKind.Stopped" /> and nothing after it. Dispose every registration
-    ///     you start: the watcher holds the callback alive.
+    ///     you start: the watcher holds the callback alive. Changes identify individual association
+    ///     endpoints, unlike <see cref="ListBluetoothDevices" />, which merges shared containers.
     /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="onChange" /> is null.</exception>
     public static IDisposable StartBluetoothWatch(Action<BluetoothChange> onChange)
     {
         ArgumentNullException.ThrowIfNull(onChange);
@@ -213,10 +220,10 @@ public static partial class WindowsRadio
     /// <exception cref="ArgumentException"><paramref name="deviceId" /> is null or empty.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="onRequest" /> is null.</exception>
     /// <remarks>
-    ///     Windows supports several pairing ceremonies, and the right one depends on the device, so
-    ///     <see cref="PairingRequest.Kind" /> tells you which prompt to show. A device that refuses
-    ///     the confirm and provide-PIN ceremonies is tried once more with display-PIN, inside the same
-    ///     90-second deadline.
+    ///     Initially offers confirm-only, provide-PIN and PIN-match ceremonies. Only Windows'
+    ///     RequiredHandlerNotRegistered result triggers one display-PIN fallback, within the same
+    ///     90-second deadline. Each request token can be answered once. Native failures fault the task;
+    ///     cleanup failures can be combined with the original failure in an <see cref="AggregateException" />.
     /// </remarks>
     public static Task<PairingResult> PairBluetoothAsync(
         string deviceId,
@@ -422,7 +429,10 @@ public static partial class WindowsRadio
     ///     An accepted <see cref="PairingKind.ProvidePin" /> question has no PIN. The question is
     ///     left unanswered, so the caller can still answer it.
     /// </exception>
-    /// <remarks>Safe to call from any thread, including directly from the request callback.</remarks>
+    /// <remarks>
+    ///     Safe to call from any thread, including the request callback. Native acceptance/deferral
+    ///     failures propagate after the token is consumed; submitting it again does not retry the answer.
+    /// </remarks>
     public static void RespondToPairing(uint token, bool accept, string? pin)
     {
         if (!PendingPairings.TryGetValue(token, out var pending))
@@ -461,6 +471,10 @@ public static partial class WindowsRadio
     ///     with, and the status Windows reported.
     /// </returns>
     /// <exception cref="ArgumentException"><paramref name="deviceId" /> is null or empty.</exception>
+    /// <remarks>
+    ///     Blocks for the native unpairing result and propagates WinRT failures. This removes pairing
+    ///     identity; use <see cref="CoreAudio.SetBluetoothAudioConnection" /> for a soft audio disconnect.
+    /// </remarks>
     public static BluetoothUnpairResult UnpairBluetooth(string deviceId)
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);

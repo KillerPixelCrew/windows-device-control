@@ -4,13 +4,11 @@ using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
 
-/// <summary>
-///     Reads and writes one display's Windows scaling percentage.
-///     Windows stores scaling as a step relative to the value it recommends for that display, not as a
-///     percentage, and the available steps differ per display. The undocumented CCD packets are the
-///     only way to reach it without a user opening the Settings app, so the relative step is converted
-///     to and from a percentage here and callers work in percentages alone.
-/// </summary>
+/// <summary>Reads and writes percentage scaling for the active CCD source matching a monitor identity.</summary>
+/// <remarks>
+///     Synchronous; use a worker thread. Undocumented CCD packets express steps relative to Windows'
+///     recommended scale. Cloned targets sharing a source also share that source's scale.
+/// </remarks>
 public static partial class DisplayScaling
 {
     private const int GetDpiScale = -3;
@@ -21,8 +19,9 @@ public static partial class DisplayScaling
 
     /// <summary>Reads a display's current scaling percentage.</summary>
     /// <param name="target">Monitor identity.</param>
-    /// <param name="percent">Set to the current percentage.</param>
-    /// <returns>True when the value could be read.</returns>
+    /// <param name="percent">The current percentage on success; zero on failure.</param>
+    /// <returns>False for an absent/unreadable active source or an unrecognized scaling range.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     public static bool TryRead(DisplayTargetIdentity target, out int percent)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -33,10 +32,11 @@ public static partial class DisplayScaling
 
     /// <summary>Reads the scaling percentages a display supports.</summary>
     /// <param name="target">Monitor identity.</param>
-    /// <param name="current">Set to the current percentage.</param>
-    /// <param name="recommended">Set to the percentage Windows recommends.</param>
-    /// <param name="maximum">Set to the highest percentage this display offers.</param>
-    /// <returns>True when the values could be read.</returns>
+    /// <param name="current">The current percentage; zero on failure.</param>
+    /// <param name="recommended">Windows' recommended percentage; zero on failure.</param>
+    /// <param name="maximum">The highest recognized percentage this display offers; zero on failure.</param>
+    /// <returns>False for an absent/unreadable active source or an unrecognized scaling range.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     public static bool TryReadRange(DisplayTargetIdentity target, out int current, out int recommended, out int maximum)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -55,6 +55,7 @@ public static partial class DisplayScaling
     ///     library knows; otherwise why nothing was written. <see cref="DisplayScaleResult.Percent" /> is the
     ///     snapped step.
     /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     /// <remarks>
     ///     The current and recommended steps are read first because the write is relative to the
     ///     recommended one. Serialized with every other display write in the process; a refusal is reported
@@ -75,6 +76,10 @@ public static partial class DisplayScaling
     }
 
     /// <summary>Sets the scaling of a source route the caller already resolved.</summary>
+    /// <param name="adapter">Adapter LUID for the resolved source route.</param>
+    /// <param name="source">Source ID shared by every clone on this route.</param>
+    /// <param name="percent">Requested scaling percentage, clamped to the reported maximum and snapped to a known step.</param>
+    /// <returns>The selected percentage and preflight/write status; Written is acceptance without readback.</returns>
     internal static DisplayScaleResult Set(DisplayTopology.Luid adapter, uint source, int percent)
     {
         lock (DisplayTopology.WriteGate)
@@ -117,6 +122,13 @@ public static partial class DisplayScaling
         return Steps.MinBy(step => Math.Abs(step - percent));
     }
 
+    /// <summary>Reads the current, recommended and maximum DPI steps for a resolved source route.</summary>
+    /// <param name="adapter">Source adapter LUID.</param>
+    /// <param name="source">Source ID, shared by cloned targets.</param>
+    /// <param name="current">Current scale percentage; zero on a refused/unrecognized read.</param>
+    /// <param name="recommended">Recommended scale percentage; zero on failure.</param>
+    /// <param name="maximum">Maximum scale percentage; zero on failure.</param>
+    /// <returns>True when the packet maps to the known scale table; false for native refusal or unsupported indices.</returns>
     internal static bool TryRead(
         DisplayTopology.Luid adapter, uint source, out int current, out int recommended, out int maximum)
     {

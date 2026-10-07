@@ -31,11 +31,10 @@ public readonly record struct PrimaryDisplayMode(int Width, int Height, int Refr
 /// <summary>Enumerates and applies validated modes to an explicitly identified active display.</summary>
 /// <remarks>
 ///     Calls block on display drivers; use a worker thread. No registry settings are persisted.
-///     Fresh identity checks reject disconnected, rerouted and cloned sources. Driver validation does
-///     not prove physical visibility. A write Windows accepts is not read back. A refused write gets one
-///     write-back of the captured mode, only while the original route remains present; callers must not
-///     automatically retry. Writes share one process-wide gate with every other display write; reads take
-///     no lock.
+///     Read/Apply reject disconnected, rerouted and cloned sources. Apply can restore a refused write
+///     once while its original route remains present. Primary-display helpers provide no equivalent
+///     route check or rollback. Driver acceptance does not prove physical visibility; writes are not
+///     read back. Writes share a process-wide gate; reads do not.
 /// </remarks>
 public static partial class DisplayModes
 {
@@ -50,7 +49,8 @@ public static partial class DisplayModes
 
     /// <summary>Reads current and supported modes from a fresh topology observation.</summary>
     /// <param name="target">Active target to query.</param>
-    /// <returns>Null when the target is absent, ambiguous or unreadable.</returns>
+    /// <returns>Null for an absent, cloned, ambiguous, unreadable or changed route; otherwise a detached snapshot.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     /// <remarks>
     ///     Each distinct mode is tested with the driver, which can take a while. That holds no lock, and the
     ///     route is checked again afterwards so an interleaved change returns null instead of a stale list.
@@ -103,6 +103,7 @@ public static partial class DisplayModes
     ///     otherwise why nothing was written, or the refusal and its one write-back. No automatic retry is
     ///     performed.
     /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="observation" /> or <paramref name="requested" /> is null.</exception>
     public static DisplayModeResult Apply(DisplayModeSnapshot observation, DisplayMode requested)
     {
         ArgumentNullException.ThrowIfNull(observation);
@@ -170,8 +171,9 @@ public static partial class DisplayModes
 
     /// <summary>Lists every mode the driver enumerates for the primary display.</summary>
     /// <returns>
-    ///     The enumerated modes in driver order, duplicates included. An enumerated mode is a
-    ///     claim, not a promise; test it with <see cref="TestPrimaryMode" />.
+    ///     Modes in driver order, duplicates included. Enumeration stops on the first native false
+    ///     result, including a read failure; an empty list does not establish no supported modes.
+    ///     Entries are not tested; use <see cref="TestPrimaryMode" /> before requesting one.
     /// </returns>
     public static IReadOnlyList<PrimaryDisplayMode> EnumeratePrimaryModes()
     {
@@ -189,6 +191,7 @@ public static partial class DisplayModes
     /// <param name="height">Height in pixels.</param>
     /// <param name="refreshHz">Refresh rate in hertz.</param>
     /// <returns>Whether the driver's test accepted the mode.</returns>
+    /// <exception cref="OverflowException">A negative component cannot be represented by the native unsigned field.</exception>
     public static bool TestPrimaryMode(int width, int height, int refreshHz)
     {
         return ChangePrimary(width, height, refreshHz, ChangeTest) == 0;
@@ -202,11 +205,13 @@ public static partial class DisplayModes
     ///     The <c>ChangeDisplaySettingsEx</c> status: zero on success, and <c>DISP_CHANGE_FAILED</c> (-1)
     ///     without a write when the current mode cannot be read.
     /// </returns>
+    /// <exception cref="OverflowException">A negative component cannot be represented by the native unsigned field.</exception>
     /// <remarks>
     ///     No <c>CDS_UPDATEREGISTRY</c>, so the saved configuration is untouched. The mode stays after this
     ///     process exits, until another mode change, sign-out or restart; the caller restores it explicitly.
     ///     The colour depth is carried over from the current mode. Serialized with every other display write
-    ///     in the process.
+    ///     in the process. This lower-level call performs no driver test, target-route verification or
+    ///     automatic rollback; an error does not guarantee that no visible state changed.
     /// </remarks>
     public static int ApplyPrimaryModeTransient(int width, int height, int refreshHz)
     {
@@ -238,7 +243,7 @@ public static partial class DisplayModes
     /// <summary>
     ///     The one active path driving this monitor, or null when it is absent, ambiguous, unreadable or
     ///     shares its source with another target (a clone, where one mode change would change them all).
-    ///     Never throws: an unreadable unrelated path is skipped, and a failed query reads as absent.
+    ///     Win32 query failures return null; unreadable unrelated paths are skipped.
     /// </summary>
     private static ActiveDisplayPath? Find(DisplayTargetIdentity target)
     {

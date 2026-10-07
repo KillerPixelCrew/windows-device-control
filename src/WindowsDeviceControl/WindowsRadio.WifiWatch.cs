@@ -40,6 +40,7 @@ public static unsafe partial class WindowsRadio
     ///     the callback until then. A registration ends silently when the WLAN service restarts;
     ///     start a new one when you want the feed back.
     /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="onEvent" /> is null.</exception>
     public static IDisposable StartWifiWatch(Action<WifiWatchEvent> onEvent)
     {
         ArgumentNullException.ThrowIfNull(onEvent);
@@ -62,6 +63,9 @@ public static unsafe partial class WindowsRadio
     ///     name could be any connection on the adapter, an unrelated auto-connect included, so it
     ///     decides nothing; the wait then ends at its timeout and the connected network is checked.
     /// </summary>
+    /// <param name="profile">Profile name from the native connection event.</param>
+    /// <param name="expected">Profile name used by this connection attempt.</param>
+    /// <returns>True only for a nonempty, ordinally equal profile name.</returns>
     internal static bool IsCompletionForProfile(string profile, string expected)
     {
         return profile.Length > 0 && string.Equals(profile, expected, StringComparison.Ordinal);

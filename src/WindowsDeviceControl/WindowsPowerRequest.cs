@@ -49,7 +49,8 @@ public sealed class WindowsPowerRequest : IDisposable
         _api = api;
     }
 
-    /// <summary>Whether this owner has a confirmed outstanding request.</summary>
+    /// <summary>Whether Windows accepted an acquisition that this owner has not released or disposed.</summary>
+    /// <remarks>This tracks the handle's request, not proof that Windows will prevent the transition.</remarks>
     public bool IsHeld
     {
         get
@@ -157,38 +158,58 @@ public sealed class WindowsPowerRequest : IDisposable
     }
 }
 
+/// <summary>Native power-request boundary; the owner retains the handle and reason buffer until Close.</summary>
 internal interface IPowerRequestApi
 {
+    /// <summary>Win32 error from the immediately preceding failed native operation.</summary>
     int LastError { get; }
+    /// <summary>Creates a kernel power-request handle borrowing the reason string.</summary>
+    /// <param name="reason">NUL-terminated UTF-16 diagnostic string kept alive until the handle is closed.</param>
+    /// <returns>An owned request handle, or a zero/invalid handle with LastError set.</returns>
     nint Create(nint reason);
+    /// <summary>Adds one native request count of the selected kind.</summary>
+    /// <param name="request">Live request handle owned by the caller.</param>
+    /// <param name="kind">Native POWER_REQUEST_TYPE value.</param>
+    /// <returns>True when accepted; false with LastError on refusal.</returns>
     bool Set(nint request, int kind);
+    /// <summary>Clears one matching request count.</summary>
+    /// <param name="request">Live request handle with a previously accepted request.</param>
+    /// <param name="kind">Same native request type used for Set.</param>
+    /// <returns>True when accepted; false with LastError while ownership remains unchanged.</returns>
     bool Clear(nint request, int kind);
+    /// <summary>Closes the handle, releasing all outstanding request counts.</summary>
+    /// <param name="request">Handle to release once; its reason buffer can be freed after this call.</param>
     void Close(nint request);
 }
 
 internal sealed partial class NativePowerRequestApi : IPowerRequestApi
 {
+    /// <inheritdoc />
     public nint Create(nint reason)
     {
         ReasonContext context = new() { Version = 0, Flags = 1, LocalizedReasonModuleOrSimpleString = reason };
         return PowerCreateRequest(in context);
     }
 
+    /// <inheritdoc />
     public bool Set(nint request, int kind)
     {
         return PowerSetRequest(request, kind);
     }
 
+    /// <inheritdoc />
     public bool Clear(nint request, int kind)
     {
         return PowerClearRequest(request, kind);
     }
 
+    /// <inheritdoc />
     public void Close(nint request)
     {
         CloseHandle(request);
     }
 
+    /// <inheritdoc />
     public int LastError => Marshal.GetLastPInvokeError();
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

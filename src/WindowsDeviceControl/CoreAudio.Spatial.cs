@@ -5,9 +5,6 @@ using Windows.Media.Audio;
 
 namespace WindowsDeviceControl;
 
-// Spatial sound (Windows Sonic, Dolby Atmos, DTS) per playback endpoint. This is the one Core Audio
-// setting with a public API: Windows.Media.Audio.SpatialAudioDeviceConfiguration reads and writes
-// the same state the Sound settings page does, and applies it to the running engine at once.
 public static partial class CoreAudio
 {
     /// <summary>The spatial sound formats Windows knows by name.</summary>
@@ -45,7 +42,7 @@ public static partial class CoreAudio
     /// <remarks>The values match <c>Windows.Media.Audio.SetDefaultSpatialAudioFormatStatus</c>.</remarks>
     public enum SpatialAudioSetStatus
     {
-        /// <summary>The format is now the endpoint's default and active format.</summary>
+        /// <summary>Windows accepted the requested default spatial format; no confirming read is performed.</summary>
         Succeeded = 0,
 
         /// <summary>Windows refused the caller. Seen for formats reserved to their provider app.</summary>
@@ -75,12 +72,12 @@ public static partial class CoreAudio
     ///     The endpoint identifier from
     ///     <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})" />.
     /// </param>
-    /// <param name="state">The state read; default when the call fails.</param>
-    /// <returns>Zero on success, otherwise the HRESULT Windows returned.</returns>
+    /// <param name="state">The observed state; default on failure, with no usable format list.</param>
+    /// <returns>Zero on success; E_INVALIDARG for a null or empty ID; otherwise the Windows failure HRESULT.</returns>
     /// <remarks>
-    ///     <see cref="SpatialAudioState.SupportedFormats" /> lists which of the
-    ///     <see cref="SpatialAudioFormats" /> the endpoint can carry, not which are licensed;
-    ///     <see cref="SetSpatialAudio" /> is where a missing licence is reported.
+    ///     Probes the known <see cref="SpatialAudioFormats" /> only; custom provider formats can still
+    ///     appear in DefaultFormat or ActiveFormat. Support does not establish licensing. An existing
+    ///     endpoint without spatial support returns success with IsSupported false and an empty list.
     /// </remarks>
     public static int GetSpatialAudio(string endpointId, out SpatialAudioState state)
     {
@@ -135,7 +132,7 @@ public static partial class CoreAudio
     /// </param>
     /// <param name="status">
     ///     Windows' verdict when the call itself completed. Only
-    ///     <see cref="SpatialAudioSetStatus.Succeeded" /> means the format changed.
+    ///     <see cref="SpatialAudioSetStatus.Succeeded" /> means the request was accepted.
     /// </param>
     /// <returns>
     ///     Zero when Windows answered, in which case <paramref name="status" /> is the answer;
@@ -143,13 +140,9 @@ public static partial class CoreAudio
     ///     <see cref="SpatialAudioSetStatus.UnknownError" />.
     /// </returns>
     /// <remarks>
-    ///     The change applies to the running audio engine immediately; there is no service
-    ///     restart and no re-read needed. Windows' documentation says the caller must be the app
-    ///     that owns the format, but an ordinary desktop process switched Windows Sonic and a
-    ///     licensed Dolby Atmos for Headphones on and off on Windows 11 build 26200. An unlicensed
-    ///     Dolby or DTS format answers <see cref="SpatialAudioSetStatus.LicenseNotValidForAudioEndpoint" />
-    ///     and leaves the endpoint as it was. This call blocks for the WinRT operation, so keep it
-    ///     off the UI thread.
+    ///     Blocks for the WinRT operation; use a worker thread. Accepted requests apply to the running
+    ///     engine without a service restart or confirming read. Support and licensing are separate:
+    ///     Windows can answer LicenseNotValidForAudioEndpoint even for a supported format. No retry occurs.
     /// </remarks>
     public static int SetSpatialAudio(string endpointId, Guid format, out SpatialAudioSetStatus status)
     {
@@ -214,6 +207,8 @@ public static partial class CoreAudio
     ///     accepts any string and answers "unsupported, no format" for one it cannot resolve, so a
     ///     bare endpoint id fails silently rather than loudly; this is the form it resolves.
     /// </summary>
+    /// <param name="endpointId">A non-null Core Audio playback endpoint ID or already-qualified WinRT device ID.</param>
+    /// <returns>The qualified render-interface ID; already-qualified IDs are unchanged.</returns>
     internal static string ToWinRtDeviceId(string endpointId)
     {
         if (endpointId.StartsWith(@"\\?\", StringComparison.Ordinal))
@@ -229,6 +224,8 @@ public static partial class CoreAudio
     ///     does not know is reported as <see cref="SpatialAudioSetStatus.UnknownError" /> rather than
     ///     as an undefined enum value.
     /// </summary>
+    /// <param name="status">Raw SpatialAudioFormatConfigurationStatus value.</param>
+    /// <returns>The corresponding known status, or UnknownError for an unrecognized value.</returns>
     internal static SpatialAudioSetStatus MapSpatialStatus(int status)
     {
         return status is >= (int)SpatialAudioSetStatus.Succeeded and <= (int)SpatialAudioSetStatus.UnknownError

@@ -4,9 +4,6 @@ using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
 
-// The endpoint default format: channel count and layout, sample rate and bit depth, as the
-// Advanced tab and the speaker-setup wizard write it. Reads and writes go through IPolicyConfig,
-// which the audio service applies to the running engine at once.
 public static partial class CoreAudio
 {
     /// <summary>The HRESULT Windows returns for a format the endpoint cannot run: AUDCLNT_E_UNSUPPORTED_FORMAT.</summary>
@@ -41,11 +38,10 @@ public static partial class CoreAudio
     ///     <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})" />.
     /// </param>
     /// <param name="format">The format read; default when the call fails.</param>
-    /// <returns>Zero on success, otherwise the HRESULT the policy interface returned.</returns>
+    /// <returns>Zero on success; E_INVALIDARG for a null or empty ID; otherwise a failure HRESULT.</returns>
     /// <remarks>
-    ///     This is the shared-mode default format shown on the endpoint's Advanced tab and
-    ///     written by the speaker-setup wizard, so its channel count and mask are the layout the
-    ///     endpoint currently plays: 2 and 0x3 for stereo, 6 and 0x3F for 5.1, 8 and 0x63F for 7.1.
+    ///     Reads the shared-mode default, not an active stream's negotiated format. Unsupported native
+    ///     format layouts return E_FAIL with a default output.
     /// </remarks>
     public static int GetDeviceFormat(string endpointId, out AudioDeviceFormat format)
     {
@@ -89,19 +85,15 @@ public static partial class CoreAudio
     ///     <see cref="ListSupportedDeviceFormats" />.
     /// </param>
     /// <returns>
-    ///     Zero on success. <see cref="UnsupportedFormat" /> when the endpoint cannot run the
+    ///     Zero on success; E_INVALIDARG for an empty ID or implausible numeric format.
+    ///     <see cref="UnsupportedFormat" /> when the endpoint cannot run the
     ///     format, in which case nothing changed. Otherwise the HRESULT the policy interface
     ///     returned.
     /// </returns>
     /// <remarks>
-    ///     The audio service validates the format against the driver and applies it to the
-    ///     running engine at once; open streams are restarted on the new format, which is the same
-    ///     glitch the Advanced tab causes. A stereo endpoint asked for six channels answers
-    ///     <see cref="UnsupportedFormat" /> and keeps its format, so there is nothing to roll back.
-    ///     <para>
-    ///         This is the undocumented <c>IPolicyConfig</c> call, used for the same reason as
-    ///         <see cref="SetDefaultEndpoint(string)" />: there is no public way to do it.
-    ///     </para>
+    ///     Synchronously issues one IPolicyConfig request with the endpoint format and corresponding
+    ///     float mix format. Windows validates support and can restart open streams on acceptance.
+    ///     No readback, retry or rollback is performed; run this operation on a worker thread.
     /// </remarks>
     public static int SetDeviceFormat(string endpointId, AudioDeviceFormat format)
     {
@@ -144,16 +136,17 @@ public static partial class CoreAudio
     ///     when the call fails.
     /// </param>
     /// <returns>
-    ///     Zero on success, otherwise the HRESULT Core Audio returned. A device invalidated or an
+    ///     Zero on success, including no accepted candidates; E_INVALIDARG for an empty ID; otherwise
+    ///     a failure HRESULT. A device invalidated or an
     ///     audio service that stopped during the probe fails the whole call with that HRESULT rather
     ///     than reporting the formats probed so far as complete.
     /// </returns>
     /// <remarks>
     ///     Candidates use 1, 2, 4, 6 or 8 channels; 44.1, 48, 88.2, 96, 176.4 or 192 kHz; and 16, 24 or
     ///     32 bits. This is a finite candidate set, not every possible driver format. Each is offered to
-    ///     the driver in exclusive mode, which is the documented question behind that tab. The
-    ///     answer tells you which channel layouts an HDMI or USB endpoint can be switched to before
-    ///     <see cref="SetDeviceFormat" /> is asked. The probe opens no stream and changes nothing.
+    ///     the driver in exclusive mode. Individual candidate refusals are omitted, including when
+    ///     exclusive mode is unavailable. The synchronous probe opens no stream and changes no format;
+    ///     run it on a worker thread. Later SetDeviceFormat requests can still be refused.
     /// </remarks>
     public static int ListSupportedDeviceFormats(string endpointId, out IReadOnlyList<AudioDeviceFormat> formats)
     {
@@ -250,6 +243,8 @@ public static partial class CoreAudio
     }
 
     /// <summary>The speaker mask Windows pairs with a channel count when the caller has no better one.</summary>
+    /// <param name="channels">PCM channel count.</param>
+    /// <returns>The standard mask for 1, 2, 4, 6 or 8 channels; zero for other counts.</returns>
     internal static uint DefaultChannelMask(int channels)
     {
         return channels switch
@@ -263,6 +258,9 @@ public static partial class CoreAudio
         };
     }
 
+    /// <summary>Creates the native extensible wave-format packet without probing or validating it.</summary>
+    /// <param name="format">Previously validated numeric sample format.</param>
+    /// <returns>A packet containing PCM or IEEE-float subtype, speaker mask and derived byte rates.</returns>
     internal static WaveFormatExtensible BuildFormat(AudioDeviceFormat format)
     {
         var blockAlign = (ushort)(format.Channels * format.ContainerBitsPerSample / 8);
@@ -281,6 +279,10 @@ public static partial class CoreAudio
         };
     }
 
+    /// <summary>Decodes supported wave-format layouts without opening a device.</summary>
+    /// <param name="native">Copied WAVEFORMATEX or WAVEFORMATEXTENSIBLE fields.</param>
+    /// <param name="format">Decoded value on success; default for an unrecognized layout.</param>
+    /// <returns>True for extensible, PCM or IEEE-float layouts; this does not establish driver acceptance.</returns>
     internal static bool TryReadFormat(WaveFormatExtensible native, out AudioDeviceFormat format)
     {
         format = default;
@@ -350,7 +352,7 @@ public static partial class CoreAudio
     /// <summary>One endpoint default format: the channel layout, sample rate and bit depth it plays.</summary>
     /// <param name="Channels">The channel count: 2 for stereo, 6 for 5.1, 8 for 7.1.</param>
     /// <param name="SampleRate">The sample rate in hertz.</param>
-    /// <param name="BitsPerSample">The audible bits per sample: 16, 24 or 32.</param>
+    /// <param name="BitsPerSample">Valid bits per sample; the candidate list uses 16, 24 or 32.</param>
     /// <param name="ContainerBitsPerSample">
     ///     The bits each sample occupies. Windows carries 24-bit audio in a 32-bit container,
     ///     which <see cref="Pcm" /> chooses for you.
@@ -359,8 +361,8 @@ public static partial class CoreAudio
     ///     The speaker positions, as the <c>SPEAKER_*</c> bits: 0x3 stereo, 0x3F 5.1, 0x63F 7.1.
     /// </param>
     /// <param name="IsFloat">
-    ///     Whether samples are IEEE float rather than integer PCM. Default formats are integer;
-    ///     the float form is what the engine mixes in.
+    ///     Whether samples are IEEE float rather than integer PCM. Pcm creates integer formats;
+    ///     the engine's corresponding mix format is 32-bit float.
     /// </param>
     public readonly record struct AudioDeviceFormat(
         int Channels,
@@ -379,6 +381,7 @@ public static partial class CoreAudio
         ///     <paramref name="channels" />; zero picks the standard mask.
         /// </param>
         /// <returns>An integer PCM value; this factory does not query an endpoint or validate driver support.</returns>
+        /// <remarks>Unrecognized channel counts get a zero mask unless an explicit mask is supplied.</remarks>
         public static AudioDeviceFormat Pcm(int channels, int sampleRate, int bitsPerSample, uint channelMask = 0)
         {
             return new AudioDeviceFormat(
@@ -399,6 +402,7 @@ public static partial class CoreAudio
                && ContainerBitsPerSample % 8 == 0;
 
         /// <summary>The 32-bit float form the engine mixes in for this channel count and rate.</summary>
+        /// <returns>A copy retaining channels, sample rate and speaker mask, with 32-bit floating-point samples.</returns>
         internal AudioDeviceFormat AsMixFormat()
         {
             return this with { BitsPerSample = 32, ContainerBitsPerSample = 32, IsFloat = true };

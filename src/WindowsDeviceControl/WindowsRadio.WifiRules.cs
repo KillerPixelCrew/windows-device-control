@@ -40,11 +40,9 @@ public static partial class WindowsRadio
     /// </param>
     /// <returns>Which of the few outcomes a caller can act on differently.</returns>
     /// <remarks>
-    ///     Windows defines hundreds of reason codes across four numbering ranges, and the
-    ///     exact code is only useful as text. What a caller needs to decide is narrower: whether to
-    ///     re-prompt for the passphrase, or to say the network could not be reached. Blaming a wrong
-    ///     passphrase for an association timeout is the worse mistake, because the user retypes a
-    ///     passphrase that was already correct.
+    ///     Pure classification by WLAN reason-code range: zero means None and unclassified ranges
+    ///     mean Unknown. Use <see cref="ReasonText" /> for Windows' description of a specific code;
+    ///     an Unreachable result does not establish that the credential was rejected.
     /// </remarks>
     public static WifiFailureKind GetReasonVerdict(uint code)
     {
@@ -96,6 +94,10 @@ public static partial class WindowsRadio
     ///     is skipped and never overwritten. Each saved profile blocks at most one candidate, so the
     ///     search always ends within one more suffix than there are profiles.
     /// </remarks>
+    /// <param name="profiles">Current profile names, readable SSIDs and exact XML on the selected adapter.</param>
+    /// <param name="ssid">Display name used as the first candidate profile name.</param>
+    /// <param name="target">Exact SSID bytes identifying a profile that can safely be replaced.</param>
+    /// <returns>A collision-free name and any exact prior XML needed for rollback.</returns>
     internal static ProfileMutation FindFreeProfileName(
         IReadOnlyList<SavedProfile> profiles,
         string ssid,
@@ -122,6 +124,9 @@ public static partial class WindowsRadio
     ///     caller only merges observations with the same key, so they never conflict: the stronger
     ///     one supplies the signal, and either one's flags count.
     /// </summary>
+    /// <param name="existing">Previously merged facts for the same network key.</param>
+    /// <param name="observed">New observation with that same key.</param>
+    /// <returns>The stronger signal with Saved, Connectable and Connected combined using logical OR; ties retain the existing signal.</returns>
     internal static WifiNetworkFacts MergeNetworkFacts(
         WifiNetworkFacts existing,
         WifiNetworkFacts observed)
@@ -136,6 +141,10 @@ public static partial class WindowsRadio
         };
     }
 
+    /// <summary>Maps WLAN security flags and authentication algorithms to the public network-key class.</summary>
+    /// <param name="secured">Whether Windows marks the network secured.</param>
+    /// <param name="auth">Raw DOT11_AUTH_ALGORITHM value.</param>
+    /// <returns>Open for unsecured networks, the supported authentication class, or Unsupported for unknown/WEP forms.</returns>
     internal static WifiSecurity ClassifySecurity(bool secured, int auth)
     {
         if (!secured)
@@ -156,6 +165,10 @@ public static partial class WindowsRadio
         };
     }
 
+    /// <summary>A profile name and the exact readable content used for identity checks and rollback.</summary>
+    /// <param name="Name">Stored profile name, including profiles whose XML cannot be read.</param>
+    /// <param name="Ssid">Parsed exact SSID bytes, or null when unreadable.</param>
+    /// <param name="Xml">Original profile XML, or null when unreadable; an unreadable owner must not be overwritten.</param>
     internal readonly record struct SavedProfile(string Name, byte[]? Ssid, string? Xml);
 
     /// <summary>The profile one connection attempt writes, and what to put back if it must.</summary>
@@ -168,6 +181,11 @@ public static partial class WindowsRadio
     }
 
     /// <summary>One listed network as observed on one or more adapters.</summary>
+    /// <param name="Key">Exact SSID/security identity used to merge observations.</param>
+    /// <param name="Signal">Strongest Windows signal quality from 0 to 100.</param>
+    /// <param name="Saved">Whether any contributing adapter has a matching readable profile.</param>
+    /// <param name="Connectable">Whether any contributing adapter considers the network joinable.</param>
+    /// <param name="Connected">Whether any contributing adapter reports the network connected.</param>
     internal readonly record struct WifiNetworkFacts(
         WifiNetworkKey Key,
         int Signal,

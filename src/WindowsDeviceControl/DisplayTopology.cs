@@ -6,12 +6,12 @@ using System.Runtime.InteropServices;
 namespace WindowsDeviceControl;
 
 /// <summary>Supported Windows CCD display enumeration.</summary>
+/// <remarks>Synchronous and read-only. Snapshots can become stale immediately after return; refresh after hotplug.</remarks>
 public static partial class DisplayTopology
 {
     /// <summary>
     ///     Serializes every display write in this process: layout apply, mode apply, the transient primary mode,
-    ///     scaling and advanced colour. CCD state is machine-wide and every host in the process shares this
-    ///     assembly, so the gate is static. Reads never take it, so a long mode probe cannot hold up a write.
+    ///     scaling and advanced colour. Reads and external Windows writers do not take this gate.
     /// </summary>
     internal static readonly object WriteGate = new();
 
@@ -33,7 +33,6 @@ public static partial class DisplayTopology
             }
             catch (Win32Exception)
             {
-                // Unrelated to the displays that can be read; the caller still gets those.
             }
         }
 
@@ -42,6 +41,9 @@ public static partial class DisplayTopology
 
     /// <summary>Describes one active path whose target identity is already read.</summary>
     /// <exception cref="Win32Exception">The source name could not be read.</exception>
+    /// <param name="path">Native active path from the current query.</param>
+    /// <param name="identity">Target identity already resolved for that path.</param>
+    /// <returns>The managed active path including its current GDI source name.</returns>
     internal static ActiveDisplayPath ToActive(PathInfo path, DisplayTargetIdentity identity)
     {
         return new ActiveDisplayPath(identity, ReadSourceName(path), path.TargetInfo.OutputTechnology,
@@ -54,6 +56,9 @@ public static partial class DisplayTopology
     ///     matches and an unreadable path sits on the identity's last known route, or the query itself fails,
     ///     the display is reported unreadable rather than inactive.
     /// </summary>
+    /// <param name="target">Persisted monitor identity to resolve against the current topology.</param>
+    /// <param name="path">The matched native path only when Found is returned; default otherwise.</param>
+    /// <returns>Found, NotActive, or Unreadable when native failure prevents a reliable absence decision.</returns>
     internal static ActiveLookup FindActive(DisplayTargetIdentity target, out PathInfo path)
     {
         path = default;
@@ -93,6 +98,11 @@ public static partial class DisplayTopology
         return unreadable ? ActiveLookup.Unreadable : ActiveLookup.NotActive;
     }
 
+    /// <summary>Captures CCD arrays, retrying sizing races up to four times.</summary>
+    /// <param name="flags">QueryDisplayConfig path-selection flags.</param>
+    /// <param name="failure">Message attached to a native query failure.</param>
+    /// <returns>Owned managed path and mode arrays from one successful query.</returns>
+    /// <exception cref="Win32Exception">Sizing/query failed or topology kept changing through all attempts.</exception>
     internal static NativeSnapshot Query(uint flags, string failure = "Display topology query failed.")
     {
         for (var attempt = 0; attempt < 4; attempt++)
@@ -133,6 +143,10 @@ public static partial class DisplayTopology
             "Display topology changed repeatedly during capture.");
     }
 
+    /// <summary>Reads a monitor identity and validity-qualified EDID IDs for one target route.</summary>
+    /// <param name="path">Path carrying the adapter LUID and target ID.</param>
+    /// <returns>Identity strings and EDID IDs, plus the current route coordinates.</returns>
+    /// <exception cref="Win32Exception">Windows refused the target-info query.</exception>
     internal static unsafe DisplayTargetIdentity ReadTarget(PathInfo path)
     {
         TargetDeviceName target = new()
@@ -151,6 +165,10 @@ public static partial class DisplayTopology
     }
 
     /// <summary>Decodes IDs only when DISPLAYCONFIG_TARGET_DEVICE_NAME_FLAG_EDID_IDS_VALID (0x4) is set.</summary>
+    /// <param name="flags">DISPLAYCONFIG_TARGET_DEVICE_NAME flags.</param>
+    /// <param name="manufacturerId">Raw EDID manufacturer ID.</param>
+    /// <param name="productCodeId">Raw EDID product code.</param>
+    /// <returns>Both IDs when Windows marks them valid; otherwise two null values.</returns>
     internal static (ushort? ManufacturerId, ushort? ProductCodeId) DecodeEdidIds(uint flags, ushort manufacturerId,
         ushort productCodeId)
     {
@@ -168,6 +186,10 @@ public static partial class DisplayTopology
     ///     paths query many possible routes to the same target, and its identity is the same on each.
     ///     A failed read is not remembered.
     /// </summary>
+    /// <param name="path">Native path whose target identity is needed.</param>
+    /// <param name="read">Cache scoped to the caller's current topology observation.</param>
+    /// <returns>The cached or newly read monitor identity.</returns>
+    /// <exception cref="Win32Exception">Windows refused a target-identity read.</exception>
     internal static DisplayTargetIdentity ReadTarget(PathInfo path, Dictionary<RouteKey, DisplayTargetIdentity> read)
     {
         RouteKey key = new(path.TargetInfo.AdapterId, path.TargetInfo.Id);
@@ -194,6 +216,10 @@ public static partial class DisplayTopology
     }
 
     /// <summary>Supplies a complete configuration and lets Windows adjust modes to fit it.</summary>
+    /// <param name="paths">Complete desired CCD path array.</param>
+    /// <param name="modes">Modes referenced by the supplied paths.</param>
+    /// <param name="flags">Caller-selected validation/apply/persistence flags; supplied-config and allow-changes are added.</param>
+    /// <returns>SetDisplayConfig status: zero for acceptance, otherwise a Win32 error.</returns>
     internal static int Supply(PathInfo[] paths, ModeInfo[] modes, uint flags)
     {
         return SetDisplayConfig((uint)paths.Length, paths, (uint)modes.Length, modes,
@@ -201,6 +227,11 @@ public static partial class DisplayTopology
     }
 
     /// <summary>Builds the header every CCD device-info packet starts with.</summary>
+    /// <param name="type">CCD device-info operation code.</param>
+    /// <param name="adapter">Adapter LUID.</param>
+    /// <param name="id">Source or target ID required by the operation.</param>
+    /// <returns>A header whose Size covers the complete native packet.</returns>
+    /// <typeparam name="T">Native-layout packet type beginning with this header.</typeparam>
     internal static DeviceInfoHeader Header<T>(int type, Luid adapter, uint id) where T : struct
     {
         return new DeviceInfoHeader { Type = type, Size = (uint)Marshal.SizeOf<T>(), AdapterId = adapter, Id = id };

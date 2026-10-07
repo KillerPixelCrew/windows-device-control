@@ -6,7 +6,12 @@ using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 
-/// <summary>Owns powrprof buffers and preserves native failures as Win32Exception codes.</summary>
+/// <summary>Reads and changes Windows power schemes, policy, status and session transitions.</summary>
+/// <remarks>
+///     Native operations are synchronous unless named Async; use a worker thread for blocking calls.
+///     Policy writes are single attempts without readback or automatic rollback. Windows permissions
+///     and hardware support remain authoritative; Win32 failures retain their native error codes.
+/// </remarks>
 public static partial class WindowsPower
 {
     private const uint AccessScheme = 16;
@@ -14,6 +19,7 @@ public static partial class WindowsPower
     /// <summary>Returns one installed scheme, or null at the end. Native failures throw Win32Exception.</summary>
     /// <param name="index">Zero-based enumeration index.</param>
     /// <returns>The scheme at <paramref name="index" />, or null past the last one.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">Enumeration failed or returned an invalid identity.</exception>
     public static Guid? EnumerateScheme(uint index)
     {
         uint size = 16;
@@ -34,6 +40,7 @@ public static partial class WindowsPower
 
     /// <summary>Every installed scheme, in enumeration order. Native failures throw Win32Exception.</summary>
     /// <returns>The installed scheme identities; empty only when Windows lists none.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">Enumeration failed or returned an invalid identity.</exception>
     public static IReadOnlyList<Guid> EnumerateSchemes()
     {
         List<Guid> schemes = [];
@@ -85,6 +92,12 @@ public static partial class WindowsPower
         throw Failure(ErrorMoreData, "PowerReadFriendlyName");
     }
 
+    /// <summary>Decodes a complete UTF-16 scheme name returned by Windows.</summary>
+    /// <param name="buffer">Native output bytes.</param>
+    /// <param name="size">Reported byte count, including the terminator.</param>
+    /// <param name="id">Scheme identity used when the decoded name is blank.</param>
+    /// <returns>The decoded name or the scheme GUID in D format.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">The byte count or terminator is invalid.</exception>
     internal static string DecodeName(byte[] buffer, uint size, Guid id)
     {
         if (size < 2 || size > buffer.Length || size % 2 != 0
@@ -97,7 +110,7 @@ public static partial class WindowsPower
         return string.IsNullOrWhiteSpace(name) ? id.ToString("D") : name;
     }
 
-    /// <summary>Reads the active scheme and releases the native allocation on every outcome.</summary>
+    /// <summary>Reads the active power scheme identity.</summary>
     /// <returns>The active scheme identity.</returns>
     /// <exception cref="System.ComponentModel.Win32Exception">The active scheme could not be read.</exception>
     public static Guid GetActiveScheme()

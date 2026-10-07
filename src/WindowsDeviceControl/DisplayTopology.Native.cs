@@ -31,9 +31,7 @@ public static partial class DisplayTopology
     [LibraryImport("user32.dll")]
     private static partial int DisplayConfigGetDeviceInfo(ref TargetDeviceName packet);
 
-    // The native CCD shapes are internal rather than private so the layout editor beside this class
-    // can build a supplied configuration from the same declarations. One decoded layout, one set of
-    // offsets: a second copy would be a second thing to get wrong.
+    // Shared CCD ABI for topology, layouts, scaling and colour; keep offsets in one declaration set.
     [StructLayout(LayoutKind.Sequential)]
     internal record struct Luid
     {

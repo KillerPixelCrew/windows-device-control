@@ -16,6 +16,9 @@ public static unsafe partial class WindowsRadio
     /// <param name="list">The list WLANAPI returned. The caller still frees it.</param>
     /// <param name="read">Decodes one record while the list is still allocated.</param>
     /// <remarks>Every record Windows counted is read; the list carries its own count.</remarks>
+    /// <typeparam name="TRecord">Native fixed-layout record following the eight-byte list header.</typeparam>
+    /// <typeparam name="TResult">Managed value produced for each record.</typeparam>
+    /// <returns>Decoded records in native order; native memory remains owned by the caller.</returns>
     internal static TResult[] ReadWlanList<TRecord, TResult>(
         nint list,
         Func<TRecord, TResult> read)

@@ -28,7 +28,9 @@ public static partial class WindowsPower
     /// <summary>Requests standby or hibernation off-thread; completes when Windows returns, normally after resume.</summary>
     /// <param name="hibernate">True requests hibernation; false requests standby.</param>
     /// <param name="cancellationToken">Cancels admission only. A dispatched suspend cannot be cancelled.</param>
-    /// <returns>A task that faults with Win32Exception on a native refusal.</returns>
+    /// <returns>A task completing after the native call returns, normally after resume.</returns>
+    /// <exception cref="Win32Exception">Windows refused the suspend request.</exception>
+    /// <exception cref="OperationCanceledException">Cancellation occurred before dispatch.</exception>
     public static Task SuspendAsync(bool hibernate, CancellationToken cancellationToken = default)
     {
         return SuspendAsync(hibernate, PowerActionApi, cancellationToken);
@@ -47,6 +49,11 @@ public static partial class WindowsPower
     /// <param name="action">The explicitly requested operation.</param>
     /// <param name="cancellationToken">Cancels before dispatch or waiting; it does not undo a dispatched operation.</param>
     /// <returns>Completes when the tool accepts the request, not when Windows finishes the transition.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="action" /> is undefined.</exception>
+    /// <exception cref="Win32Exception">The system tool could not start or returned a nonzero exit code.</exception>
+    /// <exception cref="InvalidOperationException">The process could not be created.</exception>
+    /// <exception cref="OperationCanceledException">Cancellation occurred before dispatch or while waiting.</exception>
+    /// <remarks>Uses the absolute system-directory shutdown.exe path; applications are not forcibly closed.</remarks>
     public static Task RequestActionAsync(WindowsPowerAction action,
         CancellationToken cancellationToken = default)
     {
@@ -80,6 +87,7 @@ public static partial class WindowsPower
 
     private sealed class NativePowerActionApi : IPowerActionApi
     {
+        /// <inheritdoc />
         public bool Suspend(bool hibernate)
         {
             if (!SetSuspendState(hibernate, false, false))
@@ -90,6 +98,7 @@ public static partial class WindowsPower
             return true;
         }
 
+        /// <inheritdoc />
         public async Task<int> RunToolAsync(ProcessStartInfo start, CancellationToken cancellationToken)
         {
             using var process = Process.Start(start) ??
@@ -107,8 +116,16 @@ public static partial class WindowsPower
         [MarshalAs(UnmanagedType.U1)] bool disableWakeEvent);
 }
 
+/// <summary>Boundary for native suspend and system-tool dispatch; neither operation reverses an accepted transition.</summary>
 internal interface IPowerActionApi
 {
+    /// <summary>Requests standby or hibernation synchronously.</summary>
+    /// <param name="hibernate">True selects hibernation; false selects standby.</param>
+    /// <returns>True when the native call returns; refusals throw Win32Exception, normally before any transition.</returns>
     bool Suspend(bool hibernate);
+    /// <summary>Starts a system tool and waits for its exit.</summary>
+    /// <param name="start">Absolute executable and arguments prepared by the caller.</param>
+    /// <param name="cancellationToken">Cancels waiting without terminating a dispatched process.</param>
+    /// <returns>The process exit code, with start failures or cancellation propagated.</returns>
     Task<int> RunToolAsync(ProcessStartInfo start, CancellationToken cancellationToken);
 }

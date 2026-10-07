@@ -20,6 +20,9 @@ internal static class Win32Error
     internal const uint ErrorNotFound = 1168;
 
     /// <summary>Throws the preserved native failure for a non-zero status.</summary>
+    /// <param name="status">Native Win32 status; zero is success.</param>
+    /// <param name="operation">Operation name included in the exception message.</param>
+    /// <exception cref="Win32Exception"><paramref name="status" /> is nonzero.</exception>
     internal static void Check(uint status, string operation)
     {
         if (status != ErrorSuccess)
@@ -29,12 +32,18 @@ internal static class Win32Error
     }
 
     /// <summary>The exception for one failed operation, carrying the native code unchanged.</summary>
+    /// <param name="status">Native unsigned Win32 status.</param>
+    /// <param name="operation">Operation name included in the message.</param>
+    /// <returns>An exception preserving all status bits in NativeErrorCode.</returns>
     internal static Win32Exception Failure(uint status, string operation)
     {
         return new Win32Exception(unchecked((int)status), $"{operation} failed (status {status}).");
     }
 
     /// <summary>Throws the preserved WLAN failure for a non-zero status.</summary>
+    /// <param name="operation">WLAN operation name included in the message.</param>
+    /// <param name="status">Native WLAN status; zero is success.</param>
+    /// <exception cref="Win32Exception"><paramref name="status" /> is nonzero.</exception>
     internal static void CheckWlan(string operation, uint status)
     {
         if (status != ErrorSuccess)
@@ -44,6 +53,9 @@ internal static class Win32Error
     }
 
     /// <summary>The WLAN form of <see cref="Failure" />, which keeps its own message wording.</summary>
+    /// <param name="operation">WLAN operation name included in the message.</param>
+    /// <param name="status">Native unsigned WLAN status.</param>
+    /// <returns>An exception preserving all status bits in NativeErrorCode.</returns>
     internal static Win32Exception WlanFailure(string operation, uint status)
     {
         return new Win32Exception(unchecked((int)status), $"{operation} failed (Win32 {status}).");
@@ -91,12 +103,19 @@ internal static unsafe class NativeText
 internal static class WinRt
 {
     /// <summary>Waits for a WinRT operation on the calling thread.</summary>
+    /// <param name="operation">WinRT operation to await synchronously.</param>
+    /// <returns>The completed result; failures propagate without an AggregateException wrapper.</returns>
+    /// <typeparam name="T">WinRT operation result type.</typeparam>
     internal static T WaitWinRt<T>(this IAsyncOperation<T> operation)
     {
         return operation.AsTask().GetAwaiter().GetResult();
     }
 
     /// <summary>Waits for a WinRT operation on the calling thread, cancelling it with the token.</summary>
+    /// <param name="operation">WinRT operation to await synchronously.</param>
+    /// <param name="cancellationToken">Cancellation forwarded to the WinRT operation.</param>
+    /// <returns>The completed result; native failures and cancellation propagate to the caller.</returns>
+    /// <typeparam name="T">WinRT operation result type.</typeparam>
     internal static T WaitWinRt<T>(this IAsyncOperation<T> operation, CancellationToken cancellationToken)
     {
         return operation.AsTask(cancellationToken).GetAwaiter().GetResult();

@@ -6,6 +6,10 @@ using System.Text;
 namespace WindowsDeviceControl;
 
 /// <summary>Pure WLAN profile authoring and parsing helpers.</summary>
+/// <remarks>
+///     These helpers perform no Windows calls. Profile builders escape XML but do not validate SSID
+///     length, passphrases or driver support. All string and array arguments must be non-null.
+/// </remarks>
 public static class WifiProfile
 {
     /// <summary>The profile shape used for a pre-shared key network.</summary>
@@ -77,11 +81,11 @@ public static class WifiProfile
     ///     <see cref="PassphraseIsValid" />; a raw key is detected and declared as one.
     /// </param>
     /// <param name="flavor">
-    ///     Which WPA shape to write. The profile must match what the access point
-    ///     advertises, so try <see cref="PskFlavor.Wpa3Transition" /> and fall back if it is
-    ///     refused.
+    ///     Which WPA shape to write. Undefined values use the legacy WPA-TKIP shape; choose a defined
+    ///     value that matches the network's advertised authentication.
     /// </param>
     /// <returns>The profile XML, in the form this library writes through <c>WlanSetProfile</c>.</returns>
+    /// <remarks>The XML includes the supplied credential in plaintext; avoid logging or exposing it.</remarks>
     public static string CreatePsk(
         string profileName,
         string ssid,
@@ -145,11 +149,13 @@ public static class WifiProfile
     /// <param name="xml">The profile XML, as returned by WLANAPI when a saved profile is read.</param>
     /// <returns>
     ///     The SSID's exact bytes, or <see langword="null" /> when the document carries no
-    ///     readable SSID. Bytes rather than a string, because an SSID need not be valid UTF-8.
+    ///     readable SSID. An empty hex/name element produces an empty array. An SSID need not be valid UTF-8.
     /// </returns>
     /// <remarks>
     ///     The first <c>SSID</c> element of <c>SSIDConfig</c> is read. Its <c>hex</c> form wins, because
     ///     it carries the exact bytes; the <c>name</c> form is decoded and encoded as UTF-8 otherwise.
+    ///     This reads the exact tag spelling emitted by WLANAPI, not arbitrary namespace-prefixed XML;
+    ///     an invalid hex element returns null without falling back to the name.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="xml" /> is null.</exception>
     public static byte[]? TryReadSsid(string xml)
@@ -192,8 +198,7 @@ public static class WifiProfile
     /// <param name="passphrase">The passphrase or raw key to check.</param>
     /// <returns>
     ///     <see langword="true" /> for a 64-character hex key, or for 8 to 63 printable ASCII
-    ///     characters. Checking here turns an unhelpful driver-level refusal into a message you can
-    ///     show the user before anything is attempted.
+    ///     characters. False does not contact Windows or change any saved profile.
     /// </returns>
     public static bool PassphraseIsValid(string passphrase)
     {

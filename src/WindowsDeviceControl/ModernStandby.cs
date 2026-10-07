@@ -27,7 +27,7 @@ public enum WakeDeviceControl
 public sealed record WakeDevice(string Name, bool Armed, WakeDeviceControl Control);
 
 /// <summary>The wake arming observed at one moment. Persist it before changing anything.</summary>
-/// <param name="Known">Every wake-capable device observed, armed or not.</param>
+/// <param name="Known">Every programmable or armed device observed; not a list of all wake-capable hardware.</param>
 /// <param name="Armed">Those of them that were armed.</param>
 public sealed record WakeDeviceSnapshot(IReadOnlyList<string> Known, IReadOnlyList<string> Armed);
 
@@ -36,20 +36,20 @@ public sealed record WakeDeviceSnapshot(IReadOnlyList<string> Known, IReadOnlyLi
 /// <param name="NativeErrorCode">The Win32 error the write returned.</param>
 public sealed record WakeDeviceRestoreFailure(string Name, int NativeErrorCode);
 
-/// <summary>Interrupt-time marks around the machine's last standby, all from the same read.</summary>
+/// <summary>Sequential interrupt-time observations around the machine's last standby.</summary>
 /// <remarks>
-///     Interrupt time counts from boot and does not advance while the machine is asleep, so these
-///     are only comparable with each other and with a later read on the same boot.
+///     These boot-relative values are comparable only within the same boot. The current mark uses
+///     QueryInterruptTime, whose time includes sleep; the three observations are not an atomic snapshot.
 /// </remarks>
 /// <param name="Sleep">Interrupt time at the last transition into sleep.</param>
 /// <param name="Wake">Interrupt time at the last wake.</param>
-/// <param name="Now">Interrupt time when the three were read.</param>
+/// <param name="Now">Current interrupt time, read after the sleep and wake marks.</param>
 public sealed record StandbyTiming(TimeSpan Sleep, TimeSpan Wake, TimeSpan Now)
 {
-    /// <summary>How long the machine was asleep, or zero when it has not slept this boot.</summary>
+    /// <summary>The last wake mark minus the sleep mark, or zero when the wake mark is not later.</summary>
     public TimeSpan Slept => Wake > Sleep ? Wake - Sleep : TimeSpan.Zero;
 
-    /// <summary>How long the machine has been awake since that wake.</summary>
+    /// <summary>The current mark minus the wake mark, clamped to zero.</summary>
     public TimeSpan SinceWake => Now > Wake ? Now - Wake : TimeSpan.Zero;
 }
 
@@ -134,14 +134,12 @@ public static partial class ModernStandby
     public static readonly Guid SettingDisconnectedStandby =
         new("68afb2d9-ee95-47a8-8f50-4115088073b1");
 
-    // DevicePowerOpen/DevicePowerClose open and close one process-global device list. Without a
-    // gate, one caller's close can pull the list out from under another's enumeration, which reads
-    // as an empty snapshot (and a restore that silently does nothing) or a mid-restore throw.
-    // Reentrant, so a restore can hold it across its own enumerate-then-write calls.
+    // DevicePowerOpen owns a process-global list; serialize its lifetime and each read/write sequence.
     private static readonly object WakeDeviceGate = new();
 
     /// <summary>Reads what the machine supports. Native failures throw Win32Exception.</summary>
     /// <returns>Modern Standby support and the mandatory wake paths this machine has.</returns>
+    /// <exception cref="Win32Exception">Windows could not provide the capability structure.</exception>
     public static ModernStandbySupport Query()
     {
         var buffer = new byte[CapabilitiesBytes];
@@ -155,11 +153,8 @@ public static partial class ModernStandby
 
     /// <summary>Whether Windows attributes the last resume to something other than the user.</summary>
     /// <remarks>
-    ///     False means a person woke the machine — a power button, a key, a lid. True means it came
-    ///     back on its own: a wake timer, a device, background work. This is the one call that
-    ///     separates a wake worth staying awake for from one worth going back to sleep on, and it is
-    ///     the whole basis of an automatic re-suspend policy. It describes the last resume, so read
-    ///     it on the resume notification rather than caching it.
+    ///     Reports Windows' IsSystemResumeAutomatic classification, without identifying the wake source.
+    ///     Read after a resume notification; subsequent resumes replace this observation.
     /// </remarks>
     /// <returns>True when the last resume was unattended.</returns>
     public static bool WasLastResumeUnattended()
@@ -170,9 +165,8 @@ public static partial class ModernStandby
     /// <summary>Reads the interrupt-time marks around the last standby.</summary>
     /// <remarks>
     ///     The sleep, wake and current marks are read sequentially on the same interrupt-time clock,
-    ///     not as one atomic snapshot. Answers "how long was it asleep" and "how long has it been awake", which is
-    ///     what a re-suspend grace period and a standby diagnostic both need. It does not report
-    ///     what woke the machine: Windows exposes no documented call for that.
+    ///     not as one atomic snapshot. A transition between reads can produce mismatched marks;
+    ///     the result does not identify the wake source.
     /// </remarks>
     /// <returns>The last sleep and wake marks and the current interrupt time.</returns>
     /// <exception cref="Win32Exception">
@@ -192,13 +186,12 @@ public static partial class ModernStandby
     ///     reports as programmable.
     /// </summary>
     /// <remarks>
-    ///     Not every device that merely supports waking from S0 — that set is most of the HID and
-    ///     Bluetooth endpoints on a handheld, none of which Windows offers for change, and listing
-    ///     them would bury the few that matter. A device that is armed but not programmable comes
-    ///     back as <see cref="WakeDeviceControl.Fixed" />: visible, reportable, never written to.
-    ///     Ordered by name so two reads are comparable.
+    ///     Returns the union of present programmable and armed devices, ordered by ordinal name.
+    ///     Armed devices that are not programmable have <see cref="WakeDeviceControl.Fixed" /> control.
+    ///     Other wake-capable devices are outside this enumeration.
     /// </remarks>
     /// <returns>The actionable wake sources present on the machine.</returns>
+    /// <exception cref="Win32Exception">The device list could not be opened or read completely.</exception>
     public static IReadOnlyList<WakeDevice> EnumerateWakeDevices()
     {
         lock (WakeDeviceGate)
@@ -260,16 +253,18 @@ public static partial class ModernStandby
     /// </remarks>
     /// <param name="name">The device description from <see cref="EnumerateWakeDevices" />.</param>
     /// <param name="armed">True to let the device wake the machine.</param>
-    /// <returns>False when Windows does not offer that device as programmable, or it is absent.</returns>
-    /// <exception cref="ArgumentException"><paramref name="name" /> is empty.</exception>
+    /// <returns>
+    ///     True when the device was already in the requested state or Windows accepted the write;
+    ///     false when absent or not programmable. An accepted write is not read back.
+    /// </returns>
+    /// <exception cref="ArgumentException"><paramref name="name" /> is null, empty or whitespace.</exception>
     /// <exception cref="Win32Exception">
     ///     Device enumeration or the write failed. Writes require elevation; the native error is preserved.
     /// </exception>
     public static bool TrySetWakeArmed(string name, bool armed)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        // Held across the programmability re-read and the write, so the check still describes the
-        // device when the write lands.
+        // Excludes competing library writes; external device changes can still race this check.
         lock (WakeDeviceGate)
         {
             foreach (var device in EnumerateWakeDevicesCore())
@@ -300,6 +295,7 @@ public static partial class ModernStandby
     /// <summary>Captures the current arming so it can be restored later.</summary>
     /// <remarks>Persist this before the first write and retain it until a restore succeeds.</remarks>
     /// <returns>The programmable or armed devices observed, and which of them were armed.</returns>
+    /// <exception cref="Win32Exception">The device list could not be read completely; no snapshot is returned.</exception>
     public static WakeDeviceSnapshot CaptureWakeDevices()
     {
         List<string> known = [];
@@ -318,11 +314,9 @@ public static partial class ModernStandby
 
     /// <summary>Puts the arming back the way a snapshot recorded it.</summary>
     /// <remarks>
-    ///     Only devices the snapshot actually observed are touched: a device that appeared since
-    ///     then has no prior state to restore, and guessing one would be a change dressed as a
-    ///     restore. The devices are enumerated once; a device that is absent or no longer
-    ///     programmable is skipped, and every other write is attempted once even when an earlier
-    ///     one fails. Idempotent.
+    ///     Enumerates once, then writes only changed, still-programmable devices named by the snapshot.
+    ///     New, absent and fixed devices are skipped. Each planned write is attempted once even after
+    ///     a native refusal; accepted writes are not read back.
     /// </remarks>
     /// <param name="snapshot">A snapshot from <see cref="CaptureWakeDevices" />.</param>
     /// <returns>The devices whose write failed; empty when everything restorable was restored.</returns>
@@ -338,6 +332,9 @@ public static partial class ModernStandby
     }
 
     /// <summary>Writes every planned arming once, collecting failures instead of stopping at the first.</summary>
+    /// <param name="plan">Ordered device names and desired arming states.</param>
+    /// <param name="write">One synchronous write; Win32Exception is collected and other exceptions propagate.</param>
+    /// <returns>Native failures in plan order; every step after a native refusal is still attempted.</returns>
     internal static List<WakeDeviceRestoreFailure> ExecuteRestore(
         IReadOnlyList<(string Name, bool Armed)> plan, Action<string, bool> write)
     {
@@ -357,6 +354,10 @@ public static partial class ModernStandby
         return failures;
     }
 
+    /// <summary>Plans writes only for captured devices still present and programmable.</summary>
+    /// <param name="current">Current programmable/armed device observations.</param>
+    /// <param name="snapshot">Previously captured known devices and armed subset.</param>
+    /// <returns>Changed devices in current enumeration order; new, absent, fixed and already-matching devices are omitted.</returns>
     internal static IReadOnlyList<(string Name, bool Armed)> RestorePlan(
         IReadOnlyList<WakeDevice> current, WakeDeviceSnapshot snapshot)
     {
@@ -380,6 +381,10 @@ public static partial class ModernStandby
         return writes;
     }
 
+    /// <summary>Decodes Modern Standby and physical wake controls from SYSTEM_POWER_CAPABILITIES.</summary>
+    /// <param name="buffer">At least 76 bytes of the native capability structure.</param>
+    /// <returns>The six supported flags without making native calls.</returns>
+    /// <exception cref="Win32Exception">The structure is truncated.</exception>
     internal static ModernStandbySupport ReadCapabilities(ReadOnlySpan<byte> buffer)
     {
         if (buffer.Length < CapabilitiesBytes)
@@ -400,6 +405,9 @@ public static partial class ModernStandby
     ///     Reads the null-terminated name the enumeration wrote. The size argument is not an output:
     ///     Windows leaves it at the buffer size it was given, so the terminator is the only length.
     /// </summary>
+    /// <param name="buffer">UTF-16 bytes returned by DevicePowerEnumDevices, including the terminator.</param>
+    /// <returns>The nonblank name before the first UTF-16 terminator.</returns>
+    /// <exception cref="Win32Exception">The name is blank or has no terminator within the buffer.</exception>
     internal static string DecodeDeviceName(byte[] buffer)
     {
         for (var end = 0; end + 1 < buffer.Length; end += 2)
@@ -410,8 +418,7 @@ public static partial class ModernStandby
             }
 
             var name = Encoding.Unicode.GetString(buffer, 0, end);
-            // A name is this API's device identity. An empty or unterminated one names nothing, and
-            // guessing at it would hand the caller something to write to that it cannot address.
+            // Names are write identities; never accept an empty or unterminated descriptor.
             return string.IsNullOrWhiteSpace(name)
                 ? throw Failure(ErrorInvalidData, "DevicePowerEnumDevices")
                 : name;
@@ -421,6 +428,9 @@ public static partial class ModernStandby
     }
 
     /// <summary>One interrupt-time value, in 100 ns units, read through the power information call.</summary>
+    /// <param name="level">LastSleepTime or LastWakeTime power-information class.</param>
+    /// <returns>The boot-relative mark converted from 100-nanosecond units.</returns>
+    /// <exception cref="Win32Exception">The query failed; NativeErrorCode preserves its NTSTATUS.</exception>
     internal static TimeSpan ReadInterruptTime(uint level)
     {
         ulong ticks = 0;
@@ -465,9 +475,7 @@ public static partial class ModernStandby
                 continue;
             }
 
-            // The end of the list and a real failure both return FALSE, and only the error code
-            // separates them. Treating every FALSE as the end would report a partial device list as
-            // a complete one, which is the answer a caller cannot detect.
+            // FALSE also signals failures: only ERROR_NO_MORE_ITEMS is a complete enumeration.
             var error = (uint)Marshal.GetLastWin32Error();
             if (error is ErrorNoMoreItems)
             {

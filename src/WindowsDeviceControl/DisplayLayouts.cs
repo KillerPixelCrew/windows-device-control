@@ -19,8 +19,8 @@ public sealed record DisplayRefresh(uint Numerator, uint Denominator)
     public double Hertz => Denominator == 0 ? 0 : (double)Numerator / Denominator;
 
     /// <summary>Builds a whole-hertz rate.</summary>
-    /// <param name="hertz">Refresh rate in hertz.</param>
-    /// <returns>The rate as a rational.</returns>
+    /// <param name="hertz">Whole hertz; zero or negative selects the default rate.</param>
+    /// <returns>The rate with denominator one, or Default for a nonpositive request.</returns>
     public static DisplayRefresh FromHertz(int hertz)
     {
         return hertz <= 0 ? Default : new DisplayRefresh((uint)hertz, 1);
@@ -44,7 +44,7 @@ public sealed record DisplayRefresh(uint Numerator, uint Denominator)
 ///     Raw DISPLAYCONFIG_ROTATION value; 1 is landscape. Zero keeps the rotation the display runs at when
 ///     the layout is applied (landscape for a display that is off) and is never compared.
 /// </param>
-/// <param name="DpiPercent">Scaling percentage to apply, or null to leave it alone.</param>
+/// <param name="DpiPercent">Scaling request from 100 to 500, snapped to a supported step; null leaves it alone.</param>
 /// <param name="Hdr">Advanced colour state to apply, or null to leave it alone.</param>
 public sealed record DisplayLayoutOutput(
     DisplayTargetIdentity Target,
@@ -92,7 +92,7 @@ public sealed record DisplayArrangement(
 /// <summary>How a layout application ended.</summary>
 public enum DisplayLayoutOutcome
 {
-    /// <summary>Windows accepted the arrangement (status zero); nothing is read back to confirm it.</summary>
+    /// <summary>Validation passed, or Windows accepted an apply; the calling operation determines which.</summary>
     Applied,
 
     /// <summary>The topology already matched; requested scaling and HDR were still applied separately.</summary>
@@ -173,11 +173,11 @@ public sealed record DisplayOutputWarning(
     int NativeStatus);
 
 /// <summary>Result of validating or applying a layout.</summary>
-/// <param name="Outcome">What happened.</param>
+/// <param name="Outcome">Validation or apply disposition; Applied from Validate means no write occurred.</param>
 /// <param name="Absent">The requested monitors that are not connected.</param>
-/// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
+/// <param name="NativeStatus">Win32/SetDisplayConfig status for a failed native stage, or zero.</param>
 /// <param name="RollbackAttempted">Whether a refused application was rolled back.</param>
-/// <param name="RollbackStatus">SetDisplayConfig status of that rollback, or zero.</param>
+/// <param name="RollbackStatus">Topology rollback's SetDisplayConfig status; meaningful only when RollbackAttempted.</param>
 /// <param name="Warnings">
 ///     Per-display settings not written after an Applied or AlreadyActive arrangement. Rollback extras
 ///     are best effort and their failures are not included in this list.
@@ -196,7 +196,7 @@ public sealed record DisplayLayoutResult(
     DisplayTargetIdentity? ProblemTarget = null,
     string? FailureMessage = null)
 {
-    /// <summary>Whether Windows took the layout, or the desktop already matched it.</summary>
+    /// <summary>Whether validation passed, an apply was accepted or topology already matched; depends on the calling operation.</summary>
     public bool Applied => Outcome is DisplayLayoutOutcome.Applied or DisplayLayoutOutcome.AlreadyActive;
 
     /// <summary>Whether the topology rollback returned success; does not confirm scaling, HDR or physical visibility.</summary>
@@ -204,15 +204,12 @@ public sealed record DisplayLayoutResult(
 }
 
 /// <summary>
-///     Captures and applies complete desktop arrangements by value: active monitors, primary display,
-///     position, mode, scaling and advanced colour. <see cref="DisplayTopology" /> supplies the active
-///     identities and shared native CCD machinery; callers edit these values instead of authoring
-///     <c>DISPLAYCONFIG_*</c> records. Native rollback snapshots are private to the apply operation.
+///     Captures, validates and applies complete desktop arrangements, including optional scaling and HDR.
 /// </summary>
 /// <remarks>
 ///     These calls block on display drivers; run them on a worker. Applying rearranges or blanks
-///     displays. A requested monitor that is not connected is reported as absent rather than thrown, so
-///     a caller can wait for it. An application Windows accepts is not read back; one it refuses gets
+///     displays. A requested monitor that is not connected is reported as absent. An accepted apply is
+///     not read back; one Windows refuses gets
 ///     exactly one rollback, and nothing is retried automatically.
 /// </remarks>
 public static class DisplayLayouts
@@ -223,7 +220,7 @@ public static class DisplayLayouts
     internal const uint Pixel32Bpp = 4;
 
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
-    /// <returns>The observation and its fingerprint.</returns>
+    /// <returns>Readable monitor identities and their topology fingerprint; unreadable identities are omitted.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
     public static DisplayArrangement Observe()
     {
@@ -234,6 +231,9 @@ public static class DisplayLayouts
     ///     Observes every monitor, remembering target identities in <paramref name="read" /> and
     ///     returning the paths the observation came from, so a caller can plan on the same query.
     /// </summary>
+    /// <param name="read">Per-observation cache of identities by target route, populated by this call.</param>
+    /// <param name="paths">The complete native path array used to build the observation.</param>
+    /// <returns>Readable target observations and their fingerprint; targets with unreadable identity are omitted.</returns>
     internal static DisplayArrangement Observe(
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, out DisplayTopology.PathInfo[] paths)
     {
@@ -246,8 +246,6 @@ public static class DisplayLayouts
             {
                 identity = DisplayTopology.ReadTarget(path, read);
             }
-            // One unreadable target must not hide the rest: a monitor can drop out between the
-            // query and the name read, and the caller is often waiting for a different one.
             catch (Win32Exception)
             {
                 continue;
@@ -281,7 +279,10 @@ public static class DisplayLayouts
     }
 
     /// <summary>Captures the current desktop as an editable layout.</summary>
-    /// <returns>The active displays, their placement, modes, scaling and advanced colour state.</returns>
+    /// <returns>
+    ///     Active outputs with readable placement/mode data. Unreadable outputs are omitted; unavailable
+    ///     scaling/HDR values are null. Capture can therefore be partial or empty.
+    /// </returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
     public static DisplayLayout Capture()
     {
@@ -292,16 +293,11 @@ public static class DisplayLayouts
         ]);
     }
 
-    /// <summary>
-    ///     Why this layout could never describe a desktop, or null when it could.
-    ///     Pure, and it touches no display, so an editor can refuse a layout as it is typed and a
-    ///     stored layout can be checked while the monitors it names are unplugged.
-    ///     <see
-    ///         cref="Validate" />
-    ///     answers the separate question of whether Windows would accept it now.
-    /// </summary>
+    /// <summary>Checks pure layout rules without accessing Windows or requiring connected monitors.</summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>The first rule the layout breaks, or null when the layout is well formed.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="layout" /> is null.</exception>
+    /// <remarks>A well-formed value can still fail the native validation performed by Validate.</remarks>
     public static DisplayLayoutProblem? Describe(DisplayLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
@@ -311,6 +307,8 @@ public static class DisplayLayouts
     /// <summary>Checks a layout against Windows without changing anything.</summary>
     /// <param name="layout">The layout to check.</param>
     /// <returns>Invalid, TargetsAbsent, Rejected, or Applied meaning "would apply".</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="layout" /> is null.</exception>
+    /// <remarks>Blocks on the driver. Validates topology only; optional scaling/HDR writes are not tested.</remarks>
     public static DisplayLayoutResult Validate(DisplayLayout layout)
     {
         return Run(layout, false);
@@ -318,12 +316,14 @@ public static class DisplayLayouts
 
     /// <summary>Applies a layout once. Windows' acceptance is the result; nothing is read back.</summary>
     /// <param name="layout">The layout to apply.</param>
-    /// <returns>What happened, including any rollback.</returns>
+    /// <returns>The topology disposition, native failure/rollback statuses and any forward extras warnings.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="layout" /> is null.</exception>
     /// <remarks>
     ///     Serialized with every other display write in the process. The arrangement and any rollback are
     ///     saved to the Windows display database, so they survive a reboot; a caller that needs to undo an
     ///     apply applies the layout it captured before. This call blocks on the driver, so keep it off the
-    ///     UI thread.
+    ///     UI thread. AlreadyActive still applies requested scaling/HDR. A refusal triggers at most one
+    ///     topology rollback; restored extras are best effort and their failures are not returned.
     /// </remarks>
     public static DisplayLayoutResult Apply(DisplayLayout layout)
     {
@@ -366,8 +366,6 @@ public static class DisplayLayouts
 
         if (apply && Matches(arrangement, layout))
         {
-            // Nothing to change. Reported rather than written, so compensating twice is harmless. The
-            // per-display settings still apply, through the active paths this observation already found.
             var active = paths.Where(path => (path.Flags & PathActiveFlag) != 0).ToArray();
             return new DisplayLayoutResult(DisplayLayoutOutcome.AlreadyActive, [], 0, false, 0,
                 ApplyExtras(layout.Outputs.Select(output => (output, Driving(active, read, output.Target)))));
@@ -391,8 +389,7 @@ public static class DisplayLayouts
             return new DisplayLayoutResult(DisplayLayoutOutcome.Applied, [], 0, false, 0, []);
         }
 
-        // One snapshot is both the native rollback and the scaling and colour that follow it back, read
-        // before the apply so the two always describe the same desktop.
+        // Capture topology and extras before mutation for the same rollback baseline.
         DisplayTopology.NativeSnapshot rollback;
         try
         {
@@ -463,7 +460,6 @@ public static class DisplayLayouts
             }
             catch (Win32Exception)
             {
-                // Someone else's unreadable display.
             }
         }
 
@@ -513,6 +509,9 @@ public static class DisplayLayouts
     ///     Whether the current arrangement already is this layout, within the tolerance a
     ///     captured rational refresh needs.
     /// </summary>
+    /// <param name="arrangement">Observed active outputs with readable current modes.</param>
+    /// <param name="layout">Requested complete desktop topology.</param>
+    /// <returns>Whether every active output matches placement, size, refresh tolerance and any requested rotation; HDR and DPI are ignored.</returns>
     internal static bool Matches(DisplayArrangement arrangement, DisplayLayout layout)
     {
         var active = arrangement.Targets.Where(target => target is { Active: true, Current: not null }).ToArray();
@@ -541,6 +540,9 @@ public static class DisplayLayouts
     ///     A requested rate of "default" matches whatever is running; otherwise the observed rate
     ///     must land within half a hertz, because the adapter reports the exact rational it chose.
     /// </summary>
+    /// <param name="observed">Actual rational refresh rate.</param>
+    /// <param name="requested">Requested rate; a zero denominator accepts any observed rate.</param>
+    /// <returns>True for the default request or an absolute difference strictly below 0.5 Hz.</returns>
     internal static bool SameRefresh(DisplayRefresh observed, DisplayRefresh requested)
     {
         return requested.Denominator == 0 || Math.Abs(observed.Hertz - requested.Hertz) < 0.5;
@@ -550,6 +552,8 @@ public static class DisplayLayouts
     ///     Stable text of identity, availability, active state, placement, resolution and refresh.
     ///     Sorted by identity; deliberately excludes rotation, scaling and advanced colour.
     /// </summary>
+    /// <param name="targets">Targets from one observation.</param>
+    /// <returns>Deterministic topology text for change detection, not a complete layout equality test.</returns>
     internal static string Fingerprint(IEnumerable<DisplayTargetObservation> targets)
     {
         StringBuilder text = new();
@@ -593,8 +597,6 @@ public static class DisplayLayouts
         }
 
         var source = mode.Mode.Source;
-        // The active path already names this display's source and target, so the scaling and colour
-        // reads use it instead of finding the display again.
         return new DisplayLayoutOutput(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
             new DisplayRefresh(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
             path.TargetInfo.Rotation,

@@ -3,13 +3,8 @@ using System.Runtime.InteropServices;
 
 namespace WindowsDeviceControl;
 
-/// <summary>
-///     Reads and writes a monitor's advanced colour (HDR) state.
-///     Advanced colour belongs to the CCD target, not to its GDI source name, so it is addressed by the
-///     same monitor identity the rest of this library uses. Support is read immediately before a write as
-///     its input: a monitor that reports no support must never be written to, and support can change when a
-///     cable or a mode changes. Nothing is read after a write to confirm it.
-/// </summary>
+/// <summary>Reads and writes advanced colour (HDR) on the active CCD target matching a monitor identity.</summary>
+/// <remarks>Calls block on Windows; use a worker thread. Support/current state are write inputs, not readback.</remarks>
 public static partial class DisplayColor
 {
     private const int GetAdvancedColorInfo = 9;
@@ -19,9 +14,10 @@ public static partial class DisplayColor
 
     /// <summary>Reads whether a monitor supports advanced colour and whether it is on.</summary>
     /// <param name="target">Monitor identity.</param>
-    /// <param name="enabled">Set to whether advanced colour is currently on.</param>
-    /// <param name="supported">Set to whether the monitor supports it at all.</param>
-    /// <returns>True when the state could be read.</returns>
+    /// <param name="enabled">Whether advanced colour is on; false on a failed read.</param>
+    /// <param name="supported">Whether the monitor reports support; false on a failed read.</param>
+    /// <returns>True for a readable active target, including unsupported HDR; false for an absent/unreadable target.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     public static bool TryReadHdr(DisplayTargetIdentity target, out bool enabled, out bool supported)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -39,6 +35,7 @@ public static partial class DisplayColor
     ///     advanced colour and off was requested; <see cref="DisplaySetOutcome.Unsupported" /> when on was
     ///     requested for a monitor without it; otherwise why nothing was written.
     /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     /// <remarks>
     ///     Serialized with every other display write in the process. A refusal is reported with its
     ///     native status and never retried here.
@@ -58,11 +55,14 @@ public static partial class DisplayColor
     }
 
     /// <summary>Sets the advanced colour state of a target route the caller already resolved.</summary>
+    /// <param name="adapter">Adapter LUID for the resolved target route.</param>
+    /// <param name="id">Target ID on that adapter.</param>
+    /// <param name="enabled">Requested advanced-color state.</param>
+    /// <returns>The preflight outcome or single write status; Written is acceptance without readback.</returns>
     internal static DisplaySetResult SetHdr(DisplayTopology.Luid adapter, uint id, bool enabled)
     {
         lock (DisplayTopology.WriteGate)
         {
-            // The support bit and current state are the write's input, not a confirmation of it.
             if (!TryRead(adapter, id, out var current, out var supported))
             {
                 return new DisplaySetResult(DisplaySetOutcome.Unreadable, 0);
@@ -70,7 +70,6 @@ public static partial class DisplayColor
 
             if (!supported)
             {
-                // Not a failure of the caller: the display simply has no HDR to turn on.
                 return new DisplaySetResult(enabled ? DisplaySetOutcome.Unsupported : DisplaySetOutcome.AlreadySet, 0);
             }
 
@@ -89,6 +88,12 @@ public static partial class DisplayColor
         }
     }
 
+    /// <summary>Reads advanced-color state on an already-resolved target route.</summary>
+    /// <param name="adapter">Target adapter LUID.</param>
+    /// <param name="id">Target ID.</param>
+    /// <param name="enabled">Current enabled flag; false when the read fails.</param>
+    /// <param name="supported">Current supported flag; false when the read fails.</param>
+    /// <returns>Whether the native packet was read; unsupported is a successful read with supported false.</returns>
     internal static bool TryRead(DisplayTopology.Luid adapter, uint id, out bool enabled, out bool supported)
     {
         AdvancedColorInfo packet = new()

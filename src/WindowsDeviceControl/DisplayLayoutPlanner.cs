@@ -6,10 +6,8 @@ using System.Linq;
 namespace WindowsDeviceControl;
 
 /// <summary>
-///     Turns an editable layout into the native configuration Windows is asked to apply.
-///     Kept pure and separate from the CCD calls: choosing which path drives which monitor, which
-///     source each takes and where the desktop rectangles sit is the part with rules worth testing, and
-///     it can be tested on synthetic path arrays without a second monitor.
+///     Validates layout geometry and plans distinct source routes over supplied CCD arrays.
+///     Performs no native calls itself; monitor identity is resolved by the supplied callback.
 /// </summary>
 internal static class DisplayLayoutPlanner
 {
@@ -31,7 +29,6 @@ internal static class DisplayLayoutPlanner
 
         if (layout.Outputs.Count(output => output.IsPrimary) != 1)
         {
-            // Windows puts the primary display at the origin, so exactly one output must sit there.
             return DisplayLayoutProblem.PrimaryNotAtOrigin;
         }
 
@@ -126,8 +123,7 @@ internal static class DisplayLayoutPlanner
                 return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
             }
 
-            // The path that already drives this monitor first: keeping its source avoids asking the
-            // driver to re-route a display that is only moving or changing mode.
+            // Preserve an active source before considering alternate routes.
             var chosen = matching.FirstOrDefault(candidate =>
                 (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0
                 && Free(candidate.Path, takenSources));
@@ -144,8 +140,7 @@ internal static class DisplayLayoutPlanner
             }
 
             takenSources.Add(SourceKey(chosen.Path));
-            // Rotation 0 keeps the rotation the display runs at now. It is read from the path that drives it
-            // before any flag below changes, as input to the write; a display that is off gets landscape.
+            // Capture the preserved rotation before changing the path's active flag.
             var current = matching.FirstOrDefault(candidate =>
                 (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0);
             var rotation = output.Rotation != 0 ? output.Rotation
@@ -189,8 +184,7 @@ internal static class DisplayLayoutPlanner
             });
         }
 
-        // Every other path is supplied inactive, which is how a supplied configuration says
-        // "and switch these off" rather than leaving the previous desktop half in place.
+        // A supplied configuration must explicitly deactivate omitted paths.
         foreach (var candidate in candidates)
         {
             if (plannedPaths.Exists(planned => Same(planned, candidate.Path)))
@@ -233,8 +227,6 @@ internal static class DisplayLayoutPlanner
         {
             return readTarget(path);
         }
-        // A path whose name cannot be read is not one this layout can be built on, but it must not
-        // stop the layout being built on the others.
         catch (Win32Exception)
         {
             return null;

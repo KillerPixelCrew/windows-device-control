@@ -16,13 +16,16 @@ public static partial class WindowsRadio
     /// <summary>Reads the combined power state of every adapter of one kind.</summary>
     /// <param name="kind">Which radio family to read.</param>
     /// <returns>
-    ///     The aggregate state; <see cref="Power.Absent" /> when the machine has no such
-    ///     adapter.
+    ///     The highest-priority state: On, Disabled, Off, Unknown, then Absent when enumeration is empty.
     /// </returns>
     /// <exception cref="ArgumentOutOfRangeException">
     ///     <paramref name="kind" /> is not a defined
     ///     <see cref="RadioKind" /> value.
     /// </exception>
+    /// <remarks>
+    ///     Adapter membership is cached for up to 30 seconds; power states are read on each call.
+    ///     WinRT enumeration or state-read failures propagate to the caller.
+    /// </remarks>
     public static Power GetPower(RadioKind kind)
     {
         ValidateRadioKind(kind);
@@ -39,9 +42,8 @@ public static partial class WindowsRadio
     /// <summary>Asks Windows whether this process may change radio power.</summary>
     /// <returns>Whether radio control is permitted, and if not, why.</returns>
     /// <remarks>
-    ///     Called for you by <see cref="SetPower" />. Call it directly to decide whether to
-    ///     show a radio toggle at all — a denied toggle that silently does nothing is worse than an
-    ///     absent one.
+    ///     May request user consent. Blocks for the WinRT answer and propagates native failures.
+    ///     <see cref="SetPower" /> calls this before accessing adapters.
     /// </remarks>
     public static Access RequestAccess()
     {
@@ -53,16 +55,16 @@ public static partial class WindowsRadio
     /// <param name="kind">Which radio family to change.</param>
     /// <param name="on">True to turn the radios on, false to turn them off.</param>
     /// <returns>
-    ///     Each adapter's answer and the combined <see cref="RadioPowerResult.Access" />. Every
-    ///     adapter is written once; a refusal or a failed write on one adapter is reported in its
-    ///     entry rather than thrown, so a caller can tell a partial change from none. Nothing is
-    ///     read back: each write's own status is its result.
+    ///     The access decision and each adapter's result. Denied access returns no adapter entries.
+    ///     Once allowed, each adapter is attempted once; name-read or write exceptions become that
+    ///     entry's HRESULT. An accepted write is not read back, and earlier writes are not rolled back.
     /// </returns>
     /// <exception cref="InvalidOperationException">The machine has no adapter of this kind.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     ///     <paramref name="kind" /> is not a defined
     ///     <see cref="RadioKind" /> value.
     /// </exception>
+    /// <remarks>Access-request and enumeration failures propagate; only per-adapter failures become results.</remarks>
     public static RadioPowerResult SetPower(RadioKind kind, bool on)
     {
         ValidateRadioKind(kind);
@@ -102,6 +104,8 @@ public static partial class WindowsRadio
     ///     Folds adapter answers into one: allowed only when every adapter allowed, otherwise the
     ///     first refusal, or <see cref="Access.Unspecified" /> when an adapter failed without one.
     /// </summary>
+    /// <param name="adapters">Adapter results in attempted order.</param>
+    /// <returns>The first refusal, otherwise Unspecified for an exception, otherwise Allowed (including empty input).</returns>
     internal static Access CombineAdapterAccess(IReadOnlyList<RadioAdapterResult> adapters)
     {
         var failed = false;
@@ -166,9 +170,7 @@ public static partial class WindowsRadio
 
         if (all is null)
         {
-            // Enumeration can stall in the radio stack, so it runs outside the lock: one stalled
-            // enumeration must not hold up a caller the cache can still serve. Two concurrent misses
-            // may both enumerate; the last one published wins, and both lists are fresh.
+            // A stalled native enumeration must not block readers that can still use the cache.
             all = Radio.GetRadiosAsync().WaitWinRt().ToArray();
             observed = null;
             lock (RadioCacheLock)
@@ -177,7 +179,6 @@ public static partial class WindowsRadio
             }
         }
 
-        // Fully qualified: this type declares its own RadioKind, so the WinRT one needs naming.
         var expected = kind == RadioKind.WiFi
             ? Windows.Devices.Radios.RadioKind.WiFi
             : Windows.Devices.Radios.RadioKind.Bluetooth;
@@ -197,6 +198,8 @@ public static partial class WindowsRadio
     }
 
     /// <summary>Refuses an undefined radio kind. Every public member checks it before enumerating.</summary>
+    /// <param name="kind">Caller-provided adapter family.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind" /> is neither WiFi nor Bluetooth.</exception>
     internal static void ValidateRadioKind(RadioKind kind)
     {
         if (kind is not RadioKind.WiFi and not RadioKind.Bluetooth)
@@ -229,10 +232,10 @@ public static partial class WindowsRadio
     /// <summary>Reduces several adapters' power states to the one a caller should act on.</summary>
     /// <param name="states">The individual adapter states.</param>
     /// <returns>
-    ///     The state that represents the group: any adapter on means on, and a machine-wide block is
-    ///     reported ahead of a merely-off adapter, so a caller does not offer to enable a radio that
-    ///     airplane mode or a hardware switch will refuse.
+    ///     The first present state in priority order: On, Disabled, Off, Unknown, Absent. Empty input
+    ///     and undefined enum values contribute Absent. This method does not query Windows.
     /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="states" /> is null.</exception>
     public static Power AggregatePower(IEnumerable<Power> states)
     {
         ArgumentNullException.ThrowIfNull(states);

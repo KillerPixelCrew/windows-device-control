@@ -74,8 +74,10 @@ internal sealed record WakeSecurityRestoreItem(
 /// <remarks>
 ///     Owns no persistence, retry or default policy. A caller composes the primitives, persists a
 ///     <see cref="Capture" /> snapshot before the first write and retains it until <see cref="Restore" />
-///     succeeds. In every primitive a value of -1 deletes the stored value; a key is created only to write a
-///     value, and a deletion from an absent key does nothing.
+///     succeeds. Calls are synchronous and mutations are not transactional: earlier values may have
+///     changed when a later write throws. Callers must serialize competing changes. Every negative
+///     value deletes a stored value (-1 is the snapshot's absence sentinel); nonnegative values are
+///     written as DWORDs. Deletion from an absent key does nothing.
 /// </remarks>
 public static class WindowsWakeSecurity
 {
@@ -87,15 +89,19 @@ public static class WindowsWakeSecurity
     private static readonly Guid ConsoleLock = new("0e796bdb-100d-47d6-a2d5-f7d2daa51f51");
     private static readonly string PolicyKey = @"SOFTWARE\Policies\Microsoft\Power\PowerSettings\" + ConsoleLock;
 
-    /// <summary>Captures exact stored values. A read failure throws instead of returning a partial snapshot.</summary>
+    /// <summary>Captures stored DWORD values and absence; read failures prevent a partial snapshot.</summary>
     /// <remarks>
     ///     Schemes come from <see cref="WindowsPower.EnumerateSchemes" />, or the active scheme alone when the
-    ///     enumeration is empty.
+    ///     enumeration is empty. Values are read sequentially without locking out external policy changes.
+    ///     Restore supports nonnegative policy values and the -1 absence sentinel; other negative DWORD
+    ///     representations are also treated as deletion by the mutation methods.
     /// </remarks>
     /// <returns>A snapshot to persist before a mutation.</returns>
     /// <exception cref="InvalidDataException">
     ///     A captured value is not a DWORD, so it could not be restored exactly; nothing should be changed.
     /// </exception>
+    /// <exception cref="UnauthorizedAccessException">A required registry key could not be read.</exception>
+    /// <exception cref="System.ComponentModel.Win32Exception">Scheme enumeration or active-scheme lookup failed.</exception>
     public static WakeSecuritySnapshot Capture()
     {
         using var policy = Registry.LocalMachine.OpenSubKey(PolicyKey);
@@ -134,6 +140,8 @@ public static class WindowsWakeSecurity
     /// <summary>Writes the console-lock policy that applies to every scheme, existing and future.</summary>
     /// <param name="ac">AC value (0 no sign-in, 1 sign-in), or -1 to delete it.</param>
     /// <param name="dc">Battery value, or -1 to delete it.</param>
+    /// <exception cref="UnauthorizedAccessException">The caller cannot write the policy key.</exception>
+    /// <exception cref="IOException">A registry write or deletion failed; earlier changes may remain.</exception>
     public static void SetConsoleLockPolicy(int ac, int dc)
     {
         WriteValues(PolicyKey, (AcValue, ac), (DcValue, dc));
@@ -144,6 +152,9 @@ public static class WindowsWakeSecurity
     /// <param name="scheme">Installed scheme identity.</param>
     /// <param name="ac">AC value (0 no sign-in, 1 sign-in), or -1 to delete it.</param>
     /// <param name="dc">Battery value, or -1 to delete it.</param>
+    /// <exception cref="System.ComponentModel.Win32Exception">A policy write failed; earlier changes may remain.</exception>
+    /// <exception cref="UnauthorizedAccessException">The caller cannot open the scheme key for deletion.</exception>
+    /// <exception cref="IOException">A registry deletion failed.</exception>
     public static void SetSchemeConsoleLock(Guid scheme, int ac, int dc)
     {
         if (ac >= 0)
@@ -173,6 +184,8 @@ public static class WindowsWakeSecurity
 
     /// <summary>Writes the personalization NoLockScreen policy value.</summary>
     /// <param name="value">1 hides the lock screen, 0 shows it, -1 deletes the value.</param>
+    /// <exception cref="UnauthorizedAccessException">The caller cannot write the personalization key.</exception>
+    /// <exception cref="IOException">The registry write or deletion failed.</exception>
     public static void SetNoLockScreen(int value)
     {
         WriteValues(PersonalizationKey, (NoLockScreenValue, value));
@@ -210,6 +223,9 @@ public static class WindowsWakeSecurity
     }
 
     /// <summary>Builds the restore steps in write order, leaving out schemes that are no longer installed.</summary>
+    /// <param name="snapshot">Captured values and scheme identities.</param>
+    /// <param name="installed">Currently installed scheme identities, or an empty collection when enumeration failed.</param>
+    /// <returns>Policy, surviving scheme, active-refresh and personalization steps in execution order.</returns>
     internal static IReadOnlyList<WakeSecurityRestoreItem> RestorePlan(
         WakeSecuritySnapshot snapshot, IReadOnlyCollection<Guid> installed)
     {
@@ -234,6 +250,9 @@ public static class WindowsWakeSecurity
     }
 
     /// <summary>Applies every step once, collecting the ones that throw instead of stopping at the first.</summary>
+    /// <param name="plan">Restore steps in desired write order.</param>
+    /// <param name="apply">Synchronous step writer; each thrown exception is retained in the result.</param>
+    /// <returns>Failures in plan order after every step has been attempted once.</returns>
     internal static List<WakeSecurityRestoreFailure> ExecuteRestore(
         IReadOnlyList<WakeSecurityRestoreItem> plan, Action<WakeSecurityRestoreItem> apply)
     {
@@ -256,6 +275,10 @@ public static class WindowsWakeSecurity
 
     /// <summary>Converts one raw registry value to the snapshot form: -1 when absent.</summary>
     /// <exception cref="InvalidDataException">The value exists but is not a DWORD.</exception>
+    /// <param name="raw">Raw RegistryKey.GetValue result; null means absent.</param>
+    /// <param name="key">Registry path used in a type-error message.</param>
+    /// <param name="value">Registry value name used in a type-error message.</param>
+    /// <returns>The stored signed DWORD representation, or -1 when absent.</returns>
     internal static int ToDword(object? raw, string key, string value)
     {
         return raw switch

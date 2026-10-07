@@ -5,19 +5,9 @@ namespace WindowsDeviceControl;
 
 /// <summary>Flat Win32 control of the internal panel's backlight through <c>\\.\LCD</c>.</summary>
 /// <remarks>
-///     The ACPI backlight driver's legacy device interface. Verified on a device whose AC and DC levels
-///     track one slider: values written here read back identically through
-///     <c>WmiMonitorBrightnessMethods</c>; the direct interface reaches the same driver with one small,
-///     synchronous Win32 transaction and no WMI session.
-///     <para>
-///         The transfer is the documented <c>DISPLAY_BRIGHTNESS</c> triple: policy byte, then the AC and DC
-///         levels as percent. Writes set both power sources to the same level, because a slider that only
-///         moves the panel on one of them looks broken exactly half the time.
-///     </para>
-///     <para>
-///         A machine without the interface (a desktop, an external-only setup) simply reports failure from
-///         every call; callers translate that into an absent control, never an error state.
-///     </para>
+///     Calls are synchronous and open/close their own device handle. No WMI or DDC/CI fallback is used.
+///     False reports an unavailable interface, native refusal or invalid read, not a known absence of
+///     panel hardware. Writes use one DISPLAY_BRIGHTNESS packet for both AC and DC, without readback.
 /// </remarks>
 public static class Backlight
 {
@@ -37,9 +27,9 @@ public static class Backlight
     /// <summary>Reads the panel's current backlight level.</summary>
     /// <param name="percent">
     ///     The level, 0 to 100, when this returns true: the level of the power source the driver's
-    ///     policy byte names, which is the AC level unless the driver reports DC only.
+    ///     policy byte names, which is the AC level unless the driver reports DC only. Ignore on false.
     /// </param>
-    /// <returns>Whether the panel exposes a readable backlight.</returns>
+    /// <returns>True for a complete reply containing a valid percentage; false otherwise.</returns>
     public static unsafe bool TryReadBrightness(out int percent)
     {
         percent = 0;
@@ -73,6 +63,8 @@ public static class Backlight
     ///     The level a <c>DISPLAY_BRIGHTNESS</c> reply reports for its own policy: the DC byte for a
     ///     DC-only policy, the AC byte for AC and for both.
     /// </summary>
+    /// <param name="brightness">A validated DISPLAY_BRIGHTNESS packet containing at least three bytes.</param>
+    /// <returns>The selected AC or DC brightness byte; this does not query the panel.</returns>
     internal static byte LevelFor(ReadOnlySpan<byte> brightness)
     {
         return brightness[0] == PolicyDc ? brightness[2] : brightness[1];

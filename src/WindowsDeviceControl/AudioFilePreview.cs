@@ -34,7 +34,7 @@ public sealed class AudioFilePreview : IDisposable
     /// </exception>
     /// <remarks>
     ///     Return means playback was requested, not that decoding completed or sound was audible.
-    ///     Later media failures arrive through Failed. Invalid paths leave the preceding preview alone;
+    ///     Later media failures arrive through <see cref="Failed" />. Invalid paths leave the preceding preview alone;
     ///     after validation the preceding preview is stopped before the new player is created.
     /// </remarks>
     public void Play(string path)
@@ -81,6 +81,10 @@ public sealed class AudioFilePreview : IDisposable
     }
 
     /// <summary>Stops playback and releases its source.</summary>
+    /// <remarks>
+    ///     Does nothing when no player exists, including after disposal. The player is released even
+    ///     when pausing fails; any pause or disposal exception propagates. Serialize with other owner calls.
+    /// </remarks>
     public void Stop()
     {
         var player = Interlocked.Exchange(ref _player, null);
@@ -100,6 +104,7 @@ public sealed class AudioFilePreview : IDisposable
     }
 
     /// <summary>Releases the player and stops playback.</summary>
+    /// <remarks>Idempotent. Future Play calls throw ObjectDisposedException; Stop remains harmless.</remarks>
     public void Dispose()
     {
         if (_disposed)

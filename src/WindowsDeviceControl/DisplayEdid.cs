@@ -9,7 +9,7 @@ namespace WindowsDeviceControl;
 /// <summary>Why <see cref="DisplayEdid.ReadModes" /> did or did not produce timings.</summary>
 public enum DisplayEdidStatus
 {
-    /// <summary>The descriptor was read. An invalid descriptor is read too and yields no modes.</summary>
+    /// <summary>A descriptor was returned; invalid base data or no recognized timings can still yield no modes.</summary>
     Read,
 
     /// <summary>The identity has no device path, or Windows found no monitor behind it.</summary>
@@ -23,7 +23,7 @@ public enum DisplayEdidStatus
 }
 
 /// <summary>EDID timings read for one monitor, and how the read went.</summary>
-/// <param name="Modes">Progressive timing candidates; empty unless <paramref name="Status" /> is Read.</param>
+/// <param name="Modes">Unique progressive candidates sorted by width, height and refresh; empty unless Status is Read.</param>
 /// <param name="Status">Whether the descriptor was read, and why not when it was not.</param>
 public sealed record DisplayEdidModes(IReadOnlyList<DisplayMode> Modes, DisplayEdidStatus Status);
 
@@ -47,11 +47,13 @@ public static class DisplayEdid
     ///     Progressive timing candidates, not a driver validation or an active mode snapshot, with the status
     ///     that tells a slow display from a missing one.
     /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     /// <remarks>
     ///     Call on a worker. Interface lookup has a three-second budget, reported as
     ///     <see cref="DisplayEdidStatus.TimedOut" />; other lookup failures propagate to the caller. Invalid
-    ///     descriptors produce no modes. Reading does not enable the display, validate a topology, or apply
-    ///     any setting.
+    ///     base descriptors produce no modes; malformed extension blocks are skipped. The lookup budget
+    ///     does not bound the later descriptor read, whose errors also propagate. Reading does not enable
+    ///     the display, validate a topology or apply a setting.
     /// </remarks>
     public static DisplayEdidModes ReadModes(DisplayTargetIdentity target)
     {
@@ -85,6 +87,9 @@ public static class DisplayEdid
             : new DisplayEdidModes(Parse(descriptor), DisplayEdidStatus.Read);
     }
 
+    /// <summary>Extracts supported progressive timing shapes from EDID without querying Windows.</summary>
+    /// <param name="edid">Raw EDID base block and any available extension blocks.</param>
+    /// <returns>Unique modes sorted by width, height and refresh; empty for an invalid base, with invalid extensions skipped.</returns>
     internal static IReadOnlyList<DisplayMode> Parse(ReadOnlySpan<byte> edid)
     {
         if (edid.Length < 128 || edid.Length > 32768 || edid[18] != 1

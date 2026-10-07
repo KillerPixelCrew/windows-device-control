@@ -29,10 +29,9 @@ public static partial class CoreAudio
 
     /// <summary>Lists every audio endpoint container, including disconnected Bluetooth devices.</summary>
     /// <returns>
-    ///     One entry per container, gathered from render and capture endpoints in every state.
-    ///     A paired but disconnected Bluetooth headset appears with
-    ///     <see cref="BluetoothAudioContainer.Active" /> false, which is how you offer to reconnect
-    ///     it. Containers use the same lower-case GUID form as <see cref="WindowsRadio.BluetoothDevice.Container" />.
+    ///     One entry per readable nonempty container GUID from both flows and all endpoint states,
+    ///     ordered by container. Includes non-Bluetooth endpoints; join with BluetoothDevice.Container
+    ///     to identify Bluetooth audio. IDs use the same normalized GUID form as that property.
     /// </returns>
     /// <exception cref="COMException">Core Audio could not enumerate the endpoints.</exception>
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
@@ -55,7 +54,7 @@ public static partial class CoreAudio
             .ToArray();
     }
 
-    /// <summary>Connects or disconnects one paired Bluetooth audio device.</summary>
+    /// <summary>Requests a paired Bluetooth audio device's connection state without removing its pairing.</summary>
     /// <param name="containerId">
     ///     The container identifier from
     ///     <see cref="ListBluetoothAudioContainers" />.
@@ -63,16 +62,17 @@ public static partial class CoreAudio
     /// <param name="connect">True to connect, false to disconnect.</param>
     /// <exception cref="ArgumentException"><paramref name="containerId" /> is null or empty.</exception>
     /// <exception cref="COMException">
-    ///     Core Audio could not enumerate the endpoints, or the only matching endpoint refused the
-    ///     request.
+    ///     Core Audio enumeration failed, or the last matching endpoint attempt failed with a COM error.
     /// </exception>
     /// <exception cref="InvalidOperationException">
     ///     The container has no audio endpoint, or none of its endpoints accepted the request.
     /// </exception>
+    /// <exception cref="InvalidCastException">The last matching endpoint lacked the required topology or KS interface.</exception>
     /// <remarks>
-    ///     The request is made to the audio endpoint's device topology; the device may take a
-    ///     moment to appear or disappear afterwards, so re-read the container list rather than assuming
-    ///     the change is immediate.
+    ///     Synchronously tries matching endpoints until one accepts; otherwise propagates the last
+    ///     attempt's failure. Temporary COM interfaces are released before return. Acceptance is not
+    ///     observed connectivity; use a later snapshot. Run on a worker thread. A nonempty invalid GUID
+    ///     matches no container and is reported as InvalidOperationException.
     /// </remarks>
     public static void SetBluetoothAudioConnection(string containerId, bool connect)
     {
@@ -237,8 +237,8 @@ public static partial class CoreAudio
     ///     to the Bluetooth device it belongs to.
     /// </param>
     /// <param name="Active">
-    ///     Whether the container currently has an active endpoint — that is,
-    ///     whether the device is connected rather than merely paired.
+    ///     Whether any endpoint returned DeviceStateActive. False also covers unreadable endpoint
+    ///     state and does not independently prove a Bluetooth device is disconnected.
     /// </param>
     public readonly record struct BluetoothAudioContainer(string Container, bool Active);
 }

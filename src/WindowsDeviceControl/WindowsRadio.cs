@@ -6,16 +6,15 @@ namespace WindowsDeviceControl;
 
 /// <summary>Windows radio control: adapter power, Bluetooth discovery and pairing, and Wi-Fi.</summary>
 /// <remarks>
-///     WinRT owns radio power and Bluetooth. Wi-Fi goes through WLANAPI rather than WinRT's
-///     <c>WiFiAdapter</c>, because an unpackaged process cannot declare the <c>wiFiControl</c>
-///     capability WinRT requires — which is why an unpackaged desktop, kiosk or service application
-///     cannot use the WinRT Wi-Fi surface at all.
+///     Uses WinRT for radio power and Bluetooth, and native WLANAPI for Wi-Fi in unpackaged processes.
+///     The process must match the Windows architecture for radio enumeration; an x86 process on
+///     x64 Windows may receive an empty adapter list.
 ///     <para>
-///         Every member except <see cref="PairBluetoothAsync" /> blocks until Windows answers, so call
-///         them from a worker thread. All members are safe to call from any thread. Windows itself
-///         decides what a given process may do: <see cref="RequestAccess" /> reports whether radio power
-///         may be changed, and <see cref="GetConsent" /> reports the privacy consent recorded for a
-///         capability.
+///         Native operations are synchronous except <see cref="PairBluetoothAsync" />; call blocking
+///         operations from a worker thread. Watch callbacks arrive on Windows threads. Callers should
+///         serialize competing mutations of the same device or saved profile. Windows controls access:
+///         <see cref="RequestAccess" /> asks for radio-power permission, while <see cref="GetConsent" />
+///         reads diagnostic registry values only.
 ///     </para>
 /// </remarks>
 public static partial class WindowsRadio
@@ -77,10 +76,10 @@ public static partial class WindowsRadio
         /// <summary>Consent is recorded as refused.</summary>
         Deny,
 
-        /// <summary>No value is recorded — Windows has not asked yet.</summary>
+        /// <summary>No value is recorded; this does not establish whether Windows has asked for consent.</summary>
         Unset,
 
-        /// <summary>The consent store could not be read.</summary>
+        /// <summary>The consent store could not be read, or its value was unrecognized.</summary>
         Unknown
     }
 
@@ -148,7 +147,7 @@ public static partial class WindowsRadio
         /// <summary>At least one adapter of this kind is on.</summary>
         On,
 
-        /// <summary>Every adapter of this kind is off, and can be turned back on.</summary>
+        /// <summary>At least one adapter is off and none reports On or Disabled; access to enable it is separate.</summary>
         Off,
 
         /// <summary>
@@ -160,7 +159,7 @@ public static partial class WindowsRadio
         /// <summary>Present, but Windows did not report a state this API recognizes.</summary>
         Unknown,
 
-        /// <summary>No adapter of this kind exists on the machine.</summary>
+        /// <summary>Windows enumerated no adapter of this kind; this does not prove hardware is absent.</summary>
         Absent
     }
 
@@ -508,10 +507,9 @@ public static partial class WindowsRadio
     /// <summary>A Bluetooth discovery change.</summary>
     /// <param name="Kind">What happened to the device.</param>
     /// <param name="Device">
-    ///     The device it happened to. Only <see cref="BluetoothDevice.Id" /> is
-    ///     meaningful when <paramref name="Kind" /> is <see cref="BluetoothChangeKind.Removed" />, and
-    ///     the whole value is default for
-    ///     <see cref="BluetoothChangeKind.EnumerationCompleted" />.
+    ///     The endpoint it happened to. Only <see cref="BluetoothDevice.Id" /> is meaningful for
+    ///     <see cref="BluetoothChangeKind.Removed" />. The whole value is default for
+    ///     <see cref="BluetoothChangeKind.EnumerationCompleted" /> and <see cref="BluetoothChangeKind.Stopped" />.
     /// </param>
     public readonly record struct BluetoothChange(BluetoothChangeKind Kind, BluetoothDevice Device);
 

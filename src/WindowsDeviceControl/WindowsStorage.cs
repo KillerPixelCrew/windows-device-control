@@ -8,12 +8,8 @@ namespace WindowsDeviceControl;
 
 /// <summary>One mounted volume and the physical disk behind it.</summary>
 /// <remarks>
-///     The disk number is the fact that makes this worth a contract. Windows exposes a volume by
-///     its mount path and a disk by its number, and nothing in the managed surface relates the two:
-///     <see cref="DriveInfo" /> knows the letter and the size, and knows nothing about which piece
-///     of hardware it lives on. Two components that each enumerate storage will therefore identify
-///     the same card by different handles and have no way to agree that it is the same card, which
-///     is a bug that only appears once something tries to join them.
+///     Disk numbers identify the current Windows enumeration, not persistent hardware identity.
+///     Re-read after device arrival/removal and never group entries whose disk number is -1.
 /// </remarks>
 /// <param name="MountPath">Where the volume is mounted, for example <c>D:\</c>.</param>
 /// <param name="DiskNumber">
@@ -34,9 +30,8 @@ public sealed record StorageVolume(
 
 /// <summary>Reads how Windows relates mounted volumes to the disks underneath them.</summary>
 /// <remarks>
-///     Read-only. Nothing here formats, mounts, ejects or writes: those are destructive operations
-///     whose safety comes from the identity re-checks their caller performs, and putting them
-///     behind a general-purpose library would separate the check from the act.
+///     Synchronous, read-only drive-letter discovery. Call from a worker thread because local device
+///     metadata reads can block. Native volume handles are owned and closed within each query.
 /// </remarks>
 public static class WindowsStorage
 {
@@ -85,7 +80,6 @@ public static class WindowsStorage
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Not a volume this caller can act on, so not one worth reporting.
             }
         }
 
@@ -107,10 +101,8 @@ public static class WindowsStorage
     /// <param name="letter">The drive letter, with or without case.</param>
     /// <returns>The disk number, or -1 when Windows would not say.</returns>
     /// <remarks>
-    ///     The volume is opened with no access rights at all. That is deliberate and is what lets
-    ///     this run unelevated: <c>IOCTL_STORAGE_GET_DEVICE_NUMBER</c> is answered from the device
-    ///     object rather than the media, so a zero-access handle is enough, while asking for read
-    ///     access would fail on a volume the caller has no business reading.
+    ///     Uses a zero-access volume handle for <c>IOCTL_STORAGE_GET_DEVICE_NUMBER</c>, so the query
+    ///     does not require media-read access or elevation. An invalid letter or failed lookup yields -1.
     /// </remarks>
     public static int DiskNumberFor(char letter)
     {

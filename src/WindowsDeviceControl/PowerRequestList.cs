@@ -14,11 +14,10 @@ namespace WindowsDeviceControl;
 /// </param>
 /// <param name="CallerType">REQUESTER_TYPE: 0 kernel, 1 process, 2 service.</param>
 /// <param name="Name">
-///     Process image path (NT device form) or driver device
-///     description; empty when the entry carries none.
+///     Process image path (NT device form) or driver device description; empty when the entry carries none.
 /// </param>
 /// <param name="Pid">The requesting process id; null for kernel requesters.</param>
-/// <param name="Reason">The diagnostic reason string, when one was supplied.</param>
+/// <param name="Reason">A readable simple reason string, or null for absent, localized or unreadable reasons.</param>
 public readonly record struct PowerRequestEntry(
     bool HoldsDisplay,
     bool HoldsSystem,
@@ -47,14 +46,9 @@ public enum PowerRequestListStatus
     Unsupported
 }
 
-// The decoder was ported from the author's WakeWatch project (MIT, same author).
 /// <summary>
-///     Enumerates system-wide power requests via the undocumented
-///     <c>NtPowerInformation(GetPowerRequestList)</c> class, the one <c>powercfg /requests</c>
-///     uses internally. Decoding follows the undocumented POWER_REQUEST_LIST layout, which varies
-///     by Windows build, so every read goes through bounds-checked accessors and any structural
-///     surprise yields "unknown" (null), never a plausible-looking wrong answer and in particular
-///     never a false "all clear".
+///     Reads system-wide power requests through the undocumented NtPowerInformation request-list class.
+///     Requires a 64-bit process and normally elevation; unsupported layouts produce an unknown result.
 /// </summary>
 public static partial class PowerRequestList
 {
@@ -73,6 +67,10 @@ public static partial class PowerRequestList
     ///     <see cref="PowerRequestListStatus.QueryFailed" /> or <see cref="PowerRequestListStatus.AccessDenied" />
     ///     (zero for every other outcome).
     /// </returns>
+    /// <remarks>
+    ///     Blocks for a native snapshot. A Read result with no entries differs from an unavailable list;
+    ///     request flags describe outstanding requests and do not guarantee Windows honors them.
+    /// </remarks>
     public static (IReadOnlyList<PowerRequestEntry>? Entries, PowerRequestListStatus Status, int NativeStatus)
         Query()
     {
@@ -121,6 +119,8 @@ public static partial class PowerRequestList
     ///     SupportedRequestMask is NOT reliable (kernel requesters were observed
     ///     reporting 0x12 rather than a full 0x3F).
     /// </summary>
+    /// <param name="build">Windows build number with version flag bits removed.</param>
+    /// <returns>The counter count for the layout associated with that build.</returns>
     internal static int ModeCount(uint build)
     {
         return build switch
@@ -136,6 +136,8 @@ public static partial class PowerRequestList
     ///     Offset of DIAGNOSTIC_BUFFER within POWER_REQUEST: the mask plus the
     ///     counter array, rounded up to SIZE_T alignment.
     /// </summary>
+    /// <param name="modes">Number of 32-bit request counters in this layout.</param>
+    /// <returns>The diagnostic-buffer offset aligned to the decoder's 64-bit SIZE_T.</returns>
     internal static int DiagOffset(int modes)
     {
         return (4 + modes * 4 + 7) & ~7;
@@ -145,6 +147,9 @@ public static partial class PowerRequestList
     ///     Decodes a raw POWER_REQUEST_LIST buffer; null on any structural
     ///     surprise so the caller shows "unknown" instead of a wrong state.
     /// </summary>
+    /// <param name="buffer">Complete native request-list bytes including referenced offsets.</param>
+    /// <param name="build">Windows build used to select the request-counter layout.</param>
+    /// <returns>All decoded entries, including an empty valid list; null on structural failure.</returns>
     internal static List<PowerRequestEntry>? DecodeWithBuild(ReadOnlySpan<byte> buffer, uint build)
     {
         var modes = ModeCount(build);

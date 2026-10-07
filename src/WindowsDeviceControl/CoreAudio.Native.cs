@@ -5,8 +5,6 @@ using System.Threading.Tasks;
 
 namespace WindowsDeviceControl;
 
-// The COM declarations, PROPVARIANT cleanup and the shared device enumerator live here and stay
-// private to CoreAudio.
 public static partial class CoreAudio
 {
     private const int ClsctxAll = 23;
@@ -71,6 +69,8 @@ public static partial class CoreAudio
     ///     RPC_E_DISCONNECTED, RPC_S_SERVER_UNAVAILABLE and AUDCLNT_E_SERVICE_NOT_RUNNING: the
     ///     results that mean the enumerator's service went away rather than one device.
     /// </summary>
+    /// <param name="result">HRESULT returned by the shared enumerator.</param>
+    /// <returns>True only for a recognized service-disconnection HRESULT.</returns>
     internal static bool IsEnumeratorGone(int result)
     {
         return result is RpcDisconnected or RpcServerUnavailable or AudioServiceNotRunning;
@@ -123,11 +123,7 @@ public static partial class CoreAudio
     {
         if (value is not null && Marshal.IsComObject(value))
         {
-            // RCWs are keyed by native IUnknown identity, and the process-wide cached enumerator
-            // can hand the same identity to more than one caller (a volume key handler racing a
-            // frequent caller's poll, for instance). FinalReleaseComObject forces that RCW's reference count to
-            // zero regardless of how many holders remain, severing it out from under whichever
-            // caller runs second; ReleaseComObject only drops this caller's own claim.
+            // Release only this claim; FinalReleaseComObject would invalidate an RCW shared by other callers.
             Marshal.ReleaseComObject(value);
         }
     }
@@ -148,11 +144,8 @@ public static partial class CoreAudio
         internal readonly uint PropertyId = propertyId;
     }
 
-    // PROPVARIANT is 24 bytes on x64: an 8-byte vt and reserved header plus a 16-byte union, whose
-    // widest arms are DECIMAL and the counted arrays. The two declared fields alone make the managed
-    // struct 16 bytes, and it is blittable, so GetValue writes 24 bytes into whatever 16-byte local
-    // the caller allocated and overwrites the rest of that stack frame. The explicit size is the
-    // whole fix; the trailing bytes are never read here.
+    // PROPVARIANT is 24 bytes on x64: 8-byte header plus 16-byte union. The declared fields alone
+    // occupy 16 bytes; preserve the explicit size so a native GetValue cannot overwrite the stack.
     [StructLayout(LayoutKind.Explicit, Size = 24)]
     private readonly struct PropVariant
     {
@@ -247,9 +240,7 @@ public static partial class CoreAudio
     }
 
     [ComImport]
-    // IID_IMMDeviceCollection from mmdeviceapi.h. A wrong IID here is invisible until runtime:
-    // EnumAudioEndpoints succeeds natively, then the interop QI for the declared IID answers
-    // E_NOINTERFACE and every endpoint enumeration throws InvalidCastException.
+    // IID_IMMDeviceCollection from mmdeviceapi.h; interop queries this IID after native enumeration.
     [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IMMDeviceCollection

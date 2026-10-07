@@ -6,7 +6,8 @@ namespace WindowsDeviceControl;
 /// <summary>One pre-opened waveOut stream for the short volume feedback cue.</summary>
 /// <remarks>
 ///     Single owner and not thread-safe: <see cref="Play" /> and <see cref="Dispose" /> are called from
-///     one thread at a time.
+///     one thread at a time. The stream stays bound to the endpoint selected at Open; recreate it to
+///     follow a changed default endpoint. Dispose every successfully opened owner.
 /// </remarks>
 public sealed partial class WaveOutFeedback : IDisposable
 {
@@ -33,10 +34,7 @@ public sealed partial class WaveOutFeedback : IDisposable
     /// </remarks>
     public void Dispose()
     {
-        // A device that disconnects mid-playback (Bluetooth or USB headset) makes reset, unprepare
-        // or close return an error while winmm still holds these buffers. Freeing them anyway hands
-        // the driver freed heap; leaking them instead is the safe trade, since the process either
-        // owns them until exit or is discarding this one-shot stream regardless.
+        // A failed teardown can leave winmm referencing both buffers; retain them rather than free live memory.
         var driverReleasedBuffers = true;
         if (_output != 0)
         {
@@ -53,8 +51,7 @@ public sealed partial class WaveOutFeedback : IDisposable
 
         if (!driverReleasedBuffers)
         {
-            // Forget the pointers rather than keep them: a later Dispose must find nothing to free,
-            // or it would undo the deliberate leak and hand the driver freed heap after all.
+            // Repeated disposal must not free deliberately retained buffers.
             _header = 0;
             _samples = 0;
             return;
@@ -73,7 +70,7 @@ public sealed partial class WaveOutFeedback : IDisposable
         }
     }
 
-    /// <summary>Opens and prewarms the default waveOut endpoint.</summary>
+    /// <summary>Opens the default waveOut endpoint and prepares its cue buffers without playing.</summary>
     /// <param name="feedback">
     ///     The opened stream on success; <see langword="null" /> otherwise. The
     ///     caller owns it and must dispose it.
@@ -84,8 +81,8 @@ public sealed partial class WaveOutFeedback : IDisposable
     ///     code despite the facility.
     /// </returns>
     /// <remarks>
-    ///     Opening is separated from playing on purpose: opening a waveOut endpoint takes
-    ///     long enough to be audible as a delay, so the stream is opened once and kept.
+    ///     Synchronous; use a worker when opening on a latency-sensitive UI path. Keep the returned
+    ///     owner for repeated cues, then dispose it. System volume and default endpoint selection are unchanged.
     /// </remarks>
     public static int Open(out WaveOutFeedback? feedback)
     {
@@ -104,12 +101,11 @@ public sealed partial class WaveOutFeedback : IDisposable
     /// <summary>Plays the cue, unless the previous one is still queued.</summary>
     /// <returns>
     ///     Zero on success or when the previous cue is still playing, otherwise the
-    ///     HRESULT containing the <c>MMRESULT</c> waveOut returned.
+    ///     HRESULT containing the <c>MMRESULT</c> waveOut returned. After disposal, returns an HRESULT
+    ///     containing MMSYSERR_ERROR (1) rather than throwing ObjectDisposedException.
     /// </returns>
     /// <remarks>
-    ///     Dropping the cue while one is queued is deliberate: holding a volume key repeats
-    ///     faster than the sound lasts, and queueing every repeat turns the feedback into a
-    ///     rattle.
+    ///     Returns after queueing, not after audible completion. An already queued cue is left unchanged.
     /// </remarks>
     public int Play()
     {
@@ -121,8 +117,7 @@ public sealed partial class WaveOutFeedback : IDisposable
         uint flags;
         unsafe
         {
-            // A direct read of the blittable header the driver updates; a volume key repeats this
-            // faster than the cue lasts, so it copies no structure through the marshaller.
+            // The driver updates this stable unmanaged header while playback is queued.
             flags = ((WaveHeader*)_header)->Flags;
         }
 

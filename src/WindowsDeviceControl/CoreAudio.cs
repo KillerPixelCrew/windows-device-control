@@ -6,15 +6,10 @@ namespace WindowsDeviceControl;
 
 /// <summary>Core Audio endpoint enumeration, default-device selection and master volume.</summary>
 /// <remarks>
-///     Methods returning <see cref="int" /> return an HRESULT: zero is the usual success value and
-///     negative values are failures, so a caller can log or branch on the real reason rather than a
-///     thrown exception. Audio devices appear and disappear underneath you, and a failure here is
-///     usually a device that vanished rather than a bug.
-///     <para>
-///         <see cref="SetDefaultEndpoint(string)" /> goes through <c>IPolicyConfig</c>, which Microsoft has never
-///         documented and never made public. It is the only way to change the default playback device from
-///         code, and it is used here because there is no alternative — not because it is supported.
-///     </para>
+///     Calls are synchronous; run driver and service operations on a worker thread. Integer results
+///     are HRESULTs: nonnegative means success, negative means failure. Outputs are usable only on
+///     success unless documented otherwise. Default-volume operations use the Console role.
+///     <para>Default selection and device formats use the undocumented IPolicyConfig interface.</para>
 /// </remarks>
 public static partial class CoreAudio
 {
@@ -78,21 +73,14 @@ public static partial class CoreAudio
 
     /// <summary>Applies one hardware volume-key command to the default playback endpoint.</summary>
     /// <param name="command">
-    ///     What the key asked for. The values match the
-    ///     <c>APPCOMMAND_VOLUME_*</c> constants a <c>WM_APPCOMMAND</c> message carries, so the value
-    ///     decoded from that message can be cast straight to this enum; anything else is
-    ///     rejected.
+    ///     The APPCOMMAND_VOLUME_* operation. An undefined value returns E_INVALIDARG.
     /// </param>
-    /// <param name="percentage">The resulting volume, 0 to 100.</param>
-    /// <param name="muted">The resulting mute state: non-zero when muted.</param>
+    /// <param name="percentage">The resulting volume, 0 to 100, on success; ignore on failure.</param>
+    /// <param name="muted">The resulting mute state, nonzero when muted, on success; ignore on failure.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
-    ///     This applies the same step Windows itself uses for a volume key, so a hardware
-    ///     button behaves identically to the built-in handling — which is the point: a step computed
-    ///     by hand lands on different values than the system's and makes the button feel wrong.
-    ///     After an accepted command, volume and mute are read for the outputs. A failure of that
-    ///     read is returned even though the command may already have changed the endpoint; do not
-    ///     automatically repeat the command on failure.
+    ///     Uses Windows' native volume step. Output reads follow an accepted command, so an error
+    ///     can follow an applied change. Do not automatically repeat the command on failure.
     /// </remarks>
     public static int ApplyCommand(VolumeCommand command, out int percentage, out int muted)
     {
@@ -104,8 +92,8 @@ public static partial class CoreAudio
     }
 
     /// <summary>Reads the default playback endpoint's master volume and mute state.</summary>
-    /// <param name="percentage">The current volume, 0 to 100.</param>
-    /// <param name="muted">The current mute state: non-zero when muted.</param>
+    /// <param name="percentage">The current volume, 0 to 100, on success; zero on failure.</param>
+    /// <param name="muted">The current mute state, nonzero when muted, on success; zero on failure.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int GetVolume(out int percentage, out int muted)
     {
@@ -113,9 +101,9 @@ public static partial class CoreAudio
     }
 
     /// <summary>Reads the default endpoint's master volume and mute state in one direction.</summary>
-    /// <param name="direction">Playback or recording endpoint.</param>
-    /// <param name="percentage">The current volume, 0 to 100.</param>
-    /// <param name="muted">The current mute state: non-zero when muted.</param>
+    /// <param name="direction">Playback or recording endpoint; an undefined value returns E_INVALIDARG.</param>
+    /// <param name="percentage">The current volume, 0 to 100, on success; zero on failure.</param>
+    /// <param name="muted">The current mute state, nonzero when muted, on success; zero on failure.</param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int GetVolume(
         AudioDirection direction,
@@ -144,8 +132,8 @@ public static partial class CoreAudio
     ///     clamped.
     /// </param>
     /// <param name="muted">
-    ///     The mute state afterwards: non-zero when muted. A positive volume
-    ///     also unmutes the endpoint.
+    ///     The mute state afterwards, nonzero when muted, on success; ignore on failure.
+    ///     A positive volume also unmutes the endpoint.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
@@ -159,14 +147,14 @@ public static partial class CoreAudio
     }
 
     /// <summary>Sets the default endpoint's master volume in one direction.</summary>
-    /// <param name="direction">Playback or recording endpoint.</param>
+    /// <param name="direction">Playback or recording endpoint; an undefined value returns E_INVALIDARG.</param>
     /// <param name="percentage">
     ///     The volume to set, 0 to 100. Values outside that range are
     ///     clamped.
     /// </param>
     /// <param name="muted">
-    ///     The mute state afterwards: non-zero when muted. A positive volume
-    ///     also unmutes the endpoint.
+    ///     The mute state afterwards, nonzero when muted, on success; ignore on failure.
+    ///     A positive volume also unmutes the endpoint.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
@@ -193,10 +181,10 @@ public static partial class CoreAudio
 
     /// <summary>Sets the default playback endpoint's mute state.</summary>
     /// <param name="muted">
-    ///     True to mute, false to unmute. This sets the state rather than
-    ///     toggling, so repeating the call is harmless.
+    ///     True to mute, false to unmute.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <remarks>Issues one write without a confirming read.</remarks>
     public static int SetMuted(bool muted)
     {
         var call = new VolumeCall { Mute = muted };
@@ -205,9 +193,9 @@ public static partial class CoreAudio
     }
 
     /// <summary>Reads volume and mute from a specific endpoint without following the default.</summary>
-    /// <param name="endpointId">The endpoint's stable Windows identity.</param>
-    /// <param name="percentage">Volume percentage on success.</param>
-    /// <param name="muted">Nonzero when muted on success.</param>
+    /// <param name="endpointId">An endpoint ID; null, empty or whitespace returns E_INVALIDARG.</param>
+    /// <param name="percentage">Volume percentage, 0 to 100, on success; zero on failure.</param>
+    /// <param name="muted">Nonzero when muted on success; zero on failure.</param>
     /// <returns>Zero on success, otherwise the HRESULT.</returns>
     public static int GetVolume(string endpointId, out int percentage, out int muted)
     {
@@ -220,9 +208,10 @@ public static partial class CoreAudio
     }
 
     /// <summary>Sets one endpoint's mute state without changing another default endpoint.</summary>
-    /// <param name="endpointId">The endpoint's stable Windows identity.</param>
+    /// <param name="endpointId">An endpoint ID; null, empty or whitespace returns E_INVALIDARG.</param>
     /// <param name="muted">The state to write.</param>
     /// <returns>Zero on success, otherwise the HRESULT.</returns>
+    /// <remarks>Issues one write to this endpoint without following later default changes or reading back.</remarks>
     public static int SetMuted(string endpointId, bool muted)
     {
         var call = new VolumeCall { Mute = muted };
@@ -231,10 +220,11 @@ public static partial class CoreAudio
     }
 
     /// <summary>Lists the active audio endpoints in one direction.</summary>
-    /// <param name="direction">Playback or recording endpoints.</param>
+    /// <param name="direction">Playback or recording endpoints; an undefined value returns E_INVALIDARG.</param>
     /// <param name="endpoints">
-    ///     The endpoints found, newest state; empty when the call fails. An endpoint Windows
-    ///     gives no friendly name has an empty <see cref="AudioEndpoint.Name" />.
+    ///     Active endpoints, default first then ordered by name and ID; empty on failure. An unreadable
+    ///     endpoint ID omits that endpoint. An unreadable friendly name is empty. A failed default lookup
+    ///     leaves every IsDefault false without failing enumeration.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     public static int ListEndpoints(
@@ -320,23 +310,16 @@ public static partial class CoreAudio
         }
     }
 
-    /// <summary>Makes one endpoint the default for every role.</summary>
+    /// <summary>Makes one render or capture endpoint the default for all three roles in its direction.</summary>
     /// <param name="endpointId">
     ///     The endpoint identifier from
     ///     <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})" />.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT the policy interface returned.</returns>
     /// <remarks>
-    ///     Sets the console, multimedia and communications roles together, which is what a user means
-    ///     by "make this my speakers"; setting only one leaves applications split across devices.
-    ///     The current endpoint for all three roles is captured before any change. If a later role
-    ///     fails, every earlier role is restored in reverse order and every rollback is attempted;
-    ///     the original update HRESULT remains the return value.
-    ///     <para>
-    ///         This is the <c>IPolicyConfig</c> call — undocumented, never public, and the only way to do
-    ///         this from code. Its interface identifier differs across Windows versions, so a failure here
-    ///         on a future release is the expected way this breaks.
-    ///     </para>
+    ///     Captures Console, Multimedia and Communications defaults before writing. On failure, attempts
+    ///     reverse-order rollback of every changed role without retry. Use the overload with role results
+    ///     to inspect rollback failures. Accepted writes are not read back.
     /// </remarks>
     public static int SetDefaultEndpoint(string endpointId)
     {
@@ -349,17 +332,17 @@ public static partial class CoreAudio
     ///     <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})" />.
     /// </param>
     /// <param name="roleResults">
-    ///     The apply result for every attempted role and, when an apply
-    ///     fails, the result of restoring each role already changed.
+    ///     Every attempted role's apply HRESULT and any rollback HRESULT. Empty if validation or
+    ///     capture failed before the first write. Contains partial results on an apply failure.
     /// </param>
     /// <returns>
-    ///     Zero on success, otherwise the HRESULT from the failed apply operation. Inspect
-    ///     <paramref name="roleResults" /> for any additional rollback failures.
+    ///     Zero on success; E_INVALIDARG for an empty ID; otherwise the lookup, capture or apply
+    ///     failure HRESULT. Inspect <paramref name="roleResults" /> for additional rollback failures.
     /// </returns>
     /// <remarks>
-    ///     All previous role defaults are captured before any role is changed. A failure
-    ///     restores every role already changed in reverse order, attempting all rollbacks even if one
-    ///     of them fails.
+    ///     Captures all three defaults in the selected endpoint's direction before writing. An apply
+    ///     failure attempts every changed role's rollback in reverse order, even after a rollback fails.
+    ///     There is no process-wide transaction lock; callers serialize competing default changes.
     /// </remarks>
     public static int SetDefaultEndpoint(
         string endpointId,
@@ -375,9 +358,7 @@ public static partial class CoreAudio
         try
         {
             var enumerator = Enumerator();
-            // The previous defaults must come from the same flow as the endpoint being selected.
-            // Reading render defaults for a microphone made a failed capture change "roll back"
-            // to the speakers, leaving the capture roles split while reporting a clean rollback.
+            // Capture the selected endpoint's flow so a microphone rollback cannot select speakers.
             var flowResult = ReadEndpointFlow(enumerator, endpointId, out var flow);
             if (flowResult < 0)
             {
@@ -416,6 +397,10 @@ public static partial class CoreAudio
         }
     }
 
+    /// <summary>Orders endpoints by default status, display name and stable endpoint ID.</summary>
+    /// <param name="left">First endpoint.</param>
+    /// <param name="right">Second endpoint.</param>
+    /// <returns>A comparison result placing default endpoints first and breaking name ties ordinally.</returns>
     internal static int CompareEndpoints(AudioEndpoint left, AudioEndpoint right)
     {
         var comparison = right.IsDefault.CompareTo(left.IsDefault);
@@ -493,6 +478,13 @@ public static partial class CoreAudio
         }
     }
 
+    /// <summary>Writes the three default roles and attempts reverse rollback after a negative HRESULT.</summary>
+    /// <param name="endpointId">Endpoint to assign to every role.</param>
+    /// <param name="previous">Complete pre-write role-to-endpoint snapshot, required for rollback.</param>
+    /// <param name="setDefault">Synchronous single-write callback returning HRESULT; thrown exceptions propagate.</param>
+    /// <param name="updates">Every attempted role and any rollback HRESULT, in apply order.</param>
+    /// <returns>Zero after all roles accept, otherwise the first apply failure; rollback failures remain in updates.</returns>
+    /// <remarks>The caller serializes competing transactions. No state is read back and rollback attempts continue after a negative rollback HRESULT.</remarks>
     internal static int ApplyDefaultEndpointTransaction(
         string endpointId,
         IReadOnlyDictionary<AudioRole, string> previous,

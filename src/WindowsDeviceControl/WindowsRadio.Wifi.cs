@@ -20,9 +20,9 @@ public static unsafe partial class WindowsRadio
 
     /// <summary>Reads the Wi-Fi adapter's current state and joined network.</summary>
     /// <returns>
-    ///     The state, signal and network. On a machine with several adapters this reports the one
-    ///     Windows is actually using. On a machine without a WLAN interface the state is
-    ///     <see cref="WifiConnectionState.Unknown" /> and nothing is joined.
+    ///     The first connected adapter in Windows enumeration order, or the first adapter when none
+    ///     is connected. No WLAN interfaces yields Unknown. If connection
+    ///     details cannot be read, the adapter state remains available with zero signal and no network key.
     /// </returns>
     /// <exception cref="Win32Exception">The WLAN service could not be opened or enumerated.</exception>
     public static WifiStatus GetWifiStatus()
@@ -63,9 +63,8 @@ public static unsafe partial class WindowsRadio
     /// <summary>Asks every Wi-Fi adapter to scan for networks.</summary>
     /// <remarks>
     ///     Returns as soon as the request is made, not when scanning finishes — results
-    ///     arrive seconds later. Watch for completion with <see cref="StartWifiWatch" /> rather than
-    ///     calling <see cref="ListWifiNetworks" /> immediately, which would return the previous
-    ///     results.
+    ///     arrive seconds later through <see cref="StartWifiWatch" />. All adapters are attempted;
+    ///     the call succeeds if any accepts, without reporting refusals from the others.
     /// </remarks>
     /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
     /// <exception cref="Win32Exception">
@@ -145,13 +144,13 @@ public static unsafe partial class WindowsRadio
     ///     The rollback is not retried.
     /// </exception>
     /// <remarks>
-    ///     Blocks until the association succeeds or fails, up to an internal timeout. Windows requires
-    ///     a stored profile before joining a protected network, so one is written first when needed.
-    ///     A saved profile is chosen as Windows would: the one the adapter is connected with, else the
-    ///     first matching profile in Windows' own priority order. When WLAN reports a definite failure,
-    ///     an overwritten profile gets its exact XML back, and a newly created one is removed when the
-    ///     key or the security settings were refused. A timeout is not a failure: the attempt may still
-    ///     complete, so the profile stays and the result is <see cref="WifiConnectOutcome.Pending" />.
+    ///     Registers a scoped completion callback before dispatch, then waits up to 25 seconds for it;
+    ///     profile preparation and native calls add to that duration. A successful event or a current
+    ///     connection with the requested SSID bytes yields Joined. Otherwise a definite failure restores
+    ///     replaced profile XML once; a new profile is deleted only for key or security refusal.
+    ///     Without a verdict the result is Pending. Profiles written for Joined or Pending remain
+    ///     stored as all-user profiles. A saved match prefers the current connection, then Windows'
+    ///     profile priority. Serialize competing changes to the same network/profile.
     /// </remarks>
     public static WifiConnectResult ConnectWifi(WifiNetworkKey network, string? passphrase)
     {
@@ -162,8 +161,7 @@ public static unsafe partial class WindowsRadio
         }
 
         using var client = WlanClient.Open();
-        // This call writes profiles, so its name checks and rollback snapshot come from what is
-        // stored now. Reads within the call then share one parse of each profile.
+        // Profile collision checks and rollback need the current stored XML.
         InvalidateSavedProfiles(null);
         var choice = ChooseInterface(client.Handle, client.RequireInterfaces(), network, passphrase is null);
         var adapterId = choice.Adapter.Id;
@@ -178,7 +176,6 @@ public static unsafe partial class WindowsRadio
         var profileName = choice.ProfileName;
         ProfileMutation? mutation = null;
 
-        // Every failure below rolls the profile back once before it is reported.
         Exception Fail(Exception failure)
         {
             return CombineFailure(failure, TryRollBackProfile(client.Handle, adapterId, mutation));

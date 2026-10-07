@@ -47,8 +47,8 @@ public sealed record HybridCoreClass(byte EfficiencyClass, int Cores, int Logica
 /// <summary>What a machine and one power scheme actually support for hybrid core placement.</summary>
 /// <param name="Classes">Observed efficiency classes, ordered from most efficient to most performant.</param>
 /// <param name="Configurable">
-///     Whether all three hybrid policy settings could be read from the queried scheme. False means the
-///     controls are not present and must not be offered.
+///     Whether all three hybrid policy settings could be read for both AC and DC in the queried scheme.
+///     False can mean missing settings or a read failure; it does not prove hardware absence.
 /// </param>
 /// <param name="HeterogeneousPolicies">
 ///     Values Windows publishes for HETEROPOLICY. Windows exposes no semantic names for these; empty
@@ -105,6 +105,7 @@ public static partial class WindowsPower
     /// </remarks>
     /// <param name="scheme">Power scheme identity to probe.</param>
     /// <returns>Observed hardware classes and per-scheme configurability.</returns>
+    /// <exception cref="Win32Exception">CPU-set information or a published value list could not be read.</exception>
     public static HybridCoreSupport QueryHybridCores(Guid scheme)
     {
         var classes = ParseCpuSets(ReadCpuSetInformation());
@@ -122,6 +123,7 @@ public static partial class WindowsPower
     /// <param name="scheme">Power scheme identity.</param>
     /// <param name="onBattery">True selects the DC values; false selects AC.</param>
     /// <returns>The stored values, with unnamed policy numbers preserved.</returns>
+    /// <exception cref="Win32Exception">One of the stored values could not be read.</exception>
     public static HybridCoreState ReadHybridCores(Guid scheme, bool onBattery)
     {
         return new HybridCoreState(
@@ -142,6 +144,7 @@ public static partial class WindowsPower
     /// <param name="onBattery">True selects DC; false selects AC.</param>
     /// <param name="state">Values to store.</param>
     /// <exception cref="ArgumentNullException"><paramref name="state" /> is null.</exception>
+    /// <exception cref="Win32Exception">A write failed; earlier values may already be stored.</exception>
     public static void WriteHybridCores(Guid scheme, bool onBattery, HybridCoreState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -153,6 +156,7 @@ public static partial class WindowsPower
 
     /// <summary>Re-activates the current scheme so stored policy values take effect.</summary>
     /// <remarks>Windows applies processor policy on scheme activation, not on the write itself.</remarks>
+    /// <exception cref="Win32Exception">Reading or reactivating the current scheme failed.</exception>
     public static void RefreshActiveScheme()
     {
         SetActiveScheme(GetActiveScheme());
@@ -162,7 +166,8 @@ public static partial class WindowsPower
     /// <param name="subgroup">Policy subgroup identity.</param>
     /// <param name="setting">Policy setting identity.</param>
     /// <param name="index">Zero-based enumeration index.</param>
-    /// <returns>The published raw value, or null when the setting publishes no value at that index.</returns>
+    /// <returns>The published DWORD, or null for an absent, non-DWORD or oversized value.</returns>
+    /// <exception cref="Win32Exception">Windows refused the read with another native status.</exception>
     public static uint? ReadPossibleValue(Guid subgroup, Guid setting, uint index)
     {
         uint size = sizeof(uint);
@@ -178,6 +183,10 @@ public static partial class WindowsPower
         return type == RegDword && size == sizeof(uint) ? value : null;
     }
 
+    /// <summary>Counts distinct cores and logical processors by efficiency class in CPU-set records.</summary>
+    /// <param name="buffer">Returned SYSTEM_CPU_SET_INFORMATION bytes.</param>
+    /// <returns>Observed classes ordered by efficiency, skipping unknown record types.</returns>
+    /// <exception cref="Win32Exception">A counted record has an invalid size or a CPU-set record is truncated.</exception>
     internal static IReadOnlyList<HybridCoreClass> ParseCpuSets(ReadOnlySpan<byte> buffer)
     {
         Dictionary<byte, (int Logical, HashSet<int> Cores)> classes = [];
@@ -236,7 +245,6 @@ public static partial class WindowsPower
 
     private static List<uint> PossibleValues(Guid setting)
     {
-        // The enumeration ends where Windows reports no value at the next index.
         List<uint> values = [];
         for (uint index = 0; ReadPossibleValue(SubgroupProcessor, setting, index) is { } value; index++)
         {
