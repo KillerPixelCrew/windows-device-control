@@ -158,10 +158,14 @@ monitor DDC/CI fallback is attempted.
 
 CCD queries size their buffers from Windows and retry an insufficient-buffer sizing race at most
 four times. Unreadable individual identities are skipped without hiding readable monitors.
-`DisplayTargetIdentity.Matches` prefers case-insensitive device paths. EDID manufacturer/product is
-a fallback only if both paths are empty; these IDs alone cannot distinguish identical monitor
-models. An identity with neither path nor EDID IDs matches nothing. Adapter/target coordinates and
-GDI names are current routes, not persisted physical identity.
+`DisplayTargetIdentity.Matches` compares EDID manufacturer/product and serial identity when both
+observations have it, even when device paths differ. `DisplayEdid.ReadIdentity` reads the exact
+interface's cached registry descriptor and accepts only a checksum-valid base block with a numeric
+or text serial. Persist `EdidIdentity` with the target. If either serial identity is unavailable,
+matching uses case-insensitive device paths; manufacturer/product is a fallback only when both paths
+are empty. These IDs alone cannot distinguish identical monitor models. Ambiguous current routes are
+refused before a write. An identity with neither path nor EDID IDs matches nothing. Adapter/target
+coordinates and GDI names are current routes, not persisted physical identity.
 
 `CaptureActive` returns active routes. `DisplayLayouts.Observe` reads possible routes and collapses
 them into monitor observations, including inactive monitors. Its fingerprint includes identity,

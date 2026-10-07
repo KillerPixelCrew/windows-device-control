@@ -73,6 +73,7 @@ public static partial class DisplayTopology
         }
 
         var unreadable = false;
+        var found = false;
         foreach (var candidate in paths)
         {
             DisplayTargetIdentity identity;
@@ -90,12 +91,18 @@ public static partial class DisplayTopology
 
             if (target.Matches(identity))
             {
+                if (found)
+                {
+                    path = default;
+                    return ActiveLookup.Unreadable;
+                }
+
                 path = candidate;
-                return ActiveLookup.Found;
+                found = true;
             }
         }
 
-        return unreadable ? ActiveLookup.Unreadable : ActiveLookup.NotActive;
+        return found ? ActiveLookup.Found : unreadable ? ActiveLookup.Unreadable : ActiveLookup.NotActive;
     }
 
     /// <summary>Captures CCD arrays, retrying sizing races up to four times.</summary>
@@ -161,7 +168,10 @@ public static partial class DisplayTopology
             DecodeEdidIds(target.Flags, target.EdidManufacturerId, target.EdidProductCodeId);
         return new DisplayTargetIdentity(NativeText.ReadFixed(target.MonitorDevicePath, 128),
             manufacturerId, productCodeId, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
-            path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id);
+            path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id)
+        {
+            EdidIdentity = DisplayEdid.ReadIdentity(NativeText.ReadFixed(target.MonitorDevicePath, 128))
+        };
     }
 
     /// <summary>Decodes IDs only when DISPLAYCONFIG_TARGET_DEVICE_NAME_FLAG_EDID_IDS_VALID (0x4) is set.</summary>

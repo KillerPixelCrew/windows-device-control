@@ -84,6 +84,38 @@ public sealed class DisplayEdidTests
         Assert.Empty(DisplayEdid.Parse(edid.AsSpan(0, 200)));
     }
 
+    [Fact]
+    public void SerialIdentityRequiresValidEdidAndNeverUsesTimingsAsASerial()
+    {
+        var edid = Descriptor();
+        Assert.Null(DisplayEdid.ParseIdentity(edid));
+        edid[8] = 1;
+        edid[10] = 2;
+        edid[12] = 42;
+        FixChecksum(edid.AsSpan(0, 128));
+        var identity = DisplayEdid.ParseIdentity(edid);
+        Assert.NotNull(identity);
+        edid[54] = 1;
+        FixChecksum(edid.AsSpan(0, 128));
+        Assert.Equal(identity, DisplayEdid.ParseIdentity(edid));
+        edid[12] = 43;
+        FixChecksum(edid.AsSpan(0, 128));
+        Assert.NotEqual(identity, DisplayEdid.ParseIdentity(edid));
+        edid[12]++;
+        Assert.Null(DisplayEdid.ParseIdentity(edid));
+        Assert.Null(DisplayEdid.ParseIdentity(edid.AsSpan(0, 127)));
+    }
+
+    [Fact]
+    public void ATextSerialIdentifiesAMonitorWithoutANumericSerial()
+    {
+        var edid = Descriptor();
+        edid[57] = 0xff;
+        "SERIAL42\n    "u8.CopyTo(edid.AsSpan(59, 13));
+        FixChecksum(edid.AsSpan(0, 128));
+        Assert.EndsWith(":SERIAL42", DisplayEdid.ParseIdentity(edid));
+    }
+
     private static byte[] Descriptor(int extensions = 0)
     {
         var edid = new byte[128 * (extensions + 1)];

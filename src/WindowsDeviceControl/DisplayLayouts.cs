@@ -196,7 +196,10 @@ public sealed record DisplayLayoutResult(
     DisplayTargetIdentity? ProblemTarget = null,
     string? FailureMessage = null)
 {
-    /// <summary>Whether validation passed, an apply was accepted or topology already matched; depends on the calling operation.</summary>
+    /// <summary>
+    ///     Whether validation passed, an apply was accepted or topology already matched; depends on the calling
+    ///     operation.
+    /// </summary>
     public bool Applied => Outcome is DisplayLayoutOutcome.Applied or DisplayLayoutOutcome.AlreadyActive;
 
     /// <summary>Whether the topology rollback returned success; does not confirm scaling, HDR or physical visibility.</summary>
@@ -266,16 +269,18 @@ public static class DisplayLayouts
     }
 
     /// <summary>
-    ///     Whether two observations are the same monitor. An identity with neither a path nor EDID ids
-    ///     matches nothing, so the many routes of such a monitor fold by the target route instead.
+    ///     Whether two paths observe the same current monitor interface. Equal EDID serials on
+    ///     distinct interfaces stay separate, so duplicated OEM serials cannot hide ambiguity.
+    ///     Unidentified monitors fold by their current target route instead.
     /// </summary>
     private static bool Same(DisplayTargetIdentity first, DisplayTargetIdentity second)
     {
-        return first.Matches(second)
-               || (!first.Matches(first) && !second.Matches(second)
-                                         && first.AdapterLowPart == second.AdapterLowPart
-                                         && first.AdapterHighPart == second.AdapterHighPart
-                                         && first.TargetId == second.TargetId);
+        return (first.DevicePath.Length > 0 && string.Equals(first.DevicePath, second.DevicePath,
+                   StringComparison.OrdinalIgnoreCase))
+               || (first.DevicePath.Length == 0 && second.DevicePath.Length == 0
+                                                && first.AdapterLowPart == second.AdapterLowPart
+                                                && first.AdapterHighPart == second.AdapterHighPart
+                                                && first.TargetId == second.TargetId);
     }
 
     /// <summary>Captures the current desktop as an editable layout.</summary>
@@ -449,13 +454,19 @@ public static class DisplayLayouts
     private static DisplayTopology.PathInfo? Driving(DisplayTopology.PathInfo[] active,
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, DisplayTargetIdentity target)
     {
+        DisplayTopology.PathInfo? found = null;
         foreach (var path in active)
         {
             try
             {
                 if (target.Matches(DisplayTopology.ReadTarget(path, read)))
                 {
-                    return path;
+                    if (found is not null)
+                    {
+                        return null;
+                    }
+
+                    found = path;
                 }
             }
             catch (Win32Exception)
@@ -463,7 +474,7 @@ public static class DisplayLayouts
             }
         }
 
-        return null;
+        return found;
     }
 
     /// <summary>
@@ -511,7 +522,10 @@ public static class DisplayLayouts
     /// </summary>
     /// <param name="arrangement">Observed active outputs with readable current modes.</param>
     /// <param name="layout">Requested complete desktop topology.</param>
-    /// <returns>Whether every active output matches placement, size, refresh tolerance and any requested rotation; HDR and DPI are ignored.</returns>
+    /// <returns>
+    ///     Whether every active output matches placement, size, refresh tolerance and any requested rotation; HDR and DPI
+    ///     are ignored.
+    /// </returns>
     internal static bool Matches(DisplayArrangement arrangement, DisplayLayout layout)
     {
         var active = arrangement.Targets.Where(target => target is { Active: true, Current: not null }).ToArray();

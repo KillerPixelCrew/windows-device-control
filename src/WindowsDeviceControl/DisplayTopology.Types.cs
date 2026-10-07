@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace WindowsDeviceControl;
 
 /// <summary>Stable-enough monitor identity plus the current CCD route used to reach it.</summary>
-/// <param name="DevicePath">Monitor device-interface path. This is the primary rematching key.</param>
+/// <param name="DevicePath">Current monitor device-interface path; it may change after a driver update.</param>
 /// <param name="EdidManufacturerId">Raw EDID manufacturer identifier when Windows reports it.</param>
 /// <param name="EdidProductCodeId">Raw EDID product identifier when Windows reports it.</param>
 /// <param name="FriendlyName">Display metadata for people; never the sole identity.</param>
@@ -20,12 +20,17 @@ public sealed record DisplayTargetIdentity(
     int AdapterHighPart,
     uint TargetId)
 {
+    /// <summary>Gets the EDID manufacturer, product and serial identity, independent of the Windows route.</summary>
+    /// <remarks>Null when a valid descriptor with a serial number could not be read. Persist this with the target.</remarks>
+    public string? EdidIdentity { get; init; }
+
     /// <summary>Returns whether this saved identity describes the same physical monitor observation.</summary>
     /// <param name="other">Current observation to compare.</param>
-    /// <returns>Whether the device paths, or the permitted EDID fallback, match.</returns>
+    /// <returns>Whether EDID identities match, or the available fallback matches.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="other" /> is null.</exception>
     /// <remarks>
-    ///     The device path wins. EDID manufacturer/product is a fallback only when both sides lack a path. An
+    ///     EDID serial identity wins over the current device path. Without serial identity on both sides,
+    ///     the device path is used. EDID manufacturer/product is a fallback only when both sides lack a path. An
     ///     identity with neither a path nor EDID ids matches nothing, itself included, so it cannot be found again
     ///     and should not be persisted. EDID manufacturer/product IDs alone cannot distinguish two monitors
     ///     of the same model; a fallback match is not a unique hardware serial identity.
@@ -33,6 +38,11 @@ public sealed record DisplayTargetIdentity(
     public bool Matches(DisplayTargetIdentity other)
     {
         ArgumentNullException.ThrowIfNull(other);
+        if (EdidIdentity is { Length: > 0 } && other.EdidIdentity is { Length: > 0 })
+        {
+            return string.Equals(EdidIdentity, other.EdidIdentity, StringComparison.Ordinal);
+        }
+
         if (DevicePath.Length != 0 || other.DevicePath.Length != 0)
         {
             return DevicePath.Length != 0 &&

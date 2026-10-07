@@ -33,28 +33,33 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `AudioFilePreview.cs`: one owned Media Foundation preview of a local file on the default route;
   failures carry Windows' error class and HRESULT.
 - `Backlight.cs`: ACPI internal-panel brightness through `\\.\LCD`.
-- `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and the one display write
-  gate in `DisplayTopology.cs`, and the public records and result types in `DisplayTopology.Types.cs`.
-  `DisplayTopology.Native.cs` owns the native CCD shapes, which are internal so the layout, scaling
-  and colour code share one set of offsets and one query rather than keeping second copies.
+- `DisplayTopology*.cs`: supported CCD enumeration, stable monitor matching and the one display
+  write gate in `DisplayTopology.cs`, and the public records and result types in
+  `DisplayTopology.Types.cs`. `DisplayTopology.Native.cs` owns the native CCD shapes, which are
+  internal so the layout, scaling and colour code share one set of offsets and one query rather than
+  keeping second copies.
 - `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
   the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
   state, matching topology is not rewritten (requested HDR/scaling still apply), an accepted apply
   is not read back, and a refused apply attempts one rollback. RollbackSucceeded describes topology
   only; rollback extras are best effort and their failures are not returned. The observation
-  fingerprint excludes rotation, HDR and scaling.
-  `Describe` exposes those rules without touching a display, so a caller's editor and its stored
-  configuration check a layout the same way this library will. Keep it that way: a second copy of
-  the rules in a consumer is how the two drift apart. Apply and its rollback always pass
-  `SDC_SAVE_TO_DATABASE`, so an applied arrangement survives a reboot; that is documented, not a
-  parameter. The display records are positional data consumers persist: never rename, retype or
-  remove a public member, and give every added positional member a default.
+  fingerprint excludes rotation, HDR and scaling. `Describe` exposes those rules without touching a
+  display, so a caller's editor and its stored configuration check a layout the same way this
+  library will. Keep it that way: a second copy of the rules in a consumer is how the two drift
+  apart. Apply and its rollback always pass `SDC_SAVE_TO_DATABASE`, so an applied arrangement
+  survives a reboot; that is documented, not a parameter. The display records are positional data
+  consumers persist: never rename, retype or remove a public member, and give every added positional
+  member a default.
 - `DisplayModes.cs`: driver-mode enumeration, exact active-route validation and transient
   application with one write-back after a refusal and no readback. UI and mode-selection policy
   remain with callers.
 - `DisplayEdid.cs`: read-only timing candidates for an exact monitor interface, even while its
   source is disabled. Keep checksums and block bounds strict; EDID candidates are not
   driver-validated mode snapshots and must not bypass the normal layout validation and apply path.
+  `DisplayEdid.Identity.cs` reads checksum-valid cached EDID serial identity for the exact
+  interface. Persist it with the target and prefer it over volatile device paths when both
+  observations have it. Manufacturer/product alone cannot distinguish identical models; ambiguous
+  routes are refused.
 - `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
   addressed by monitor identity. Support and current value are read before every write as its input,
   nothing is read after it, and a refusal is reported with its native status rather than retried.
@@ -67,9 +72,11 @@ including callback threading, completion timing, consent, error meanings, and ow
   asynchronous suspend/session actions, and `WindowsPower.Notifications.cs` owns caller-window
   registrations and their SafeHandle lifetime. Cancellation cannot undo a dispatched session action.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
-- `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is unknown.
+- `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is
+  unknown.
 - `WindowsWakeSecurity.cs`: wake sign-in capture, write and restore primitives. Callers compose the
-  writes, persist recovery snapshots before mutation and retain them until a restore reports no failure.
+  writes, persist recovery snapshots before mutation and retain them until a restore reports no
+  failure.
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
@@ -80,9 +87,10 @@ including callback threading, completion timing, consent, error meanings, and ow
   that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `docs/README.md`, `docs/how-it-works.md` and `docs/api-reference.md`: reading order, complete
-  request paths and source/public API/test navigation. Update these alongside XML when a contract changes.
-- `tests/WindowsDeviceControl.Tests`: deterministic, hardware-independent tests, one file per subject
-  (`WindowsRadioTests`, `CoreAudioTests`, `DisplayTopologyTests`, `DisplayLayoutTests`,
+  request paths and source/public API/test navigation. Update these alongside XML when a contract
+  changes.
+- `tests/WindowsDeviceControl.Tests`: deterministic, hardware-independent tests, one file per
+  subject (`WindowsRadioTests`, `CoreAudioTests`, `DisplayTopologyTests`, `DisplayLayoutTests`,
   `WindowsPowerTests` and the rest), with shared builders and assertions in `TestFixtures.cs`.
 
 Source paths without a leading directory in the map above are relative to
@@ -182,23 +190,23 @@ accepted mutation. Document that partial completion and do not automatically rep
 Spatial sound goes through `Windows.Media.Audio.SpatialAudioDeviceConfiguration`, addressed by the
 WinRT device id built from the endpoint id, after Core Audio has confirmed the endpoint exists; the
 WinRT class answers an unknown id with "unsupported" rather than an error. Do not write the
-endpoint's registry blobs instead: they are the audio service's own serialisation and are not
-picked up live. A licence refusal is Windows' answer, returned as the named status, never retried.
+endpoint's registry blobs instead: they are the audio service's own serialisation and are not picked
+up live. A licence refusal is Windows' answer, returned as the named status, never retried.
 
-The endpoint default format is one `IPolicyConfig.SetDeviceFormat` write with the integer PCM
-format and its float mix form. Windows validates against the driver and refuses an unsupported
-layout with `AUDCLNT_E_UNSUPPORTED_FORMAT` without changing anything, so there is no rollback and
-no retry. `IPolicyConfig` is the Windows 7 and later layout: `GetPropertyValue` and
-`SetPropertyValue` carry the FxProperties store flag, and dropping it shifts every argument.
+The endpoint default format is one `IPolicyConfig.SetDeviceFormat` write with the integer PCM format
+and its float mix form. Windows validates against the driver and refuses an unsupported layout with
+`AUDCLNT_E_UNSUPPORTED_FORMAT` without changing anything, so there is no rollback and no retry.
+`IPolicyConfig` is the Windows 7 and later layout: `GetPropertyValue` and `SetPropertyValue` carry
+the FxProperties store flag, and dropping it shifts every argument.
 
 Internal-panel brightness uses the ACPI backlight device. Do not substitute WMI or DDC/CI for this
 contract. Set AC and DC policy together. Absence of a controllable internal panel is normal:
 `TryReadBrightness` and `TrySetBrightness` report it without inventing success.
 
 `WaveOutFeedback` keeps its endpoint open to avoid audible latency. Drop a cue while the previous
-one is queued instead of building a repeated-key rattle. Disposal frees buffers only after successful
-native teardown; on a teardown refusal, retain them until process exit instead of freeing memory
-the driver may still reference.
+one is queued instead of building a repeated-key rattle. Disposal frees buffers only after
+successful native teardown; on a teardown refusal, retain them until process exit instead of freeing
+memory the driver may still reference.
 
 Across all interop code, preserve exact native layouts, bounds checks, handle/COM ownership, and
 callback lifetimes. Unsafe code needs a local, auditable reason.
@@ -211,16 +219,16 @@ CPU set information, accepted values from the setting's published list. Report a
 than a guessed range, and preserve a policy value the enumeration does not name.
 
 Writes stay single-shot and per power source. The library does not activate a scheme on the caller's
-behalf, does not retry, and does not roll back a partial write; `ReadHybridCores` is the snapshot the
-caller persists and restores from.
+behalf, does not retry, and does not roll back a partial write; `ReadHybridCores` is the snapshot
+the caller persists and restores from.
 
 Modern Standby wake control is per named device and never wholesale. There is no call that disables
 every wake source, and the power button, sleep button and lid are reported by `Query` rather than
 being writable at all. Enumeration is the actionable set (programmable, plus armed-but-fixed), not
 every device that supports waking from S0; a source that cannot safely be changed is reported as
 `Fixed` instead of being written to. `TrySetWakeArmed` re-reads programmability at the moment of the
-write, so a stale record cannot drive one. Restore touches only devices the snapshot observed, attempts
-each of them once and reports the ones that failed rather than stopping at the first.
+write, so a stale record cannot drive one. Restore touches only devices the snapshot observed,
+attempts each of them once and reports the ones that failed rather than stopping at the first.
 
 The enumeration's size argument is not an output: Windows leaves it at the buffer size it was given,
 so a device name ends at its terminator. The end of the list and a genuine failure both return

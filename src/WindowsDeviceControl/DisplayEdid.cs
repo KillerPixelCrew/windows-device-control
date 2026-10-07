@@ -28,7 +28,7 @@ public enum DisplayEdidStatus
 public sealed record DisplayEdidModes(IReadOnlyList<DisplayMode> Modes, DisplayEdidStatus Status);
 
 /// <summary>Reads advertised monitor timings without activating a Windows display source.</summary>
-public static class DisplayEdid
+public static partial class DisplayEdid
 {
     /// <summary>The established timings, in bit order. The 1024x768@87 entry is interlaced.</summary>
     private static readonly DisplayMode[] Established =

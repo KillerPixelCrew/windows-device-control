@@ -102,9 +102,9 @@ internal static class DisplayLayoutPlanner
     /// </returns>
     internal static (DisplayTopology.PathInfo[] Paths, DisplayTopology.ModeInfo[] Modes, DisplayLayoutProblem? Problem,
         DisplayTargetIdentity? ProblemTarget) Plan(
-        DisplayTopology.PathInfo[] paths,
-        DisplayLayout layout,
-        Func<DisplayTopology.PathInfo, DisplayTargetIdentity> readTarget)
+            DisplayTopology.PathInfo[] paths,
+            DisplayLayout layout,
+            Func<DisplayTopology.PathInfo, DisplayTargetIdentity> readTarget)
     {
         var candidates = paths
             .Select((path, index) => (Path: path, Index: index, Target: Identity(path, readTarget)))
@@ -119,6 +119,12 @@ internal static class DisplayLayoutPlanner
         {
             var matching = candidates.Where(candidate => output.Target.Matches(candidate.Target!)).ToArray();
             if (matching.Length == 0)
+            {
+                return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
+            }
+
+            if (matching.Select(candidate => (candidate.Path.TargetInfo.AdapterId.LowPart,
+                    candidate.Path.TargetInfo.AdapterId.HighPart, candidate.Path.TargetInfo.Id)).Distinct().Count() > 1)
             {
                 return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
             }
@@ -143,7 +149,8 @@ internal static class DisplayLayoutPlanner
             // Capture the preserved rotation before changing the path's active flag.
             var current = matching.FirstOrDefault(candidate =>
                 (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0);
-            var rotation = output.Rotation != 0 ? output.Rotation
+            var rotation = output.Rotation != 0
+                ? output.Rotation
                 : current.Target is not null && current.Path.TargetInfo.Rotation != 0
                     ? current.Path.TargetInfo.Rotation
                     : 1;

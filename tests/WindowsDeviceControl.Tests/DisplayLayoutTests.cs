@@ -15,6 +15,21 @@ public sealed class DisplayLayoutTests
     private const uint Active = 0x1;
     private const uint InvalidIndex = 0xffffffff;
 
+    [Fact]
+    public void DuplicateOemSerialsNeverSelectAnArbitraryPhysicalRoute()
+    {
+        var saved = Target("saved") with { EdidIdentity = "duplicate-serial" };
+        var layout = new DisplayLayout([Output(saved)]);
+        var (paths, _, problem, _) = DisplayLayoutPlanner.Plan([Path(0, 1), Path(1, 2)], layout,
+            path => Target("current-" + path.TargetInfo.Id, id: path.TargetInfo.Id)
+                with
+                {
+                    EdidIdentity = saved.EdidIdentity
+                });
+        Assert.Empty(paths);
+        Assert.Equal(DisplayLayoutProblem.NoDisplayPath, problem);
+    }
+
     private static DisplayLayoutOutput Output(DisplayTargetIdentity target,
         int x = 0, int y = 0, int width = 1920, int height = 1080, int hertz = 60)
     {

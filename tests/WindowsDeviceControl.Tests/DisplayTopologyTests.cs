@@ -5,6 +5,17 @@ namespace WindowsDeviceControl.Tests;
 
 public sealed class DisplayTopologyTests
 {
+    [Fact]
+    public void EdidSerialSurvivesDriverRouteChangesAndRejectsAReplacementOnTheOldRoute()
+    {
+        var saved = new DisplayTargetIdentity("old-path", 1, 2, "Monitor", 1, 0, 2)
+            { EdidIdentity = "01000200:00000042:serial" };
+        var shuffled = saved with { DevicePath = "new-path", AdapterLowPart = 7, TargetId = 9 };
+        var replacement = saved with { EdidIdentity = "01000200:00000043:other" };
+        Assert.True(saved.Matches(shuffled));
+        Assert.False(saved.Matches(replacement));
+    }
+
     [Theory]
     [InlineData(0u, false)]
     [InlineData(1u, false)]
@@ -44,29 +55,29 @@ public sealed class DisplayTopologyTests
     public void ExistingPathIdentitySurvivesEdidPopulation()
     {
         DisplayTargetIdentity saved = new(
-            DevicePath: "monitor-path",
-            EdidManufacturerId: null,
-            EdidProductCodeId: null,
-            FriendlyName: "Monitor",
-            AdapterLowPart: 1,
-            AdapterHighPart: 0,
-            TargetId: 2);
+            "monitor-path",
+            null,
+            null,
+            "Monitor",
+            1,
+            0,
+            2);
         DisplayTargetIdentity current = new(
-            DevicePath: "monitor-path",
-            EdidManufacturerId: 0x4321,
-            EdidProductCodeId: 0x7654,
-            FriendlyName: "Monitor",
-            AdapterLowPart: 1,
-            AdapterHighPart: 0,
-            TargetId: 2);
+            "monitor-path",
+            0x4321,
+            0x7654,
+            "Monitor",
+            1,
+            0,
+            2);
         DisplayTargetIdentity differentPath = new(
-            DevicePath: "other-monitor-path",
-            EdidManufacturerId: 0x4321,
-            EdidProductCodeId: 0x7654,
-            FriendlyName: "Monitor",
-            AdapterLowPart: 1,
-            AdapterHighPart: 0,
-            TargetId: 2);
+            "other-monitor-path",
+            0x4321,
+            0x7654,
+            "Monitor",
+            1,
+            0,
+            2);
 
         Assert.True(saved.Matches(current));
         Assert.False(current.Matches(differentPath));

@@ -103,7 +103,7 @@ CoreAudio.SetDeviceFormat(outputs[0].Id, CoreAudio.AudioDeviceFormat.Pcm(channel
 if (Backlight.TryReadBrightness(out int percent))
     Backlight.TrySetBrightness(Math.Min(100, percent + 10));
 
-// Active CCD topology. Persist DevicePath and EDID IDs, then discard saved
+// Active CCD topology. Persist the whole Target, including EdidIdentity, then discard saved
 // adapter/target coordinates after every topology change.
 DisplayTopologySnapshot topology = DisplayTopology.CaptureActive();
 DisplayTargetIdentity television = topology.Paths[0].Target;
@@ -201,13 +201,16 @@ A stopped preview's queued failure cannot replace a newer preview's status.
 
 ## Displays
 
-Display identity uses the monitor device-interface path as its primary rematching key. EDID
-manufacturer and product IDs are a fallback for when neither observation has a device path. Friendly
-names and `DISPLAY1` numbering are presentation data. Adapter LUID and target ID describe the
-current route and have to be refreshed after hotplug. Enumeration retries the documented sizing
-race, sizes its buffers from what Windows reports and stays read-only. Possible source and target
-combinations can be far larger than the active display count: a desktop query on 2026-09-13 returned
-284 possible routes and three active ones.
+Display identity prefers the EDID manufacturer/product and serial stored in `EdidIdentity`, so a
+driver update can change the device-interface path without losing the monitor. When either serial
+identity is unavailable, matching uses the device path; manufacturer/product IDs are a fallback only
+when neither observation has a path. Identical or missing serials can leave a match ambiguous; the
+library refuses ambiguous routes instead of choosing one. Friendly names and `DISPLAY1` numbering
+are presentation data. Adapter LUID and target ID describe the current route and have to be
+refreshed after hotplug. Enumeration retries the documented sizing race, sizes its buffers from what
+Windows reports and stays read-only. Possible source and target combinations can be far larger than
+the active display count: a desktop query on 2026-09-13 returned 284 possible routes and three
+active ones.
 
 The display records are plain positional data a caller can persist. Members are only ever added,
 each with a default, so an older stored value still reads.
