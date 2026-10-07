@@ -6,8 +6,8 @@ namespace WindowsDeviceControl;
 
 /// <summary>Core Audio endpoint enumeration, default-device selection and master volume.</summary>
 /// <remarks>
-///     Methods returning <see cref="int" /> return an HRESULT: zero is success, anything else is the
-///     failure Core Audio reported, so a caller can log or branch on the real reason rather than a
+///     Methods returning <see cref="int" /> return an HRESULT: zero is the usual success value and
+///     negative values are failures, so a caller can log or branch on the real reason rather than a
 ///     thrown exception. Audio devices appear and disappear underneath you, and a failure here is
 ///     usually a device that vanished rather than a bug.
 ///     <para>
@@ -90,6 +90,9 @@ public static partial class CoreAudio
     ///     This applies the same step Windows itself uses for a volume key, so a hardware
     ///     button behaves identically to the built-in handling — which is the point: a step computed
     ///     by hand lands on different values than the system's and makes the button feel wrong.
+    ///     After an accepted command, volume and mute are read for the outputs. A failure of that
+    ///     read is returned even though the command may already have changed the endpoint; do not
+    ///     automatically repeat the command on failure.
     /// </remarks>
     public static int ApplyCommand(VolumeCommand command, out int percentage, out int muted)
     {
@@ -145,6 +148,11 @@ public static partial class CoreAudio
     ///     also unmutes the endpoint.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <remarks>
+    ///     Writes volume, unmutes when the clamped volume is positive, then reads mute for the output.
+    ///     A later failure does not roll back an earlier write. Do not infer that an error means the
+    ///     endpoint stayed unchanged.
+    /// </remarks>
     public static int SetVolume(int percentage, out int muted)
     {
         return SetVolume(AudioDirection.Render, percentage, out muted);
@@ -161,6 +169,11 @@ public static partial class CoreAudio
     ///     also unmutes the endpoint.
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
+    /// <remarks>
+    ///     Writes volume, unmutes when the clamped volume is positive, then reads mute for the output.
+    ///     A later failure does not roll back an earlier write. Do not infer that an error means the
+    ///     endpoint stayed unchanged.
+    /// </remarks>
     public static int SetVolume(
         AudioDirection direction,
         int percentage,

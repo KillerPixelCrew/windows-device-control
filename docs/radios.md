@@ -2,9 +2,9 @@
 
 What the platform actually does, and the approaches that were tried and disproven. It lives here
 rather than in comments because most of it spans several files, and because anyone re-deriving this
-surface from Microsoft's documentation will make the same wrong turns. The implementation is
-the `WindowsRadio` and `CoreAudio` files in `src\WindowsDeviceControl`, `WifiProfile.cs`, `Backlight.cs` and
-`WaveOutFeedback.cs`; there is no native component and no helper process.
+surface from Microsoft's documentation will make the same wrong turns. The implementation is the
+`WindowsRadio` and `CoreAudio` files in `src\WindowsDeviceControl`, `WifiProfile.cs`, `Backlight.cs`
+and `WaveOutFeedback.cs`; there is no native component and no helper process.
 
 ## Radio power
 
@@ -27,8 +27,7 @@ looks exactly like a machine with no radios. Target the machine's architecture e
 ### Reading power state and changing it are gated separately
 
 `SetStateAsync` is gated by the "Allow apps to control device radios" privacy decision; enumeration
-and state reads are not. A caller can report power state perfectly and still be unable to change
-it.
+and state reads are not. A caller can report power state perfectly and still be unable to change it.
 
 ## Wi-Fi
 
@@ -43,9 +42,11 @@ When several saved profiles match, a join uses the one the adapter is connected 
 in Windows' own priority order. Forget deletes every matching profile on every adapter and reports
 each deletion's status; one refusal does not stop the others.
 
-A failed available-network or profile list is reported with its WLAN status rather than read as an
-empty list, so a scan blocked by location consent never turns into a security refusal or a profile
-write. A machine without a WLAN interface reports an unknown state rather than failing.
+A failed available-network or profile list is not treated as an empty successful list. Scan and list
+operations retain successes from other adapters and throw when no adapter succeeds; connection
+selection propagates a list failure before writing a profile. `GetWifiStatus` reports an unknown
+state when no WLAN interface exists. Scan, list, connect, disconnect and forget require an interface
+and throw `InvalidOperationException` when none exists.
 
 ### `WiFiAdapter` is not a replacement for WLANAPI
 
@@ -79,17 +80,17 @@ When credentials replace a profile for the same exact SSID, its XML is snapshott
 restored once when WLAN reports a definite failure. Unreadable profile XML is never treated as an
 SSID and is never overwritten or deleted by inference. A failed key or authentication attempt
 removes a newly authored profile. A request refused before anything is written returns a typed
-refusal (invalid passphrase, unsupported authentication, password needed, unsupported security);
-the caller words it.
+refusal (invalid passphrase, unsupported authentication, password needed, unsupported security); the
+caller words it.
 
 ### `WlanConnect` accepting a request is not success
 
 The connection path registers a callback before issuing the request, scopes the verdict to the
-selected interface and profile, waits for the ACM completion or failure notification, and falls back
-to reading the current interface state only when the event does not arrive. When the callback cannot
-be registered, the request is not sent and the failure carries the registration status. A wait that
-ends without a verdict is `Pending`, not a failure: the attempt may still complete, so the profile it
-uses stays and nothing is rolled back.
+selected interface and profile, waits up to 25 seconds for the ACM completion or failure
+notification, and checks the current connection's SSID when no successful completion was received,
+including after a failure event. When the callback cannot be registered, the request is not sent and
+the failure carries the registration status. A wait that ends without a verdict is `Pending`, not a
+failure: the attempt may still complete, so the profile it uses stays and nothing is rolled back.
 
 ### Only an authentication or key failure re-prompts for the password
 
@@ -110,15 +111,15 @@ callback exception is contained. The WLAN service ends a registration silently w
 
 ## Bluetooth discovery and pairing
 
-Discovery queries classic and LE Association Endpoints through one combined selector. A point-in-time
-snapshot groups duplicate endpoints by container identity, while the live watcher keys records by
-Windows AEP id and publishes Added, Updated, and Removed changes as Windows emits them. Device rows
-retain the endpoint id, container id, display name, paired/can-pair flags, and connectivity state.
-Every `StartBluetoothWatch` call owns its own watcher and records and returns its own registration.
-Disposal revokes every event handler and waits for a callback that is delivering before returning,
-because `DeviceWatcher.Stop()` is asynchronous and can otherwise deliver an event into an object
-that has already been disposed. A watcher Windows aborts reports one `Stopped` change and nothing
-after it; the consumer disposes that registration and starts a new one.
+Discovery queries classic and LE Association Endpoints through one combined selector. A
+point-in-time snapshot groups duplicate endpoints by container identity, while the live watcher keys
+records by Windows AEP id and publishes Added, Updated, and Removed changes as Windows emits them.
+Device rows retain the endpoint id, container id, display name, paired/can-pair flags, and
+connectivity state. Every `StartBluetoothWatch` call owns its own watcher and records and returns
+its own registration. Disposal revokes every event handler and waits for a callback that is
+delivering before returning, because `DeviceWatcher.Stop()` is asynchronous and can otherwise
+deliver an event into an object that has already been disposed. A watcher Windows aborts reports one
+`Stopped` change and nothing after it; the consumer disposes that registration and starts a new one.
 
 ### The legacy Win32 Bluetooth API cannot discover LE devices
 
@@ -136,27 +137,27 @@ handler accepted the pairing without presenting the question to the application.
 Pairing uses `Custom.PairAsync` with the ceremonies a general UI can present: ConfirmOnly,
 ProvidePin and ConfirmPinMatch first, then DisplayPin as the one retry described below. Each
 question reaches the caller with its `PairingKind`. A ceremony outside those four arrives as
-`PairingKind.Unknown`; Windows still waits for its answer, so the caller accepts or rejects it
-like any other. Two constraints hang pairing rather than failing it:
+`PairingKind.Unknown`; Windows still waits for its answer, so the caller accepts or rejects it like
+any other. Two constraints hang pairing rather than failing it:
 
 - The `PairingRequested` deferral must stay alive until the answer is applied.
-- Each request token must complete that deferral at most once, including when a timeout races a
-  late UI answer.
+- Each request token must complete that deferral at most once, including when a timeout races a late
+  UI answer.
 
-Pairing is bounded by one 90-second deadline that covers both ceremonies, and the caller's token
-can end it sooner. A cancel or timeout completes only that attempt's pending deferrals before
-cancelling the operation; concurrent attempts cannot cancel one another. A request callback that
-throws declines its question and ends the attempt with that exception. Repeating an answer for an
-expired token is harmless. Some devices reject the first ceremony mask but accept DisplayPin, so
-one retry with that ceremony is retained inside the same deadline. Unpairing uses the same Association Endpoint
-id and is a separate, destructive action from an audio disconnect.
+Pairing is bounded by one 90-second deadline that covers both ceremonies, and the caller's token can
+end it sooner. A cancel or timeout completes only that attempt's pending deferrals before cancelling
+the operation; concurrent attempts cannot cancel one another. A request callback that throws
+declines its question and ends the attempt with that exception. Repeating an answer for an expired
+token is harmless. Some devices reject the first ceremony mask but accept DisplayPin, so one retry
+with that ceremony is retained inside the same deadline. Unpairing uses the same Association
+Endpoint id and is a separate, destructive action from an audio disconnect.
 
 ## Bluetooth audio
 
 Audio devices are identified by their Core Audio endpoint container GUID, not their Bluetooth
-friendly name. Active and unplugged render and capture endpoints are enumerated and endpoint state is
-OR-ed per container, so only rows genuinely backed by an audio endpoint get a connect or disconnect
-action.
+friendly name. Active and unplugged render and capture endpoints are enumerated and endpoint state
+is OR-ed per container, so only rows genuinely backed by an audio endpoint get a connect or
+disconnect action.
 
 ### There is no generic "connect this paired device" API
 
@@ -171,28 +172,29 @@ endpoint snapshot rather than from the call's return.
 
 ## Default endpoint switching
 
-COM interface declarations and PROPVARIANT cleanup stay private to `CoreAudio`, in `CoreAudio.Native.cs`. Changing the
-default playback endpoint snapshots all three previous role defaults before the first write. A later
-failure rolls every changed role back in reverse order, attempts every rollback, and returns the
-per-role apply/rollback HRESULTs to callers that use the detailed overload.
+COM interface declarations and PROPVARIANT cleanup stay private to `CoreAudio`, in
+`CoreAudio.Native.cs`. Changing the default playback endpoint snapshots all three previous role
+defaults before the first write. A later failure rolls every changed role back in reverse order,
+attempts every rollback, and returns the per-role apply/rollback HRESULTs to callers that use the
+detailed overload.
 
 ## Spatial sound
 
 Windows Sonic, Dolby Atmos and DTS are selected per playback endpoint through the public
 `Windows.Media.Audio.SpatialAudioDeviceConfiguration` (Windows 10 1809 and later). It works from an
 ordinary unpackaged desktop process and applies to the running engine at once, which was confirmed
-on Windows 11 build 26200 on 2026-09-17: Windows Sonic on and off, and Dolby Atmos for Headphones
-on and off once the Dolby Access app had activated a licence. Without that licence Windows answers
+on Windows 11 build 26200 on 2026-09-17: Windows Sonic on and off, and Dolby Atmos for Headphones on
+and off once the Dolby Access app had activated a licence. Without that licence Windows answers
 `LicenseNotValidForAudioEndpoint` and leaves the endpoint as it was. The documentation's note that
 the caller must own the format did not apply to either.
 
 ### The WinRT id is not the Core Audio id
 
-`GetForDeviceId` wants `\\?\SWD#MMDEVAPI#<endpoint id>#{e6327cad-dcec-4949-ae8a-991e976a79d2}`,
-the render device-interface path. Handed the bare `{0.0.0.00000000}.{...}` id, or any other string,
-it does not fail: it reports the device as unsupported with no format, so a wrong id looks exactly
-like a device without spatial sound. The library builds the path itself and asks Core Audio whether
-the endpoint exists first, so a vanished device is reported as the not-found HRESULT it is.
+`GetForDeviceId` wants `\\?\SWD#MMDEVAPI#<endpoint id>#{e6327cad-dcec-4949-ae8a-991e976a79d2}`, the
+render device-interface path. Handed the bare `{0.0.0.00000000}.{...}` id, or any other string, it
+does not fail: it reports the device as unsupported with no format, so a wrong id looks exactly like
+a device without spatial sound. The library builds the path itself and asks Core Audio whether the
+endpoint exists first, so a vanished device is reported as the not-found HRESULT it is.
 
 ### Rejected: registry and third-party switches
 
@@ -214,10 +216,10 @@ next read and by the Sound settings page; six channels requested on a stereo end
 rollback.
 
 The write carries two formats: the integer PCM default and the float mix format the engine runs at
-the same channel count and rate, which is the pairing Windows writes itself. 24-bit audio travels
-in a 32-bit container. The formats an endpoint accepts are found the way the Advanced tab finds
-them: each candidate is offered to `IAudioClient.IsFormatSupported` in exclusive mode, which opens
-no stream.
+the same channel count and rate, which is the pairing Windows writes itself. 24-bit audio travels in
+a 32-bit container. The formats an endpoint accepts are found the way the Advanced tab finds them:
+each candidate is offered to `IAudioClient.IsFormatSupported` in exclusive mode, which opens no
+stream.
 
 `IPolicyConfig` here is the Windows 7 and later layout, whose `GetPropertyValue` and
 `SetPropertyValue` take the FxProperties store flag before the key. The earlier declaration omitted
@@ -240,4 +242,6 @@ charger is plugged in or pulled out.
 `WaveOutFeedback.cs` makes a volume-change cue audible without a delay. Opening a waveOut endpoint
 takes long enough to be heard as lag, so the stream is opened once and kept. A cue is dropped while
 the previous one is still queued: holding a volume key repeats faster than the sound lasts, and
-queueing every repeat turns the feedback into a rattle.
+queueing every repeat turns the feedback into a rattle. Disposal attempts reset, unprepare and
+close. If a driver refuses teardown, buffers are retained until process exit rather than freed while
+the driver may still hold them; repeated disposal does not free those retained buffers.

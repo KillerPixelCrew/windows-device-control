@@ -117,9 +117,9 @@ public static partial class CoreAudio
     /// </param>
     /// <returns>Zero on success, otherwise the HRESULT Core Audio returned.</returns>
     /// <remarks>
-    ///     Default changes are reported for the console role only, the role every other member of
-    ///     this type reads and writes. Windows raises one notification per role, so a consumer that
-    ///     needs the multimedia or communications default must enumerate on its own.
+    ///     Default changes are reported for the console role only, which default-volume reads and watches
+    ///     use. SetDefaultEndpoint writes all three roles, but multimedia and communications notifications
+    ///     are filtered here. Consumers needing those roles require their own role-specific observation.
     /// </remarks>
     public static int StartEndpointWatch(Action<AudioEndpointWatchEvent> onEvent, out IDisposable? watch)
     {

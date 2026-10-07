@@ -69,8 +69,9 @@ public static partial class PowerRequestList
     ///     restriction powercfg has.
     /// </summary>
     /// <returns>
-    ///     The decoded entries, the outcome, and for <see cref="PowerRequestListStatus.QueryFailed" /> the NTSTATUS
-    ///     Windows returned (zero otherwise).
+    ///     The decoded entries, the outcome, and the NTSTATUS Windows returned for
+    ///     <see cref="PowerRequestListStatus.QueryFailed" /> or <see cref="PowerRequestListStatus.AccessDenied" />
+    ///     (zero for every other outcome).
     /// </returns>
     public static (IReadOnlyList<PowerRequestEntry>? Entries, PowerRequestListStatus Status, int NativeStatus)
         Query()

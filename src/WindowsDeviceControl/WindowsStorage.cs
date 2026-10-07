@@ -46,10 +46,11 @@ public static class WindowsStorage
 
     /// <summary>Every mounted volume Windows will describe, with its backing disk.</summary>
     /// <returns>
-    ///     One entry per volume that could be opened, in no particular order. A volume that cannot
-    ///     be queried is omitted rather than reported with invented values: a caller joining on the
-    ///     disk number needs to be able to trust the ones it gets. Network drives are left out: they
-    ///     have no local disk, and probing a disconnected share can block for the network timeout.
+    ///     One entry per local drive-letter volume whose metadata could be read, in no particular order.
+    ///     A failed disk-number lookup retains the entry with DiskNumber -1; never join such entries as
+    ///     though they identify one disk. A not-ready drive has an empty label and zero capacity/free
+    ///     space. Metadata IO or access failures omit that drive, and an IO failure enumerating drives
+    ///     returns an empty list. Network drives are excluded to avoid disconnected-share timeouts.
     /// </returns>
     public static IReadOnlyList<StorageVolume> DescribeVolumes()
     {
@@ -92,7 +93,10 @@ public static class WindowsStorage
     }
 
     /// <summary>The physical disk one mounted volume lives on.</summary>
-    /// <param name="mountPath">The volume's mount path, for example <c>D:\</c> or <c>D:</c>.</param>
+    /// <param name="mountPath">
+    ///     A drive-letter path, for example <c>D:\</c> or <c>D:</c>. Only its first character is used;
+    ///     directory mount points, volume GUID paths and UNC paths are not resolved.
+    /// </param>
     /// <returns>The disk number, or -1 when Windows would not say.</returns>
     public static int DiskNumberFor(string mountPath)
     {

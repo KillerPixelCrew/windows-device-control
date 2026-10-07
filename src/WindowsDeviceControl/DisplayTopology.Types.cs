@@ -22,10 +22,13 @@ public sealed record DisplayTargetIdentity(
 {
     /// <summary>Returns whether this saved identity describes the same physical monitor observation.</summary>
     /// <param name="other">Current observation to compare.</param>
+    /// <returns>Whether the device paths, or the permitted EDID fallback, match.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="other" /> is null.</exception>
     /// <remarks>
     ///     The device path wins. EDID manufacturer/product is a fallback only when both sides lack a path. An
     ///     identity with neither a path nor EDID ids matches nothing, itself included, so it cannot be found again
-    ///     and should not be persisted.
+    ///     and should not be persisted. EDID manufacturer/product IDs alone cannot distinguish two monitors
+    ///     of the same model; a fallback match is not a unique hardware serial identity.
     /// </remarks>
     public bool Matches(DisplayTargetIdentity other)
     {

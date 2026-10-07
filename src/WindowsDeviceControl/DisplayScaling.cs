@@ -108,9 +108,10 @@ public static partial class DisplayScaling
         }
     }
 
-    /// <summary>Snaps a percentage to the nearest step Windows offers.</summary>
+    /// <summary>Snaps a percentage to the nearest scaling step this library knows, without querying a display.</summary>
     /// <param name="percent">Requested percentage.</param>
-    /// <returns>The nearest supported step.</returns>
+    /// <returns>The nearest known step; ties choose the lower step.</returns>
+    /// <remarks>A display can expose a lower maximum. Set also clamps to the range read from that display.</remarks>
     public static int Snap(int percent)
     {
         return Steps.MinBy(step => Math.Abs(step - percent));

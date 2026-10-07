@@ -149,7 +149,8 @@ public static partial class CoreAudio
     ///     than reporting the formats probed so far as complete.
     /// </returns>
     /// <remarks>
-    ///     Each candidate from 1 to 8 channels, 44.1 to 192 kHz and 16 to 32 bits is offered to
+    ///     Candidates use 1, 2, 4, 6 or 8 channels; 44.1, 48, 88.2, 96, 176.4 or 192 kHz; and 16, 24 or
+    ///     32 bits. This is a finite candidate set, not every possible driver format. Each is offered to
     ///     the driver in exclusive mode, which is the documented question behind that tab. The
     ///     answer tells you which channel layouts an HDMI or USB endpoint can be switched to before
     ///     <see cref="SetDeviceFormat" /> is asked. The probe opens no stream and changes nothing.
@@ -377,6 +378,7 @@ public static partial class CoreAudio
         ///     A speaker mask to use instead of the standard one for
         ///     <paramref name="channels" />; zero picks the standard mask.
         /// </param>
+        /// <returns>An integer PCM value; this factory does not query an endpoint or validate driver support.</returns>
         public static AudioDeviceFormat Pcm(int channels, int sampleRate, int bitsPerSample, uint channelMask = 0)
         {
             return new AudioDeviceFormat(

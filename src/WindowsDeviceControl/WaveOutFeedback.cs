@@ -26,7 +26,11 @@ public sealed partial class WaveOutFeedback : IDisposable
     {
     }
 
-    /// <summary>Closes the stream and releases its stable unmanaged buffers.</summary>
+    /// <summary>Attempts to close the stream and releases buffers only when the driver confirms teardown.</summary>
+    /// <remarks>
+    ///     Idempotent. If reset, unprepare or close fails, the buffers are deliberately retained for the
+    ///     process lifetime rather than freed while a driver may still reference them. No failure is thrown.
+    /// </remarks>
     public void Dispose()
     {
         // A device that disconnects mid-playback (Bluetooth or USB headset) makes reset, unprepare

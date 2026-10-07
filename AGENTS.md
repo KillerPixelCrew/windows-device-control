@@ -7,9 +7,11 @@ internal-panel brightness, display topology, layouts and modes, power policy, Mo
 security and storage control from an ordinary unpackaged process. It describes Windows, not any one
 host application.
 
-Read `README.md` for the public behavior and `docs/radios.md` before changing any Windows API path.
-The latter records live platform findings and rejected alternatives; do not replace a proven route
-with a superficially simpler API without new evidence that addresses the documented failure.
+Read `README.md` for the public behavior, `docs/how-it-works.md` for request and ownership paths,
+and `docs/api-reference.md` for the complete source/API/test map. Read `docs/radios.md` before
+changing a radio or audio Windows API path: it records dated platform findings and rejected
+alternatives. Do not replace a proven route with a superficially simpler API without new evidence
+that addresses the documented failure.
 
 Every public member must have complete XML documentation. IntelliSense is part of the contract,
 including callback threading, completion timing, consent, error meanings, and ownership.
@@ -37,8 +39,10 @@ including callback threading, completion timing, consent, error meanings, and ow
   and colour code share one set of offsets and one query rather than keeping second copies.
 - `DisplayLayouts.cs` and `DisplayLayoutPlanner.cs`: complete desktop arrangements as values, with
   the planning rules kept pure and testable on synthetic path arrays. An absent monitor is a waiting
-  state, an already-matching arrangement is not rewritten, an accepted apply is not read back, and a
-  refused apply rolls back once.
+  state, matching topology is not rewritten (requested HDR/scaling still apply), an accepted apply
+  is not read back, and a refused apply attempts one rollback. RollbackSucceeded describes topology
+  only; rollback extras are best effort and their failures are not returned. The observation
+  fingerprint excludes rotation, HDR and scaling.
   `Describe` exposes those rules without touching a display, so a caller's editor and its stored
   configuration check a layout the same way this library will. Keep it that way: a second copy of
   the rules in a consumer is how the two drift apart. Apply and its rollback always pass
@@ -59,6 +63,9 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `WindowsPower*.cs`: power-scheme enumeration, policy values, power-mode operations and hybrid
   processor core placement. Each request is issued once and a read reports what Windows stores;
   callers own policy ordering and UI, and the library preserves native error codes.
+  `WindowsPower.Status.cs` preserves battery/AC unknown sentinels, `WindowsPower.Actions.cs` owns
+  asynchronous suspend/session actions, and `WindowsPower.Notifications.cs` owns caller-window
+  registrations and their SafeHandle lifetime. Cancellation cannot undo a dispatched session action.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
 - `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is unknown.
 - `WindowsWakeSecurity.cs`: wake sign-in capture, write and restore primitives. Callers compose the
@@ -67,10 +74,13 @@ including callback threading, completion timing, consent, error meanings, and ow
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
 - `WindowsStorage.cs`: read-only volume-to-disk-number mapping; nothing here mounts, ejects or
-  writes.
+  writes. Paths are drive-letter paths only; failed disk lookups retain a metadata row with -1,
+  which must never be used to group unknown disks.
 - `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
   that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
+- `docs/README.md`, `docs/how-it-works.md` and `docs/api-reference.md`: reading order, complete
+  request paths and source/public API/test navigation. Update these alongside XML when a contract changes.
 - `tests/WindowsDeviceControl.Tests`: deterministic, hardware-independent tests, one file per subject
   (`WindowsRadioTests`, `CoreAudioTests`, `DisplayTopologyTests`, `DisplayLayoutTests`,
   `WindowsPowerTests` and the rest), with shared builders and assertions in `TestFixtures.cs`.
@@ -165,6 +175,10 @@ Default endpoint changes are transactions across Console, Multimedia, and Commun
 Snapshot all previous defaults before writing. On failure, roll back every changed role in reverse
 order, attempt every rollback even if one fails, and return per-role apply/rollback HRESULTs.
 
+Volume commands have a different contract: ApplyCommand reads volume/mute after its write, and
+SetVolume writes volume, unmutes positive values, then reads mute. A later failure can follow an
+accepted mutation. Document that partial completion and do not automatically repeat a command.
+
 Spatial sound goes through `Windows.Media.Audio.SpatialAudioDeviceConfiguration`, addressed by the
 WinRT device id built from the endpoint id, after Core Audio has confirmed the endpoint exists; the
 WinRT class answers an unknown id with "unsupported" rather than an error. Do not write the
@@ -182,7 +196,9 @@ contract. Set AC and DC policy together. Absence of a controllable internal pane
 `TryReadBrightness` and `TrySetBrightness` report it without inventing success.
 
 `WaveOutFeedback` keeps its endpoint open to avoid audible latency. Drop a cue while the previous
-one is queued instead of building a repeated-key rattle. Disposal must release all native resources.
+one is queued instead of building a repeated-key rattle. Disposal frees buffers only after successful
+native teardown; on a teardown refusal, retain them until process exit instead of freeing memory
+the driver may still reference.
 
 Across all interop code, preserve exact native layouts, bounds checks, handle/COM ownership, and
 callback lifetimes. Unsafe code needs a local, auditable reason.

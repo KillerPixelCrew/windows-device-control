@@ -29,6 +29,8 @@ public sealed class WindowsPowerRequest : IDisposable
     /// <summary>Creates an inert owner; no Windows request exists until Acquire.</summary>
     /// <param name="reason">Diagnostic text shown by Windows power-request tools.</param>
     /// <param name="kind">The idle transition to hold.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="reason" /> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind" /> is not Display or System.</exception>
     public WindowsPowerRequest(string reason, WindowsPowerRequestKind kind = WindowsPowerRequestKind.System)
         : this(reason, kind, new NativePowerRequestApi())
     {
@@ -77,6 +79,8 @@ public sealed class WindowsPowerRequest : IDisposable
     }
 
     /// <summary>Sets the request once. Repeated successful acquisition is inert; native failures throw Win32Exception.</summary>
+    /// <exception cref="ObjectDisposedException">This owner has already been disposed.</exception>
+    /// <exception cref="Win32Exception">Creating or setting the request failed; IsHeld remains false.</exception>
     public void Acquire()
     {
         lock (_gate)
@@ -98,6 +102,8 @@ public sealed class WindowsPowerRequest : IDisposable
     }
 
     /// <summary>Clears the request once. A native failure throws and keeps IsHeld true.</summary>
+    /// <remarks>Does nothing when not held, including after disposal. A failure is not retried automatically.</remarks>
+    /// <exception cref="Win32Exception">Windows refused to clear the outstanding request.</exception>
     public void Release()
     {
         lock (_gate)

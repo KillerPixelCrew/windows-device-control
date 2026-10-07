@@ -132,9 +132,9 @@ public static partial class WindowsRadio
     /// </exception>
     /// <remarks>
     ///     Diagnostic only: the owning API remains the authority on what is permitted, and this can
-    ///     disagree with it. It exists to answer "why did enumeration return nothing" — on a
-    ///     provisioned kiosk or signage machine, location consent is commonly off, and Wi-Fi
-    ///     enumeration then returns an empty list rather than an error.
+    ///     disagree with it. Location access can block Wi-Fi scan-derived information; a WLAN
+    ///     refusal is reported as a Win32Exception, including ERROR_ACCESS_DENIED on Windows 11
+    ///     24H2. An empty network list by itself does not establish that consent was denied.
     /// </remarks>
     public static (Consent User, Consent Machine) GetConsent(string capability)
     {

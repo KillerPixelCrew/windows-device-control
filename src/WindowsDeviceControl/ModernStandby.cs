@@ -169,8 +169,8 @@ public static partial class ModernStandby
 
     /// <summary>Reads the interrupt-time marks around the last standby.</summary>
     /// <remarks>
-    ///     All three come from one call sequence so they can be compared without a clock skewing
-    ///     between them. Answers "how long was it asleep" and "how long has it been awake", which is
+    ///     The sleep, wake and current marks are read sequentially on the same interrupt-time clock,
+    ///     not as one atomic snapshot. Answers "how long was it asleep" and "how long has it been awake", which is
     ///     what a re-suspend grace period and a standby diagnostic both need. It does not report
     ///     what woke the machine: Windows exposes no documented call for that.
     /// </remarks>
@@ -262,6 +262,9 @@ public static partial class ModernStandby
     /// <param name="armed">True to let the device wake the machine.</param>
     /// <returns>False when Windows does not offer that device as programmable, or it is absent.</returns>
     /// <exception cref="ArgumentException"><paramref name="name" /> is empty.</exception>
+    /// <exception cref="Win32Exception">
+    ///     Device enumeration or the write failed. Writes require elevation; the native error is preserved.
+    /// </exception>
     public static bool TrySetWakeArmed(string name, bool armed)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -296,7 +299,7 @@ public static partial class ModernStandby
 
     /// <summary>Captures the current arming so it can be restored later.</summary>
     /// <remarks>Persist this before the first write and retain it until a restore succeeds.</remarks>
-    /// <returns>Every wake-capable device observed, and which of them were armed.</returns>
+    /// <returns>The programmable or armed devices observed, and which of them were armed.</returns>
     public static WakeDeviceSnapshot CaptureWakeDevices()
     {
         List<string> known = [];

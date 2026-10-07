@@ -79,8 +79,9 @@ public sealed record DisplayTargetObservation(
 /// <summary>Every monitor the adapter can see, plus a fingerprint of that observation.</summary>
 /// <param name="Targets">One entry per known monitor.</param>
 /// <param name="Fingerprint">
-///     Stable text that changes whenever the observation changes. Two equal
-///     fingerprints a moment apart are what a caller waits for before acting on an arrival.
+///     Stable text of monitor identity, availability, active state, position, resolution and refresh.
+///     Rotation, scaling and HDR are not included. Equal fingerprints a moment apart help a caller
+///     wait for an arrival to settle; they do not guarantee that every display property is unchanged.
 /// </param>
 /// <param name="CapturedAt">When the observation completed.</param>
 public sealed record DisplayArrangement(
@@ -94,7 +95,7 @@ public enum DisplayLayoutOutcome
     /// <summary>Windows accepted the arrangement (status zero); nothing is read back to confirm it.</summary>
     Applied,
 
-    /// <summary>The arrangement already matched; nothing was written.</summary>
+    /// <summary>The topology already matched; requested scaling and HDR were still applied separately.</summary>
     AlreadyActive,
 
     /// <summary>One or more requested monitors are not connected. A waiting state, not a failure.</summary>
@@ -106,7 +107,7 @@ public enum DisplayLayoutOutcome
     /// <summary>Windows refused the configuration, or it could not be read, before anything changed.</summary>
     Rejected,
 
-    /// <summary>Windows refused the apply; the captured arrangement was restored once, never retried.</summary>
+    /// <summary>Windows refused the apply; restoring the captured arrangement was attempted once, never retried.</summary>
     Refused
 }
 
@@ -177,7 +178,10 @@ public sealed record DisplayOutputWarning(
 /// <param name="NativeStatus">SetDisplayConfig status for the failed stage, or zero.</param>
 /// <param name="RollbackAttempted">Whether a refused application was rolled back.</param>
 /// <param name="RollbackStatus">SetDisplayConfig status of that rollback, or zero.</param>
-/// <param name="Warnings">Per-display settings that were not written, such as a refused HDR or scaling write.</param>
+/// <param name="Warnings">
+///     Per-display settings not written after an Applied or AlreadyActive arrangement. Rollback extras
+///     are best effort and their failures are not included in this list.
+/// </param>
 /// <param name="Problem">Why the layout was not applied, when the library knows a specific reason.</param>
 /// <param name="ProblemTarget">The display <paramref name="Problem" /> concerns, when it concerns one.</param>
 /// <param name="FailureMessage">The native failure text, when the current configuration could not be read.</param>
@@ -195,16 +199,15 @@ public sealed record DisplayLayoutResult(
     /// <summary>Whether Windows took the layout, or the desktop already matched it.</summary>
     public bool Applied => Outcome is DisplayLayoutOutcome.Applied or DisplayLayoutOutcome.AlreadyActive;
 
-    /// <summary>Whether a rollback was attempted and returned success. Its own status, not a readback.</summary>
+    /// <summary>Whether the topology rollback returned success; does not confirm scaling, HDR or physical visibility.</summary>
     public bool RollbackSucceeded => RollbackAttempted && RollbackStatus == 0;
 }
 
 /// <summary>
-///     Captures and applies complete desktop arrangements by value.
-///     <see cref="DisplayTopology" /> replays a captured native configuration, which is enough to restore
-///     what was there and nothing else. This is the editable form: which monitors are on, which is
-///     primary, where each sits, its mode, its scaling and its advanced colour state, all as values a
-///     person can be shown and change. Nobody hand-authors a <c>DISPLAYCONFIG_*</c> record.
+///     Captures and applies complete desktop arrangements by value: active monitors, primary display,
+///     position, mode, scaling and advanced colour. <see cref="DisplayTopology" /> supplies the active
+///     identities and shared native CCD machinery; callers edit these values instead of authoring
+///     <c>DISPLAYCONFIG_*</c> records. Native rollback snapshots are private to the apply operation.
 /// </summary>
 /// <remarks>
 ///     These calls block on display drivers; run them on a worker. Applying rearranges or blanks
@@ -544,8 +547,8 @@ public static class DisplayLayouts
     }
 
     /// <summary>
-    ///     Stable text for one observation. Sorted by identity so two equal observations of a
-    ///     settled topology produce the same string.
+    ///     Stable text of identity, availability, active state, placement, resolution and refresh.
+    ///     Sorted by identity; deliberately excludes rotation, scaling and advanced colour.
     /// </summary>
     internal static string Fingerprint(IEnumerable<DisplayTargetObservation> targets)
     {

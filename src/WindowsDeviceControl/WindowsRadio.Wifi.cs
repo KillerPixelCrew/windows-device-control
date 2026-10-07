@@ -86,9 +86,10 @@ public static unsafe partial class WindowsRadio
     /// </returns>
     /// <remarks>
     ///     Returns the last scan's results rather than scanning — call
-    ///     <see cref="RequestWifiScan" /> first for fresh ones. An empty list on a machine that clearly
-    ///     has networks nearby usually means location consent is denied; see
-    ///     <see cref="GetConsent" />.
+    ///     <see cref="RequestWifiScan" /> and wait for its notification before reading fresh results.
+    ///     Results from an adapter that succeeds are retained when another adapter fails; a failure
+    ///     is thrown when none succeeds. An empty successful list does not diagnose location consent;
+    ///     <see cref="GetConsent" /> is diagnostic only and the WLAN status is authoritative.
     /// </remarks>
     /// <exception cref="InvalidOperationException">Windows reported no WLAN interface.</exception>
     /// <exception cref="Win32Exception">

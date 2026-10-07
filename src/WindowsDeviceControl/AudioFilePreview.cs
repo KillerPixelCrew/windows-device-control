@@ -26,11 +26,17 @@ public sealed class AudioFilePreview : IDisposable
 
     /// <summary>Stops the preceding preview and starts a local file without altering system volume.</summary>
     /// <param name="path">An absolute path to an existing audio file.</param>
+    /// <exception cref="ObjectDisposedException">This owner has already been disposed.</exception>
     /// <exception cref="ArgumentException">The path is not absolute or does not exist.</exception>
     /// <exception cref="COMException">
     ///     Windows media playback is unavailable, as on N editions without the Media Feature Pack,
     ///     or the file could not be opened as a media source.
     /// </exception>
+    /// <remarks>
+    ///     Return means playback was requested, not that decoding completed or sound was audible.
+    ///     Later media failures arrive through Failed. Invalid paths leave the preceding preview alone;
+    ///     after validation the preceding preview is stopped before the new player is created.
+    /// </remarks>
     public void Play(string path)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

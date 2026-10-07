@@ -9,9 +9,20 @@ dotnet add package WindowsDeviceControl
 ```
 
 Targets `net8.0-windows10.0.19041.0` and `net10.0-windows10.0.19041.0`. No COM registration, no
-packaged identity, no native component, and no admin rights except where Windows itself demands
-them. It was extracted from a shipping Windows shell application where all of it runs on real
-hardware every session.
+packaged identity, no separately shipped native component, and no admin rights except where Windows
+itself demands them. The library was extracted from a Windows shell application. Hardware support
+and policy access still depend on the Windows build, driver, endpoint and calling process; dated
+observations below describe only the scenarios that were exercised.
+
+## Documentation
+
+- [How it works](docs/how-it-works.md): complete request paths, state, ownership and failure
+  handling.
+- [API and source reference](docs/api-reference.md): every source file and public operation, with
+  links to the XML contracts in source.
+- [Windows platform findings](docs/radios.md): radio, Wi-Fi, Bluetooth, audio and backlight
+  rationale.
+- [Documentation index](docs/README.md): reading order and validation boundaries.
 
 ## Why this exists
 
@@ -129,11 +140,16 @@ reference for callback threads, blocking, consent, error meanings and ownership.
 
 ### Threading
 
-Every call that reaches Windows blocks until Windows answers, including the WinRT and WLAN waits
-behind radio power, Bluetooth listing and unpairing, spatial sound and the Wi-Fi connect wait. Call
-them from a worker thread, not a UI thread. They are safe to call from any thread and take no
-cancellation token. `PairBluetoothAsync` is the exception: it returns at once, completes on a
-Windows thread, and takes a token that ends that attempt only.
+Synchronous Windows calls block the calling thread, including radio power, Bluetooth listing and
+unpairing, spatial sound, display driver probes and the Wi-Fi connection wait. Run these operations
+on a worker. Pure value helpers do not call Windows. `PairBluetoothAsync`,
+`WindowsPower.SuspendAsync` and `WindowsPower.RequestActionAsync` return tasks and take cancellation
+tokens, with different cancellation boundaries: pairing ends its own attempt, suspend cancels only
+before dispatch, and session actions can cancel admission or waiting but cannot undo dispatch.
+
+`AudioFilePreview` and `WaveOutFeedback` require serialized owner calls. `WindowsPowerRequest` is
+thread-safe. Display writes share a process-local gate; that gate cannot serialize Settings, drivers
+or another application. The library does not make a sequence of caller operations atomic.
 
 Watch callbacks, pairing questions and `AudioFilePreview.Failed` arrive on a Windows thread, never
 the caller's, so marshal them to your UI yourself. A watch delivers one callback at a time per
@@ -166,9 +182,10 @@ privacy store records, as a diagnostic only, since the owning API remains the au
 permitted. This ambushes kiosk deployments in particular, because the machine is often provisioned
 with location off.
 
-**Not every panel has an ACPI backlight.** `TryReadBrightness` returns `false` rather than throwing.
-Treat that as "this machine has no controllable internal panel", which is the normal answer on a
-desktop.
+**Not every panel has an ACPI backlight.** `TryReadBrightness` returns `false` when the device
+cannot be opened, its query fails or its reply is invalid. This means brightness is unavailable to
+this call, which is normal on a desktop; it does not prove that the machine has no panel. A failed
+write likewise returns `false`, with no retry or readback.
 
 `docs/radios.md` records the platform constraints behind all of this, including the approaches that
 were tried and did not work. Read it before changing how a Windows API is called.
@@ -212,9 +229,10 @@ statuses, not text: the caller words them.
 
 `DisplayLayouts` holds a desktop arrangement as editable values.
 
-`Observe()` reports every monitor the adapter can see, active or not, with a fingerprint that only
-changes when the observation does; two equal fingerprints a moment apart are what a caller waits for
-before acting on an arrival. `Capture()` returns the current desktop as values: identity, position,
+`Observe()` reports readable monitor identities, active or not. Its fingerprint covers identity,
+availability, active state, position, resolution and refresh; it excludes rotation, scaling and HDR.
+Two equal fingerprints a moment apart help a caller wait for an arrival to settle but do not prove
+all properties are unchanged. `Capture()` returns the current desktop as values: identity, position,
 resolution, refresh, rotation, scaling and HDR. `Validate(layout)` asks Windows without changing
 anything, and `Apply(layout)` applies once. A layout output's rotation of zero keeps whatever
 rotation the display runs at; any other value is written and compared. An apply and its rollback are
@@ -230,16 +248,19 @@ no duplicates, no overlaps, and every display touching the arrangement, because 
 detached desktop to something other than what was asked for. A requested monitor that is not
 connected returns `TargetsAbsent` rather than throwing, so a caller can wait for a television that
 only appears once an HDMI switch selects this machine. An arrangement that already matches returns
-`AlreadyActive` without writing, which makes compensation idempotent.
+`AlreadyActive` without rewriting topology. Requested scaling and HDR are still applied separately,
+and their refusals still appear in `Warnings`.
 
 The planner supplies a complete configuration: the path already driving a monitor keeps its source,
 a second display never shares one, monitors left out of the layout are supplied inactive, and the
 target mode index is left invalid so the driver picks a signal for the requested resolution and
 rate. Scaling and HDR are applied per display afterwards, and a refusal there is a typed warning
 rather than a reason to undo an arrangement that is already on screen. An application Windows
-refuses gets exactly one rollback to the arrangement captured before it, scaling and colour
-included, and nothing is ever retried automatically. `SDC_TOPOLOGY_SUPPLIED` is deliberately not
-used, because it takes modes from the Windows database and so cannot express position or resolution.
+refuses gets exactly one topology rollback attempt. When that is accepted, captured scaling and
+colour are restored best effort. `RollbackSucceeded` describes the topology write status only;
+rollback-extra failures are not returned in `Warnings`. Nothing is retried automatically.
+`SDC_TOPOLOGY_SUPPLIED` is deliberately not used, because it takes modes from the Windows database
+and so cannot express position or resolution.
 
 Planned source modes use `DISPLAYCONFIG_PIXELFORMAT_32BPP` (4), and requested refresh rates use
 progressive scan ordering. On 2026-09-13, a connected but inactive HISENSE on Windows build 26200
@@ -370,8 +391,9 @@ the user, meaning a wake timer, a device or background work rather than a button
 the one call that separates a wake worth staying awake for from one worth suspending again on, so
 read it on the resume notification rather than caching it.
 
-`ReadStandbyTiming` returns the last sleep and wake interrupt-time marks along with the current one,
-from a single read, giving `Slept` and `SinceWake` for a grace period or a standby diagnostic.
+`ReadStandbyTiming` reads the last sleep and wake interrupt-time marks and then the current one on
+the same clock, giving `Slept` and `SinceWake` for a grace period or a standby diagnostic. Those
+sequential reads are not an atomic snapshot.
 
 Neither of those reports _what_ woke the machine. Windows exposes no documented call for that.
 
@@ -407,16 +429,33 @@ issues its three writes in order and does not roll back. Windows applies process
 scheme is activated, so a write to the active scheme needs `RefreshActiveScheme` to take effect. A
 policy value this library does not name is preserved as its raw number rather than replaced.
 
+## Storage
+
+`WindowsStorage.DescribeVolumes()` enumerates local drive-letter volumes and reports capacity,
+available free space, readiness and the disk number returned by `IOCTL_STORAGE_GET_DEVICE_NUMBER`.
+Network drives are excluded. An unreadable drive's metadata can omit that row, while a failed disk
+lookup retains the row with `DiskNumber = -1`. Never join unknown disk numbers as one physical disk.
+The string overload of `DiskNumberFor` uses the first character as a drive letter; it does not
+resolve folder mount points, volume GUID paths or UNC paths. All storage operations are read-only.
+
 ## Building and testing
 
 `WindowsDeviceControl.slnx` contains the library and its hardware-independent tests. From this
-repository's root, build both supported frameworks and run each test target explicitly:
+repository's root, build both supported frameworks; after the applicable manual validation, run each
+test target explicitly:
 
 ```powershell
 dotnet build WindowsDeviceControl.slnx -c Release
 dotnet test WindowsDeviceControl.slnx -c Release --no-build -f net8.0-windows10.0.19041.0
 dotnet test WindowsDeviceControl.slnx -c Release --no-build -f net10.0-windows10.0.19041.0
 ```
+
+The .NET SDK must support the `.slnx` format and both target frameworks. Cross-compilation uses
+`EnableWindowsTargeting` from `Directory.Build.props`; it does not make native calls executable on
+Linux or macOS. XML comments ship with the assembly, and missing public documentation or partial
+parameter documentation fails the library build. Hardware-independent tests cover decision logic and
+native layouts, not live driver behavior. See the [source reference](docs/api-reference.md#tests)
+for the test map and [contributor guide](AGENTS.md) for validation requirements.
 
 ## Status
 
