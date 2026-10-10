@@ -215,7 +215,7 @@ public sealed record DisplayLayoutResult(
 ///     not read back; one Windows refuses gets
 ///     exactly one rollback, and nothing is retried automatically.
 /// </remarks>
-public static class DisplayLayouts
+public static partial class DisplayLayouts
 {
     internal const uint PathActiveFlag = 0x1;
     internal const uint InvalidModeIndex = 0xffffffff;
@@ -255,17 +255,31 @@ public static class DisplayLayouts
             }
 
             var active = (path.Flags & PathActiveFlag) != 0;
-            if (targets.Exists(other => Same(other.Target, identity) && (other.Active || !active)))
-            {
-                continue;
-            }
-
-            targets.RemoveAll(other => Same(other.Target, identity));
-            targets.Add(new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
+            AddObservation(targets, new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
                 active ? ReadOutput(path, modes, identity) : null));
         }
 
         return new DisplayArrangement(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    ///     Combines alternative source routes to the same monitor. Connection is a target fact:
+    ///     an unavailable inactive route must not hide another route reporting that monitor connected.
+    /// </summary>
+    /// <param name="targets">Observations accumulated from this query only.</param>
+    /// <param name="observation">One route's observation; the active route supplies the current layout.</param>
+    internal static void AddObservation(List<DisplayTargetObservation> targets, DisplayTargetObservation observation)
+    {
+        var index = targets.FindIndex(other => Same(other.Target, observation.Target));
+        if (index < 0)
+        {
+            targets.Add(observation);
+            return;
+        }
+
+        var previous = targets[index];
+        var selected = observation.Active && !previous.Active ? observation : previous;
+        targets[index] = selected with { Available = previous.Available || observation.Available };
     }
 
     /// <summary>

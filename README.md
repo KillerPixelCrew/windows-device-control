@@ -234,13 +234,20 @@ statuses, not text: the caller words them.
 
 `Observe()` reports readable monitor identities, active or not. Its fingerprint covers identity,
 availability, active state, position, resolution and refresh; it excludes rotation, scaling and HDR.
-Two equal fingerprints a moment apart help a caller wait for an arrival to settle but do not prove
-all properties are unchanged. `Capture()` returns the current desktop as values: identity, position,
-resolution, refresh, rotation, scaling and HDR. `Validate(layout)` asks Windows without changing
-anything, and `Apply(layout)` applies once. A layout output's rotation of zero keeps whatever
-rotation the display runs at; any other value is written and compared. An apply and its rollback are
-saved to the Windows display database, so the arrangement survives a reboot; a caller that needs to
-undo it applies the layout it captured before.
+Alternative source routes are combined per exact monitor interface; any route reporting the target
+connected keeps it available even while no route is active. For an editor's inventory,
+`DisplayLayouts.ObserveConnected()` supplements CCD with enabled Windows monitor interfaces,
+including connected displays disabled in the current desktop. It does no display write and bounds
+monitor lookup to five seconds; use `Observe()` for repeated topology polling.
+`DisplayEdid.ParseIdentity(edid)` extracts the same checksum-validated serial identity from raw
+descriptor bytes supplied by a graphics driver; duplicate serials still require an unambiguous
+route. Two equal fingerprints a moment apart help a caller wait for an arrival to settle but do not
+prove all properties are unchanged. `Capture()` returns the current desktop as values: identity,
+position, resolution, refresh, rotation, scaling and HDR. `Validate(layout)` asks Windows without
+changing anything, and `Apply(layout)` applies once. A layout output's rotation of zero keeps
+whatever rotation the display runs at; any other value is written and compared. An apply and its
+rollback are saved to the Windows display database, so the arrangement survives a reboot; a caller
+that needs to undo it applies the layout it captured before.
 
 `Describe(layout)` is the rule set on its own, returning the `DisplayLayoutProblem` the layout
 breaks or null. It is pure and touches no display, so an editor can refuse a layout as it is typed

@@ -38,7 +38,13 @@ public static partial class DisplayEdid
     }
 
     /// <summary>Extracts serial identity only from a complete, checksum-valid EDID base block.</summary>
-    internal static string? ParseIdentity(ReadOnlySpan<byte> edid)
+    /// <param name="edid">Raw monitor EDID bytes from Windows or a graphics driver; the base block must be complete.</param>
+    /// <returns>
+    ///     Manufacturer/product, numeric serial and optional textual serial, or null when the base block is invalid
+    ///     or supplies no usable serial. Equal identities can still be duplicated by monitor firmware.
+    /// </returns>
+    /// <remarks>Pure parsing; performs no Windows query, native driver call or hardware write.</remarks>
+    public static string? ParseIdentity(ReadOnlySpan<byte> edid)
     {
         if (edid.Length < 128 || edid[18] != 1 || !edid[..8].SequenceEqual(Magic) || !Checksum(edid[..128]))
         {

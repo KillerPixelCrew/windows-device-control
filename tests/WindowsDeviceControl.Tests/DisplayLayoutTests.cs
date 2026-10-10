@@ -15,6 +15,62 @@ public sealed class DisplayLayoutTests
     private const uint Active = 0x1;
     private const uint InvalidIndex = 0xffffffff;
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AConnectedDisabledMonitorIsKeptRegardlessOfAlternativeRouteOrder(bool availableFirst)
+    {
+        var target = Target("disabled-tv");
+        var connected = new DisplayTargetObservation(target, true, false, null);
+        var disconnectedRoute = connected with { Available = false };
+        var observations = new System.Collections.Generic.List<DisplayTargetObservation>();
+        DisplayLayouts.AddObservation(observations, availableFirst ? connected : disconnectedRoute);
+        DisplayLayouts.AddObservation(observations, availableFirst ? disconnectedRoute : connected);
+        var monitor = Assert.Single(observations);
+        Assert.True(monitor.Available);
+        Assert.False(monitor.Active);
+        Assert.Null(monitor.Current);
+    }
+
+    [Fact]
+    public void ActiveRouteSuppliesPlacementWhileConnectedAlternativeRoutesRemainSeparateTargets()
+    {
+        var target = Target("active");
+        var output = Output(target, width: 2560, height: 1440);
+        var observations = new System.Collections.Generic.List<DisplayTargetObservation>();
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(target, true, false, null));
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(target, true, true, output));
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(target, false, false, null));
+        var other = target with { DevicePath = "other", TargetId = 2 };
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(other, true, false, null));
+        Assert.Equal(2, observations.Count);
+        Assert.True(observations[0].Active);
+        Assert.True(observations[0].Available);
+        Assert.Same(output, observations[0].Current);
+        Assert.False(observations[1].Active);
+        Assert.True(observations[1].Available);
+    }
+
+    [Fact]
+    public void InterfaceInventoryAddsAConnectedDisplayMissingFromCcdWithoutInventingAnActiveMode()
+    {
+        var desktop = Target("desktop");
+        var tv = Target("disabled-tv", id: 7);
+        var current = Output(desktop);
+        var observations = new System.Collections.Generic.List<DisplayTargetObservation>
+        {
+            new(desktop, true, true, current)
+        };
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(tv, true, false, null));
+        DisplayLayouts.AddObservation(observations, new DisplayTargetObservation(desktop, true, false, null));
+        Assert.Equal(2, observations.Count);
+        Assert.True(observations[0].Active);
+        Assert.Same(current, observations[0].Current);
+        Assert.True(observations[1].Available);
+        Assert.False(observations[1].Active);
+        Assert.Null(observations[1].Current);
+    }
+
     [Fact]
     public void DuplicateOemSerialsNeverSelectAnArbitraryPhysicalRoute()
     {
@@ -23,9 +79,9 @@ public sealed class DisplayLayoutTests
         var (paths, _, problem, _) = DisplayLayoutPlanner.Plan([Path(0, 1), Path(1, 2)], layout,
             path => Target("current-" + path.TargetInfo.Id, id: path.TargetInfo.Id)
                 with
-                {
-                    EdidIdentity = saved.EdidIdentity
-                });
+            {
+                EdidIdentity = saved.EdidIdentity
+            });
         Assert.Empty(paths);
         Assert.Equal(DisplayLayoutProblem.NoDisplayPath, problem);
     }
@@ -43,7 +99,7 @@ public sealed class DisplayLayoutTests
         {
             SourceInfo = new DisplayTopology.PathSourceInfo { Id = source, ModeInfoIdx = InvalidIndex },
             TargetInfo = new DisplayTopology.PathTargetInfo
-                { Id = target, ModeInfoIdx = InvalidIndex, TargetAvailable = 1, Rotation = 1 },
+            { Id = target, ModeInfoIdx = InvalidIndex, TargetAvailable = 1, Rotation = 1 },
             Flags = active ? Active : 0
         };
     }

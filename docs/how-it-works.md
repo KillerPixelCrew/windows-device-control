@@ -139,8 +139,9 @@ refusals.
 Default audio formats use `IPolicyConfig` with integer PCM plus float mix format.
 `AudioDeviceFormat` describes channel mask, rate and depth; 24-bit PCM uses a 32-bit container.
 Listing probes a finite set of channels/rates/depths using exclusive-mode `IsFormatSupported`,
-without opening streams. Setting issues one write and can restart open streams; unsupported format
-is a native refusal, with no retry or rollback.
+without opening streams. It also retains the exact current shared default: disabling exclusive mode
+can reject every probe without invalidating that running format. Setting issues one write and can
+restart open streams; unsupported format is a native refusal, with no retry or rollback.
 
 `AudioFilePreview` owns one `MediaPlayer` on the default route. `Play` stops the prior preview;
 media failures carry their error class/HRESULT on a native callback, with stale-player failures

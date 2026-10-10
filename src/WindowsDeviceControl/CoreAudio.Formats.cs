@@ -132,7 +132,8 @@ public static partial class CoreAudio
     ///     <see cref="ListEndpoints(AudioDirection, out IReadOnlyList{AudioEndpoint})" />.
     /// </param>
     /// <param name="formats">
-    ///     The accepted formats, channel count first, then sample rate, then bit depth; empty
+    ///     The accepted formats, including the current shared default even when exclusive-mode probing
+    ///     refuses it, channel count first, then sample rate, then bit depth; empty
     ///     when the call fails.
     /// </param>
     /// <returns>
@@ -145,7 +146,9 @@ public static partial class CoreAudio
     ///     Candidates use 1, 2, 4, 6 or 8 channels; 44.1, 48, 88.2, 96, 176.4 or 192 kHz; and 16, 24 or
     ///     32 bits. This is a finite candidate set, not every possible driver format. Each is offered to
     ///     the driver in exclusive mode. Individual candidate refusals are omitted, including when
-    ///     exclusive mode is unavailable. The synchronous probe opens no stream and changes no format;
+    ///     exclusive mode is unavailable. The endpoint's actual shared default is retained because
+    ///     an exclusive-mode refusal does not make its running shared format unsupported.
+    ///     The synchronous probe opens no stream and changes no format;
     ///     run it on a worker thread. Later SetDeviceFormat requests can still be refused.
     /// </remarks>
     public static int ListSupportedDeviceFormats(string endpointId, out IReadOnlyList<AudioDeviceFormat> formats)
@@ -186,7 +189,8 @@ public static partial class CoreAudio
                 out var accepted);
             if (result == 0)
             {
-                formats = accepted;
+                formats = IncludeCurrentDeviceFormat(accepted,
+                    GetDeviceFormat(endpointId, out var current) >= 0 ? current : null);
             }
 
             return result;
@@ -201,6 +205,32 @@ public static partial class CoreAudio
             Release(client);
             Release(device);
         }
+    }
+
+    /// <summary>Retains the endpoint's actual shared default without inventing additional supported formats.</summary>
+    /// <param name="accepted">Formats accepted by the driver probe.</param>
+    /// <param name="current">Exact shared default, or null when the policy read failed.</param>
+    /// <returns>Distinct actual/probed formats ordered by channels, sample rate and valid bit depth.</returns>
+    internal static IReadOnlyList<AudioDeviceFormat> IncludeCurrentDeviceFormat(
+        IReadOnlyList<AudioDeviceFormat> accepted, AudioDeviceFormat? current)
+    {
+        var formats = new List<AudioDeviceFormat>(accepted);
+        if (current is { IsPlausible: true } format && !formats.Contains(format))
+        {
+            formats.Add(format);
+        }
+
+        formats.Sort(static (first, second) =>
+        {
+            var order = first.Channels.CompareTo(second.Channels);
+            if (order == 0)
+            {
+                order = first.SampleRate.CompareTo(second.SampleRate);
+            }
+
+            return order == 0 ? first.BitsPerSample.CompareTo(second.BitsPerSample) : order;
+        });
+        return formats;
     }
 
     /// <summary>Offers every candidate format to the driver's verdict and keeps the accepted ones.</summary>
