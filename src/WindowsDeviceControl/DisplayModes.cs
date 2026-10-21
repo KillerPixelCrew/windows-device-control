@@ -44,6 +44,16 @@ public static partial class DisplayModes
     private const uint PrimaryModeFields = 0x00080000 | 0x00100000 | 0x00400000;
     private const uint ChangeTest = 2;
 
+    // CDS_UPDATEREGISTRY: the mode becomes the display's saved one, as Windows Settings saves it.
+    private const uint ChangeUpdateRegistry = 1;
+
+    // CDS_NORESET: with CDS_UPDATEREGISTRY, saves the mode without applying it.
+    private const uint ChangeNoReset = 0x10000000;
+
+    // ENUM_CURRENT_SETTINGS and ENUM_REGISTRY_SETTINGS.
+    private const uint CurrentSettings = uint.MaxValue;
+    private const uint RegistrySettings = uint.MaxValue - 1;
+
     // DISP_CHANGE_FAILED, returned when the primary display's current mode cannot be read.
     private const int ChangeFailed = -1;
 
@@ -98,13 +108,18 @@ public static partial class DisplayModes
     /// <summary>Revalidates a selected mode and applies it once.</summary>
     /// <param name="observation">Observation from which the user selected the mode.</param>
     /// <param name="requested">Mode explicitly selected by the user.</param>
+    /// <param name="persist">
+    ///     Whether the mode also becomes the display's saved one, as a choice in Windows Settings does. A
+    ///     refused write's write-back is saved the same way.
+    /// </param>
     /// <returns>
     ///     <see cref="DisplayModeOutcome.Applied" /> when Windows accepted the write, which is not read back;
     ///     otherwise why nothing was written, or the refusal and its one write-back. No automatic retry is
     ///     performed.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="observation" /> or <paramref name="requested" /> is null.</exception>
-    public static DisplayModeResult Apply(DisplayModeSnapshot observation, DisplayMode requested)
+    public static DisplayModeResult Apply(DisplayModeSnapshot observation, DisplayMode requested,
+        bool persist = false)
     {
         ArgumentNullException.ThrowIfNull(observation);
         ArgumentNullException.ThrowIfNull(requested);
@@ -140,7 +155,8 @@ public static partial class DisplayModes
                     return new DisplayModeResult(DisplayModeOutcome.RouteChanged, 0, false, false);
                 }
 
-                var status = Change(path.SourceName, ref mode, 0);
+                var flags = persist ? ChangeUpdateRegistry : 0;
+                var status = Change(path.SourceName, ref mode, flags);
                 if (status == 0)
                 {
                     return new DisplayModeResult(DisplayModeOutcome.Applied, 0, false, false);
@@ -154,7 +170,7 @@ public static partial class DisplayModes
                 }
 
                 original.Fields = ModeFields;
-                var rollback = Change(path.SourceName, ref original, 0);
+                var rollback = Change(path.SourceName, ref original, flags);
                 return new DisplayModeResult(DisplayModeOutcome.Refused, status, true, rollback == 0);
             }
 
@@ -197,41 +213,66 @@ public static partial class DisplayModes
         return ChangePrimary(width, height, refreshHz, ChangeTest) == 0;
     }
 
-    /// <summary>Applies a mode to the primary display without persisting it.</summary>
+    /// <summary>Applies a resolution to the primary display and saves it as the display's resolution.</summary>
     /// <param name="width">Width in pixels.</param>
     /// <param name="height">Height in pixels.</param>
-    /// <param name="refreshHz">Refresh rate in hertz.</param>
     /// <returns>
-    ///     The <c>ChangeDisplaySettingsEx</c> status: zero on success, and <c>DISP_CHANGE_FAILED</c> (-1)
-    ///     without a write when the current mode cannot be read.
+    ///     The <c>ChangeDisplaySettingsEx</c> status of the visible change: zero on success, and
+    ///     <c>DISP_CHANGE_FAILED</c> (-1) without a write when the current mode cannot be read. A failed
+    ///     visible change saves nothing.
     /// </returns>
     /// <exception cref="OverflowException">A negative component cannot be represented by the native unsigned field.</exception>
     /// <remarks>
-    ///     No <c>CDS_UPDATEREGISTRY</c>, so the saved configuration is untouched. The mode stays after this
-    ///     process exits, until another mode change, sign-out or restart; the caller restores it explicitly.
-    ///     The colour depth is carried over from the current mode. Serialized with every other display write
-    ///     in the process. This lower-level call performs no driver test, target-route verification or
-    ///     automatic rollback; an error does not guarantee that no visible state changed.
+    ///     Two writes, the first skipped when the display already shows the resolution. The visible one keeps the current refresh rate and colour depth, so a rate another
+    ///     owner holds transiently (a frame-limit pairing) is not undone. The saved one keeps the saved
+    ///     refresh rate and colour depth, so that held rate never becomes the display's default; it is written
+    ///     with <c>CDS_NORESET</c> and changes nothing visible. Its status is not part of the result, because
+    ///     the visible change has already happened. Serialized with every other display write in the process.
+    ///     This lower-level call performs no driver test, target-route verification or automatic rollback.
     /// </remarks>
-    public static int ApplyPrimaryModeTransient(int width, int height, int refreshHz)
+    public static int ApplyPrimaryResolution(int width, int height)
     {
         lock (DisplayTopology.WriteGate)
         {
-            return ChangePrimary(width, height, refreshHz, 0);
+            if (!ReadNative(null, CurrentSettings, out var current))
+            {
+                return ChangeFailed;
+            }
+
+            // Already showing it, perhaps from an earlier dynamic change: only the saved mode is behind.
+            var status = current.Width == width && current.Height == height
+                ? 0
+                : ChangePrimary(current, width, height, 0);
+            if (status != 0)
+            {
+                return status;
+            }
+
+            var saved = ReadNative(null, RegistrySettings, out var registry) ? registry : current;
+            saved.Fields = ModeFields;
+            saved.Width = checked((uint)width);
+            saved.Height = checked((uint)height);
+            _ = Change(null, ref saved, ChangeUpdateRegistry | ChangeNoReset);
+            return status;
         }
     }
 
     private static int ChangePrimary(int width, int height, int refreshHz, uint flags)
     {
-        if (!ReadNative(null, uint.MaxValue, out var mode))
+        if (!ReadNative(null, CurrentSettings, out var mode))
         {
             return ChangeFailed;
         }
 
+        mode.Frequency = checked((uint)refreshHz);
+        return ChangePrimary(mode, width, height, flags);
+    }
+
+    private static int ChangePrimary(NativeMode mode, int width, int height, uint flags)
+    {
         mode.Fields = PrimaryModeFields;
         mode.Width = checked((uint)width);
         mode.Height = checked((uint)height);
-        mode.Frequency = checked((uint)refreshHz);
         return Change(null, ref mode, flags);
     }
 
