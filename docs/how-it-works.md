@@ -259,3 +259,9 @@ successful stored value does not guarantee every Windows edition honors that pol
 volume handle supplies `IOCTL_STORAGE_GET_DEVICE_NUMBER`. Unknown disk numbers remain -1, not a
 shared device identity. Not-ready rows have zero sizes; inaccessible metadata can omit a row. There
 are no mount, eject, format or storage-write operations in this library.
+
+`DeviceNodes` reads one device setup class through Configuration Manager. It returns exact
+registered instance IDs and problem codes, including disabled nodes. Buffer-size races receive
+bounded read retries; other Windows failures propagate. Hosts choose which nodes matter and own
+subsequent writes and restoration. The library neither disables devices nor changes a shared
+keyboard driver.

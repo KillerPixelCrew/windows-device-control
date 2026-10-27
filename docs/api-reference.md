@@ -178,3 +178,15 @@ test-bearing gates.
 
 No source edits in this documentation refresh change runtime behavior. Hardware observations remain
 the dated evidence in the README and platform findings, not claims of a fresh live pass.
+
+## Device nodes
+
+[`DeviceNodes.cs`](../src/WindowsDeviceControl/DeviceNodes.cs) provides read-only Configuration
+Manager access. `DeviceNodes.Enumerate(setupClass, presentOnly)` lists exact instance identifiers
+and problem codes for one device setup class, including disabled nodes. `ReadProblem(instanceId)`
+returns null when Windows no longer exposes status. `IsRegistered(instanceId)` separately recognizes
+registered disconnected nodes, so a host does not discard their recovery records merely because
+status is unavailable. Windows errors propagate as `Win32Exception`; enumeration retries only
+buffer-size races and has a bounded list size. These synchronous calls belong on a worker thread.
+Hosts own device selection, any subsequent enable/disable operation, privileges and recovery
+snapshots. Problem code 22 means disabled.
