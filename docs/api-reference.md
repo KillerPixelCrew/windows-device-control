@@ -190,3 +190,18 @@ status is unavailable. Windows errors propagate as `Win32Exception`; enumeration
 buffer-size races and has a bounded list size. These synchronous calls belong on a worker thread.
 Hosts own device selection, any subsequent enable/disable operation, privileges and recovery
 snapshots. Problem code 22 means disabled.
+
+## Windows protection settings
+
+`WindowsProtectionSettings` supplies synchronous worker-thread primitives for configured HVCI,
+vulnerable-driver blocklist and system CFG overrides, and exact Defender path/process exclusions.
+`WindowsProtectionState` preserves absent registry overrides separately from false and reports HVCI
+firmware lock state. These are configured settings, not proof of effective current-boot state.
+`ControlFlowGuardSetting.Default` removes only CFG's system override using ProcessMitigations.
+`DefenderExclusionState` returns existing paths/processes; Add/Remove methods modify one exact
+absolute entry without replacing other entries. No method disables Defender or driver signing.
+
+The caller owns administrator consent, firmware-lock admission, original-state journaling and
+restart/recovery policy. Registry, policy and PowerShell errors propagate; command timeout means an
+unknown outcome and is never retried. PowerShell is hidden/noninteractive with a 30-second bound.
+Public entry points live in `WindowsProtectionSettings.cs`.
