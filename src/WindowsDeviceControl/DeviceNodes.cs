@@ -81,6 +81,28 @@ public static partial class DeviceNodes
         return problem;
     }
 
+    /// <summary>Tests whether Windows holds a configuration change for one exact node until restart.</summary>
+    /// <param name="instanceId">The complete Windows device instance identifier.</param>
+    /// <returns>True when the node reports DN_NEED_RESTART, for example after a disable of an in-use device.</returns>
+    /// <exception cref="Win32Exception">Configuration Manager refused the status query.</exception>
+    public static bool IsRestartPending(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var result = Locate(out var node, instanceId, flags: 1); // CM_LOCATE_DEVNODE_PHANTOM.
+        if (result == 0x0D)
+        {
+            return false;
+        }
+        Check(result);
+        result = GetStatus(out var status, out _, node, flags: 0);
+        if (result == 0x0D)
+        {
+            return false;
+        }
+        Check(result);
+        return (status & 0x01000000) != 0; // DN_NEED_RESTART.
+    }
+
     /// <summary>Tests whether one exact device node remains registered, including disconnected nodes.</summary>
     /// <param name="instanceId">The complete Windows device instance identifier.</param>
     /// <returns>True for a present or phantom node; false when it is no longer registered.</returns>
