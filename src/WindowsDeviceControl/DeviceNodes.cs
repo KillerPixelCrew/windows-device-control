@@ -15,6 +15,8 @@ public sealed record DeviceNode(string InstanceId, uint ProblemCode);
 public static partial class DeviceNodes
 {
     private const uint CrNoSuchDevnode = 0x0D;
+    // cfg.h defines DN_NEED_RESTART as DN_LIAR. 0x01000000 is DN_NT_DRIVER, set on nearly every started node.
+    private const uint DnNeedRestart = 0x00000100;
 
     /// <summary>Lists device nodes in one exact Windows setup class, including disabled devices.</summary>
     /// <param name="setupClass">The device setup class GUID, not an interface class.</param>
@@ -76,7 +78,7 @@ public static partial class DeviceNodes
     /// <exception cref="Win32Exception">Configuration Manager refused the status query.</exception>
     public static bool IsRestartPending(string instanceId)
     {
-        return TryStatus(instanceId, out var status, out _) && (status & 0x01000000) != 0; // DN_NEED_RESTART.
+        return TryStatus(instanceId, out var status, out _) && (status & DnNeedRestart) != 0;
     }
 
     /// <summary>Tests whether one exact device node remains registered, including disconnected nodes.</summary>

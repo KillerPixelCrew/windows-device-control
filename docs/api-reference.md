@@ -198,6 +198,8 @@ vulnerable-driver blocklist and system CFG overrides, and exact Defender path/pr
 `WindowsProtectionState` preserves absent registry overrides separately from false and reports HVCI
 firmware lock state. These are configured settings, not proof of effective current-boot state.
 `ControlFlowGuardSetting.Default` removes only CFG's system override using ProcessMitigations.
+Only CFG needs PowerShell: `Read(controlFlowGuard: false)` reads the registry-backed overrides alone,
+and a failed CFG query reports CFG as null instead of failing the whole read.
 `DefenderExclusionState` returns existing paths/processes; Add/Remove methods modify one exact
 absolute entry without replacing other entries. No method disables Defender or driver signing.
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -21,10 +22,10 @@ public enum ControlFlowGuardSetting
 /// <summary>Configured Windows driver protections, preserving absent registry overrides.</summary>
 /// <param name="MemoryIntegrity">Configured HVCI override, or null for Windows default.</param>
 /// <param name="VulnerableDriverBlocklist">Configured driver-blocklist override, or null for Windows default.</param>
-/// <param name="ControlFlowGuard">System CFG override.</param>
+/// <param name="ControlFlowGuard">System CFG override, or null when it was not requested or Windows could not report it.</param>
 /// <param name="MemoryIntegrityLocked">Whether HVCI is locked through the firmware policy.</param>
 public sealed record WindowsProtectionState(bool? MemoryIntegrity, bool? VulnerableDriverBlocklist,
-    ControlFlowGuardSetting ControlFlowGuard, bool MemoryIntegrityLocked);
+    ControlFlowGuardSetting? ControlFlowGuard, bool MemoryIntegrityLocked);
 
 /// <summary>Current Microsoft Defender path and process exclusions, without inferred ownership.</summary>
 /// <param name="Paths">Configured exclusion paths.</param>
@@ -43,21 +44,39 @@ public static class WindowsProtectionSettings
     private const string BlocklistKey = @"SYSTEM\CurrentControlSet\Control\CI\Config";
 
     /// <summary>Reads configured protection overrides; this does not claim they took effect in the current boot.</summary>
-    /// <returns>Exact configured states, including absence and the HVCI lock.</returns>
-    /// <exception cref="IOException">A protection query failed or returned an unknown result.</exception>
-    public static WindowsProtectionState Read()
+    /// <param name="controlFlowGuard">
+    ///     Whether to query CFG too. Only CFG needs PowerShell; the HVCI and blocklist overrides are plain
+    ///     registry reads, so a caller that needs only those skips the process and its failure modes.
+    /// </param>
+    /// <returns>
+    ///     Exact configured states, including absence and the HVCI lock. CFG is null when not requested or
+    ///     when its query failed, so a PowerShell failure never hides the registry-backed protections.
+    /// </returns>
+    public static WindowsProtectionState Read(bool controlFlowGuard = true)
     {
-        var cfg = RunPowerShell("[Console]::Write([string](Get-ProcessMitigation -System).Cfg.Enable)").Trim();
-        var setting = cfg switch
-        {
-            "ON" => ControlFlowGuardSetting.Enabled,
-            "OFF" => ControlFlowGuardSetting.Disabled,
-            "NOTSET" => ControlFlowGuardSetting.Default,
-            _ => throw new IOException("Windows returned an unknown system Control Flow Guard setting: " + cfg)
-        };
         return new WindowsProtectionState(ReadDword(MemoryKey, "Enabled"),
-            ReadDword(BlocklistKey, "VulnerableDriverBlocklistEnable"), setting,
+            ReadDword(BlocklistKey, "VulnerableDriverBlocklistEnable"),
+            controlFlowGuard ? TryReadControlFlowGuard() : null,
             ReadDword(MemoryKey, "Locked") == true);
+    }
+
+    private static ControlFlowGuardSetting? TryReadControlFlowGuard()
+    {
+        try
+        {
+            return RunPowerShell("[Console]::Write([string](Get-ProcessMitigation -System).Cfg.Enable)").Trim() switch
+            {
+                "ON" => ControlFlowGuardSetting.Enabled,
+                "OFF" => ControlFlowGuardSetting.Disabled,
+                "NOTSET" => ControlFlowGuardSetting.Default,
+                _ => null
+            };
+        }
+        catch (Exception exception) when (exception is IOException or TimeoutException or InvalidOperationException
+                                              or Win32Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>Sets or removes the HVCI configured override. A restart is required; firmware locks are not bypassed.</summary>
