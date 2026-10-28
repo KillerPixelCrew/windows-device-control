@@ -14,6 +14,8 @@ public sealed record DeviceNode(string InstanceId, uint ProblemCode);
 /// <remarks>Calls are synchronous. Callers own device selection, writes, permission and recovery policy.</remarks>
 public static partial class DeviceNodes
 {
+    private const uint CrNoSuchDevnode = 0x0D;
+
     /// <summary>Lists device nodes in one exact Windows setup class, including disabled devices.</summary>
     /// <param name="setupClass">The device setup class GUID, not an interface class.</param>
     /// <param name="presentOnly">True for connected nodes; false also includes registered disconnected nodes.</param>
@@ -65,20 +67,7 @@ public static partial class DeviceNodes
     /// <exception cref="Win32Exception">Configuration Manager refused the status query.</exception>
     public static uint? ReadProblem(string instanceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var result = Locate(out var node, instanceId, flags: 1); // CM_LOCATE_DEVNODE_PHANTOM.
-        if (result == 0x0D)
-        {
-            return null;
-        }
-        Check(result);
-        result = GetStatus(out _, out var problem, node, flags: 0);
-        if (result == 0x0D)
-        {
-            return null;
-        }
-        Check(result);
-        return problem;
+        return TryStatus(instanceId, out _, out var problem) ? problem : null;
     }
 
     /// <summary>Tests whether Windows holds a configuration change for one exact node until restart.</summary>
@@ -87,20 +76,7 @@ public static partial class DeviceNodes
     /// <exception cref="Win32Exception">Configuration Manager refused the status query.</exception>
     public static bool IsRestartPending(string instanceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var result = Locate(out var node, instanceId, flags: 1); // CM_LOCATE_DEVNODE_PHANTOM.
-        if (result == 0x0D)
-        {
-            return false;
-        }
-        Check(result);
-        result = GetStatus(out var status, out _, node, flags: 0);
-        if (result == 0x0D)
-        {
-            return false;
-        }
-        Check(result);
-        return (status & 0x01000000) != 0; // DN_NEED_RESTART.
+        return TryStatus(instanceId, out var status, out _) && (status & 0x01000000) != 0; // DN_NEED_RESTART.
     }
 
     /// <summary>Tests whether one exact device node remains registered, including disconnected nodes.</summary>
@@ -109,9 +85,31 @@ public static partial class DeviceNodes
     /// <exception cref="Win32Exception">Configuration Manager refused the lookup.</exception>
     public static bool IsRegistered(string instanceId)
     {
+        return TryLocate(instanceId, out _);
+    }
+
+    private static bool TryLocate(string instanceId, out uint node)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var result = Locate(out _, instanceId, flags: 1);
-        if (result == 0x0D)
+        var result = Locate(out node, instanceId, flags: 1); // CM_LOCATE_DEVNODE_PHANTOM.
+        if (result == CrNoSuchDevnode)
+        {
+            return false;
+        }
+        Check(result);
+        return true;
+    }
+
+    private static bool TryStatus(string instanceId, out uint status, out uint problem)
+    {
+        status = 0;
+        problem = 0;
+        if (!TryLocate(instanceId, out var node))
+        {
+            return false;
+        }
+        var result = GetStatus(out status, out problem, node, flags: 0);
+        if (result == CrNoSuchDevnode)
         {
             return false;
         }
