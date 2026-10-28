@@ -205,3 +205,13 @@ The caller owns administrator consent, firmware-lock admission, original-state j
 restart/recovery policy. Registry, policy and PowerShell errors propagate; command timeout means an
 unknown outcome and is never retried. PowerShell is hidden/noninteractive with a 30-second bound.
 Public entry points live in `WindowsProtectionSettings.cs`.
+
+## System restore points
+
+`SystemRestorePoints.Create(description)` makes one application-install restore point through
+`SRSetRestorePointW`, the installer API, which Windows does not skip within 24 hours of an earlier
+point as it does for WMI and `Checkpoint-Computer`. It returns a `SystemRestorePointOutcome`:
+`Created`, `Disabled` (System Restore off, or absent on the image) or `Failed` with the Win32 status.
+The call is synchronous, can take tens of seconds and needs administrator permission. The caller owns
+consent and what a failure means; the library never deletes a point. The entry point lives in
+`SystemRestorePoints.cs`.
