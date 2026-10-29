@@ -108,6 +108,7 @@ restoration explicitly.
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | [WindowsPower.cs](../src/WindowsDeviceControl/WindowsPower.cs)                             | `WindowsPower.EnumerateScheme`, `EnumerateSchemes`, `ReadSchemeName`, `GetActiveScheme`, `SetActiveScheme`                                                                                               | Scheme enumeration, localized names, active scheme allocation/cleanup and native error propagation              |
 | [WindowsPower.Policy.cs](../src/WindowsDeviceControl/WindowsPower.Policy.cs)               | `WindowsPower.ReadSetting`, `WriteSetting`, `GetEffectiveMode`, `SetActiveMode`                                                                                                                          | Separate AC/DC stored values and effective overlay requests                                                     |
+| [WindowsPower.IdleTimeouts.cs](../src/WindowsDeviceControl/WindowsPower.IdleTimeouts.cs) | `WindowsPower.LocateIdleTimeout`, `IsHibernationAvailable`; `WindowsIdleTimeout`; video subgroup and idle-timeout setting GUIDs | Display-off, standby and hibernate timeout identities, and hibernation availability from SYSTEM_POWER_CAPABILITIES |
 | [WindowsPower.HybridCores.cs](../src/WindowsDeviceControl/WindowsPower.HybridCores.cs)     | `WindowsPower.QueryHybridCores`, `ReadHybridCores`, `WriteHybridCores`, `RefreshActiveScheme`, `ReadPossibleValue`; processor subgroup/setting GUIDs                                                     | CPU set parsing, per-scheme configurability, Windows-published values and ordered partial writes                |
 | [WindowsPower.Status.cs](../src/WindowsDeviceControl/WindowsPower.Status.cs)               | `WindowsPower.TryGetStatus`; `WindowsPowerStatus`                                                                                                                                                        | Native battery/AC snapshot with unchanged unknown sentinels                                                     |
 | [WindowsPower.Actions.cs](../src/WindowsDeviceControl/WindowsPower.Actions.cs)             | `WindowsPower.SuspendAsync`, `RequestActionAsync`; `WindowsPowerAction`                                                                                                                                  | Off-thread suspend and system-tool session actions, with explicit cancellation boundaries                       |
@@ -131,6 +132,10 @@ Power and wake data contracts:
 - Modern Standby GUIDs name `SubgroupSleep`, `SubgroupNone`, `SettingAllowWakeTimers`,
   `SettingAllowAwayMode`, `SettingUnattendedSleepTimeout`, `SettingConnectivityInStandby` and
   `SettingDisconnectedStandby`.
+- Idle-timeout GUIDs name `SubgroupVideo`, `SettingDisplayIdle`, `SettingStandbyIdle` and
+  `SettingHibernateIdle`; values are seconds and zero means never. On Modern Standby the hibernate
+  timeout counts time spent in standby. `IsHibernationAvailable` is false when hibernation is off or
+  the hibernation file is the reduced fast-startup type.
 
 Keep failure meaning precise: `PowerRequestList` returns null entries for any non-Read status;
 AccessDenied and QueryFailed preserve NTSTATUS. `WindowsPowerStatus` has 255/`uint.MaxValue`

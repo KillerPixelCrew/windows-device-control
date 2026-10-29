@@ -142,13 +142,21 @@ public static partial class ModernStandby
     /// <exception cref="Win32Exception">Windows could not provide the capability structure.</exception>
     public static ModernStandbySupport Query()
     {
+        return ReadCapabilities(ReadPowerCapabilities());
+    }
+
+    /// <summary>Reads the raw SYSTEM_POWER_CAPABILITIES structure.</summary>
+    /// <returns>The 76-byte native structure.</returns>
+    /// <exception cref="Win32Exception">Windows could not provide the capability structure.</exception>
+    internal static byte[] ReadPowerCapabilities()
+    {
         var buffer = new byte[CapabilitiesBytes];
         if (!GetPwrCapabilities(buffer))
         {
             throw Failure((uint)Marshal.GetLastWin32Error(), "GetPwrCapabilities");
         }
 
-        return ReadCapabilities(buffer);
+        return buffer;
     }
 
     /// <summary>Whether Windows attributes the last resume to something other than the user.</summary>
