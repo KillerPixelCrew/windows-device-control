@@ -16,6 +16,27 @@ public static partial class CoreAudio
     /// <summary>AUDCLNT_E_DEVICE_INVALIDATED: the endpoint went away.</summary>
     private const int DeviceInvalidated = unchecked((int)0x88890004);
 
+    private const uint KsPropertyTypeSet = 2;
+    private const uint PinProposeDataFormat = 14;
+    private const uint TopologyNodes = 1;
+    private const uint TopologyConnections = 2;
+    private const uint FilterNode = uint.MaxValue;
+    private const uint AudioEngineHostInput = 1;
+    private const uint MultipleItemHeaderSize = 8;
+    private const uint MaximumTopologyBytes = 64 * 1024;
+
+    /// <summary>Endpoint, topology and wave filters, with room for an extension filter between them.</summary>
+    private const int MaximumTopologyDevices = 8;
+
+    private static readonly Guid PinPropertySet = new("8C134960-51AD-11CF-878A-94F801C10000");
+    private static readonly Guid TopologyPropertySet = new("720D4AC0-7533-11D0-A5D6-28DB04C10000");
+
+    /// <summary>KSNODETYPE_AUDIO_ENGINE: the hardware engine of an endpoint that supports offload.</summary>
+    private static readonly Guid AudioEngineNode = new("35CAF6E4-F3B3-4168-BB4B-55E77A461C7E");
+
+    private static readonly Guid AudioMajorFormat = new("73647561-0000-0010-8000-00AA00389B71");
+    private static readonly Guid WaveFormatSpecifier = new("05589F81-C356-11CE-BF01-00AA0055595A");
+
     private static readonly Guid AudioClientId =
         new("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
 
@@ -145,7 +166,10 @@ public static partial class CoreAudio
     /// <remarks>
     ///     Candidates use 1, 2, 4, 6 or 8 channels; 44.1, 48, 88.2, 96, 176.4 or 192 kHz; and 16, 24 or
     ///     32 bits. This is a finite candidate set, not every possible driver format. Each is offered to
-    ///     the driver in exclusive mode. Individual candidate refusals are omitted, including when
+    ///     the driver in exclusive mode. An endpoint with a hardware audio engine (offload) answers
+    ///     exclusive requests from its offload pin, so there each candidate is instead proposed to the
+    ///     host pin the shared engine streams through, which is what a default-format write is
+    ///     validated against. Individual candidate refusals are omitted, including when
     ///     exclusive mode is unavailable. The endpoint's actual shared default is retained because
     ///     an exclusive-mode refusal does not make its running shared format unsupported.
     ///     The synchronous probe opens no stream and changes no format;
@@ -161,6 +185,7 @@ public static partial class CoreAudio
 
         IMMDevice? device = null;
         IAudioClient? client = null;
+        IKsControl? hostFilter = null;
         var candidate = nint.Zero;
         try
         {
@@ -177,16 +202,28 @@ public static partial class CoreAudio
                 return result < 0 ? result : Failure;
             }
 
-            candidate = Marshal.AllocCoTaskMem(Marshal.SizeOf<WaveFormatExtensible>());
-            var probe = client;
+            candidate = Marshal.AllocCoTaskMem(Marshal.SizeOf<KsDataFormat>() + Marshal.SizeOf<WaveFormatExtensible>());
             var buffer = candidate;
-            result = ProbeDeviceFormats(
-                format =>
+            Func<AudioDeviceFormat, int> verdict;
+            hostFilter = FindHostPinFilter(enumerator, device, endpointId, out var hostPin);
+            if (hostFilter is not null)
+            {
+                // Behind a hardware audio engine, exclusive streams are answered by the offload
+                // pin, which can accept far more than the host pin the shared engine runs on.
+                var pinControl = (IKsPinControl)hostFilter;
+                verdict = format => ProposeHostPinFormat(pinControl, hostPin, buffer, format);
+            }
+            else
+            {
+                var probe = client;
+                verdict = format =>
                 {
                     Marshal.StructureToPtr(BuildFormat(format), buffer, false);
                     return probe.IsFormatSupported(ShareModeExclusive, buffer, 0);
-                },
-                out var accepted);
+                };
+            }
+
+            result = ProbeDeviceFormats(verdict, out var accepted);
             if (result == 0)
             {
                 formats = IncludeCurrentDeviceFormat(accepted,
@@ -202,10 +239,249 @@ public static partial class CoreAudio
         finally
         {
             Marshal.FreeCoTaskMem(candidate);
+            Release(hostFilter);
             Release(client);
             Release(device);
         }
     }
+
+    /// <summary>
+    ///     Walks the endpoint's device topology to the filter whose hardware audio engine node has a
+    ///     host input, and returns that filter with the pin feeding it.
+    /// </summary>
+    /// <param name="enumerator">The shared device enumerator.</param>
+    /// <param name="endpoint">The open endpoint.</param>
+    /// <param name="endpointId">The endpoint's own identifier, which the walk does not revisit.</param>
+    /// <param name="pin">The host pin on success; zero otherwise.</param>
+    /// <returns>
+    ///     The filter's caller-owned control, or null when no reachable filter has an audio engine node,
+    ///     which is every endpoint without hardware offload.
+    /// </returns>
+    private static IKsControl? FindHostPinFilter(
+        IMMDeviceEnumerator enumerator,
+        IMMDevice endpoint,
+        string endpointId,
+        out uint pin)
+    {
+        pin = 0;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { endpointId };
+        var pending = new Queue<string>();
+        QueueConnectedDevices(endpoint, seen, pending);
+        while (pending.Count > 0 && seen.Count <= MaximumTopologyDevices)
+        {
+            IMMDevice? filter = null;
+            IKsControl? control = null;
+            try
+            {
+                if (ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(pending.Dequeue(), out filter)) < 0
+                    || filter is null)
+                {
+                    continue;
+                }
+
+                if (Activate(filter, KsControlId, out control) >= 0
+                    && control is not null
+                    && TryReadTopology(control, out var nodes, out var connections)
+                    && SelectHostPin(nodes, connections) is { } found)
+                {
+                    pin = found;
+                    var owned = control;
+                    control = null;
+                    return owned;
+                }
+
+                QueueConnectedDevices(filter, seen, pending);
+            }
+            finally
+            {
+                Release(control);
+                Release(filter);
+            }
+        }
+
+        return null;
+    }
+
+    private static void QueueConnectedDevices(IMMDevice device, HashSet<string> seen, Queue<string> pending)
+    {
+        IDeviceTopology? topology = null;
+        try
+        {
+            if (Activate(device, DeviceTopologyId, out topology) < 0
+                || topology is null
+                || topology.GetConnectorCount(out var count) < 0)
+            {
+                return;
+            }
+
+            for (uint index = 0; index < count; index++)
+            {
+                IConnector? connector = null;
+                try
+                {
+                    if (topology.GetConnector(index, out connector) >= 0
+                        && connector is not null
+                        && connector.IsConnected(out var connected) >= 0
+                        && connected
+                        && connector.GetDeviceIdConnectedTo(out var id) >= 0
+                        && !string.IsNullOrEmpty(id)
+                        && seen.Add(id))
+                    {
+                        pending.Enqueue(id);
+                    }
+                }
+                finally
+                {
+                    Release(connector);
+                }
+            }
+        }
+        finally
+        {
+            Release(topology);
+        }
+    }
+
+    /// <summary>Reads a KS filter's node types and connections.</summary>
+    private static bool TryReadTopology(
+        IKsControl control,
+        out IReadOnlyList<Guid> nodes,
+        out IReadOnlyList<KsTopologyConnection> connections)
+    {
+        nodes = [];
+        connections = [];
+        if (!TryReadMultipleItem(control, TopologyNodes, out var nodeData, out var nodeCount, itemSize: 16)
+            || !TryReadMultipleItem(control, TopologyConnections, out var connectionData, out var connectionCount,
+                itemSize: 16))
+        {
+            return false;
+        }
+
+        var nodeTypes = new Guid[nodeCount];
+        for (var index = 0; index < nodeCount; index++)
+        {
+            nodeTypes[index] = new Guid(nodeData.AsSpan(16 * index, 16));
+        }
+
+        var links = new KsTopologyConnection[connectionCount];
+        for (var index = 0; index < connectionCount; index++)
+        {
+            var offset = 16 * index;
+            links[index] = new KsTopologyConnection(
+                BitConverter.ToUInt32(connectionData, offset),
+                BitConverter.ToUInt32(connectionData, offset + 4),
+                BitConverter.ToUInt32(connectionData, offset + 8),
+                BitConverter.ToUInt32(connectionData, offset + 12));
+        }
+
+        nodes = nodeTypes;
+        connections = links;
+        return true;
+    }
+
+    /// <summary>Reads one KSMULTIPLE_ITEM topology property: a size query, then the items.</summary>
+    /// <param name="control">The filter.</param>
+    /// <param name="id">The KSPROPSETID_Topology property.</param>
+    /// <param name="items">The item bytes after the header.</param>
+    /// <param name="count">The item count, bounded by the bytes returned.</param>
+    /// <param name="itemSize">Bytes per item.</param>
+    /// <returns>Whether the property was read.</returns>
+    private static bool TryReadMultipleItem(IKsControl control, uint id, out byte[] items, out int count,
+        int itemSize)
+    {
+        items = [];
+        count = 0;
+        var property = new KsProperty { Set = TopologyPropertySet, Id = id, Flags = KsPropertyTypeGet };
+        var length = (uint)Marshal.SizeOf<KsProperty>();
+        control.KsProperty(ref property, length, 0, 0, out var required);
+        if (required < MultipleItemHeaderSize || required > MaximumTopologyBytes)
+        {
+            return false;
+        }
+
+        var buffer = Marshal.AllocCoTaskMem((int)required);
+        try
+        {
+            if (control.KsProperty(ref property, length, buffer, required, out var returned) < 0
+                || returned < MultipleItemHeaderSize
+                || returned > required)
+            {
+                return false;
+            }
+
+            var data = new byte[returned];
+            Marshal.Copy(buffer, data, 0, (int)returned);
+            count = Math.Min(BitConverter.ToInt32(data, 4), (int)(returned - MultipleItemHeaderSize) / itemSize);
+            if (count < 0)
+            {
+                return false;
+            }
+
+            items = data[(int)MultipleItemHeaderSize..];
+            return true;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(buffer);
+        }
+    }
+
+    /// <summary>Finds the filter pin wired to an audio engine node's host input.</summary>
+    /// <param name="nodes">The filter's node types, indexed by node id.</param>
+    /// <param name="connections">The filter's topology connections.</param>
+    /// <returns>
+    ///     The host pin, or null when the filter has no audio engine node or nothing feeds its host
+    ///     input. The engine's pins are fixed by Windows: 0 output, 1 host, 2 offload, 3 loopback.
+    /// </returns>
+    internal static uint? SelectHostPin(IReadOnlyList<Guid> nodes, IReadOnlyList<KsTopologyConnection> connections)
+    {
+        for (var node = 0; node < nodes.Count; node++)
+        {
+            if (nodes[node] != AudioEngineNode)
+            {
+                continue;
+            }
+
+            foreach (var connection in connections)
+            {
+                if (connection.FromNode == FilterNode
+                    && connection.ToNode == (uint)node
+                    && connection.ToNodePin == AudioEngineHostInput)
+                {
+                    return connection.FromNodePin;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Asks one pin whether it can stream a format, without opening it.</summary>
+    /// <returns>Zero when the pin accepts the format; otherwise the HRESULT of its refusal.</returns>
+    private static int ProposeHostPinFormat(IKsPinControl control, uint pin, nint buffer, AudioDeviceFormat format)
+    {
+        var wave = BuildFormat(format);
+        var dataFormatSize = Marshal.SizeOf<KsDataFormat>();
+        Marshal.StructureToPtr(new KsDataFormat
+        {
+            FormatSize = (uint)(dataFormatSize + Marshal.SizeOf<WaveFormatExtensible>()),
+            SampleSize = wave.BlockAlign,
+            MajorFormat = AudioMajorFormat,
+            SubFormat = wave.SubFormat,
+            Specifier = WaveFormatSpecifier
+        }, buffer, false);
+        Marshal.StructureToPtr(wave, buffer + dataFormatSize, false);
+        var property = new KsPinProperty
+        {
+            Property = new KsProperty { Set = PinPropertySet, Id = PinProposeDataFormat, Flags = KsPropertyTypeSet },
+            PinId = pin
+        };
+        return control.KsProperty(ref property, (uint)Marshal.SizeOf<KsPinProperty>(), buffer,
+            (uint)(dataFormatSize + Marshal.SizeOf<WaveFormatExtensible>()), out _);
+    }
+
+    /// <summary>One KSTOPOLOGY_CONNECTION; <see cref="FilterNode" /> as a node names a filter pin.</summary>
+    internal readonly record struct KsTopologyConnection(uint FromNode, uint FromNodePin, uint ToNode, uint ToNodePin);
 
     /// <summary>Retains the endpoint's actual shared default without inventing additional supported formats.</summary>
     /// <param name="accepted">Formats accepted by the driver probe.</param>

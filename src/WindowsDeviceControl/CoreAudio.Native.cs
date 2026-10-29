@@ -202,6 +202,28 @@ public static partial class CoreAudio
         internal uint Flags;
     }
 
+    // KSP_PIN: a property addressed to one pin of a filter.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KsPinProperty
+    {
+        internal KsProperty Property;
+        internal uint PinId;
+        internal uint Reserved;
+    }
+
+    // KSDATAFORMAT: 64 bytes, followed here by the WAVEFORMATEXTENSIBLE its specifier announces.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KsDataFormat
+    {
+        internal uint FormatSize;
+        internal uint Flags;
+        internal uint SampleSize;
+        internal uint Reserved;
+        internal Guid MajorFormat;
+        internal Guid SubFormat;
+        internal Guid Specifier;
+    }
+
     [ComImport]
     [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
     private sealed class MMDeviceEnumerator;
@@ -429,6 +451,28 @@ public static partial class CoreAudio
         [PreserveSig]
         int KsProperty(
             ref KsProperty property,
+            uint propertyLength,
+            nint propertyData,
+            uint dataLength,
+            out uint bytesReturned);
+
+        [PreserveSig]
+        int KsMethod(nint method, uint methodLength, nint methodData, uint dataLength, out uint bytesReturned);
+
+        [PreserveSig]
+        int KsEvent(nint eventData, uint eventLength, nint eventDataOut, uint dataLength, out uint bytesReturned);
+    }
+
+    // The same interface, declared with a pin-addressed descriptor: KSP_PIN is longer than the
+    // KSPROPERTY the declaration above passes, and the vtable cannot carry both shapes.
+    [ComImport]
+    [Guid("28F54685-06FD-11D2-B27A-00A0C9223196")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IKsPinControl
+    {
+        [PreserveSig]
+        int KsProperty(
+            ref KsPinProperty property,
             uint propertyLength,
             nint propertyData,
             uint dataLength,

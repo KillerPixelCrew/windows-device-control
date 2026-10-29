@@ -221,6 +221,17 @@ a 32-bit container. The formats an endpoint accepts are found the way the Advanc
 each candidate is offered to `IAudioClient.IsFormatSupported` in exclusive mode, which opens no
 stream.
 
+That probe is wrong for an endpoint with hardware offload. On build 26300 the SoundWire speaker of
+an Acer handheld (an ACX `Streaming_Speaker` filter with a `KSNODETYPE_AUDIO_ENGINE` node) accepted
+all 36 exclusive candidates, mono and 192 kHz included, while `SetDeviceFormat` answered
+`E_INVALIDARG` for every format except stereo 48 kHz at 16 and 24 bits. The filter's pins showed
+why: the offload pin, wired to engine input 2, accepts every candidate through
+`KSPROPERTY_PIN_PROPOSEDATAFORMAT`, and the host pin, wired to engine input 1, accepts exactly the
+two formats the write accepted. `KSPROPERTY_PIN_PROPOSEDATAFORMAT2` with a signal-processing mode is
+not implemented there. So when the endpoint's topology reaches a filter with an audio engine node,
+each candidate is proposed to the pin feeding the engine's host input instead, without opening it.
+Endpoints without an audio engine node keep the exclusive-mode probe.
+
 `IPolicyConfig` here is the Windows 7 and later layout, whose `GetPropertyValue` and
 `SetPropertyValue` take the FxProperties store flag before the key. The earlier declaration omitted
 it; the two methods were unused, and `SetDefaultEndpoint` sits after them, so nothing broke, but a
