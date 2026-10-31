@@ -1,6 +1,6 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using Windows.Devices.Display;
 
@@ -137,7 +137,7 @@ public static partial class DisplayEdid
             }
         }
 
-        return modes.OrderBy(mode => mode.Width).ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray();
+        return DisplayModes.Sorted(modes);
     }
 
     private static bool Checksum(ReadOnlySpan<byte> block)
@@ -178,7 +178,7 @@ public static partial class DisplayEdid
 
     private static void AddDetailed(ReadOnlySpan<byte> timing, HashSet<DisplayMode> modes)
     {
-        var clock = timing[0] | (timing[1] << 8);
+        var clock = BinaryPrimitives.ReadUInt16LittleEndian(timing);
         if (clock == 0 || (timing[17] & 128) != 0)
         {
             return;
@@ -320,17 +320,15 @@ public static partial class DisplayEdid
                     }
 
                     long clock = 1 + (timing[0] | (timing[1] << 8) | (timing[2] << 16));
-                    AddTiming(Word(timing, 4) + 1, Word(timing, 12) + 1,
-                        Word(timing, 6) + 1, Word(timing, 14) + 1, clock * (tag == 3 ? 10000 : 1000), modes);
+                    AddTiming(BinaryPrimitives.ReadUInt16LittleEndian(timing[4..]) + 1,
+                        BinaryPrimitives.ReadUInt16LittleEndian(timing[12..]) + 1,
+                        BinaryPrimitives.ReadUInt16LittleEndian(timing[6..]) + 1,
+                        BinaryPrimitives.ReadUInt16LittleEndian(timing[14..]) + 1,
+                        clock * (tag == 3 ? 10000 : 1000), modes);
                 }
             }
 
             offset += length;
         }
-    }
-
-    private static int Word(ReadOnlySpan<byte> data, int offset)
-    {
-        return data[offset] | (data[offset + 1] << 8);
     }
 }

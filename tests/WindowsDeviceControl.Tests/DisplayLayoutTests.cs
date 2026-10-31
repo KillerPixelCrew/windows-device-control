@@ -225,15 +225,14 @@ public sealed class DisplayLayoutTests
     public void AnExplicitRotationIsWrittenAndComparedButZeroIsNot()
     {
         var target = Target(@"\\?\a");
-        DisplayArrangement arrangement = new(
-            [new DisplayTargetObservation(target, true, true, Output(target) with { Rotation = 2 })], "x",
-            DateTimeOffset.UnixEpoch);
+        DisplayTargetObservation[] targets =
+            [new DisplayTargetObservation(target, true, true, Output(target) with { Rotation = 2 })];
         var (planned, _, _, _) = DisplayLayoutPlanner.Plan([Path(1, 10, true)],
             new DisplayLayout([Output(Target(@"\\?\a", id: 10)) with { Rotation = 4 }]), Naming((10, @"\\?\a")));
 
-        Assert.True(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target) with { Rotation = 0 }])));
-        Assert.True(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target) with { Rotation = 2 }])));
-        Assert.False(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target)])));
+        Assert.True(DisplayLayouts.Matches(targets, new DisplayLayout([Output(target) with { Rotation = 0 }])));
+        Assert.True(DisplayLayouts.Matches(targets, new DisplayLayout([Output(target) with { Rotation = 2 }])));
+        Assert.False(DisplayLayouts.Matches(targets, new DisplayLayout([Output(target)])));
         Assert.Equal(4u, planned[0].TargetInfo.Rotation);
     }
 
@@ -312,12 +311,11 @@ public sealed class DisplayLayoutTests
     public void AnArrangementMatchesOnlyWhenEveryDisplayAgrees()
     {
         var target = Target(@"\\?\a");
-        DisplayArrangement arrangement = new(
-            [new DisplayTargetObservation(target, true, true, Output(target))], "x", DateTimeOffset.UnixEpoch);
+        DisplayTargetObservation[] targets = [new DisplayTargetObservation(target, true, true, Output(target))];
 
-        Assert.True(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target)])));
-        Assert.False(DisplayLayouts.Matches(arrangement, new DisplayLayout([Output(target, width: 2560)])));
-        Assert.False(DisplayLayouts.Matches(arrangement,
+        Assert.True(DisplayLayouts.Matches(targets, new DisplayLayout([Output(target)])));
+        Assert.False(DisplayLayouts.Matches(targets, new DisplayLayout([Output(target, width: 2560)])));
+        Assert.False(DisplayLayouts.Matches(targets,
             new DisplayLayout([Output(target), Output(Target(@"\\?\b", id: 2), 1920)])));
     }
 

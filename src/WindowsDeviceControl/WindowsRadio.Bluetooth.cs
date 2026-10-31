@@ -54,9 +54,7 @@ public static partial class WindowsRadio
         return found.Select(ReadBluetoothDevice)
             .Where(device => device.Id.Length > 0)
             .GroupBy(
-                device => device.Container.Length > 0
-                    ? $"container:{device.Container}"
-                    : $"endpoint:{device.Id}",
+                device => IdentityKey(device.Container, device.Id),
                 StringComparer.OrdinalIgnoreCase)
             .Select(MergeBluetoothEndpoints)
             .OrderBy(device => device.Name.Length == 0)
@@ -124,17 +122,18 @@ public static partial class WindowsRadio
         string id,
         IReadOnlyDictionary<string, object> properties)
     {
-        if (properties.TryGetValue(AepContainer, out var value)
-            || properties.TryGetValue(DeviceContainer, out value))
+        if (!properties.TryGetValue(AepContainer, out var value))
         {
-            var container = NormalizeContainer(value);
-            if (container.Length > 0)
-            {
-                return $"container:{container}";
-            }
+            properties.TryGetValue(DeviceContainer, out value);
         }
 
-        return $"endpoint:{id}";
+        return IdentityKey(NormalizeContainer(value), id);
+    }
+
+    /// <summary>Prefixes a normalized container, or the endpoint ID when the container is empty.</summary>
+    private static string IdentityKey(string container, string id)
+    {
+        return container.Length > 0 ? $"container:{container}" : $"endpoint:{id}";
     }
 
     /// <summary>
@@ -269,12 +268,7 @@ public static partial class WindowsRadio
         Exception? failure = null;
         try
         {
-            var info = await DeviceInformation.CreateFromIdAsync(
-                    deviceId,
-                    EndpointProperties,
-                    DeviceInformationKind.AssociationEndpoint)
-                .AsTask(wait.Token)
-                .ConfigureAwait(false);
+            var info = await EndpointFromId(deviceId).AsTask(wait.Token).ConfigureAwait(false);
             var deviceName = info.Name ?? string.Empty;
             custom = info.Pairing.Custom;
             requested = (sender, args) =>
@@ -334,11 +328,7 @@ public static partial class WindowsRadio
         var cleanup = EndPairingAttempt(attempt) ?? endFailure;
         // A caller exception is the reason the attempt ended, ahead of the cancellation it caused.
         failure = callbackFailure ?? failure;
-        if (cleanup is not null)
-        {
-            failure = failure is null ? cleanup : new AggregateException(failure, cleanup);
-        }
-
+        failure = failure is null ? cleanup : CombineFailure(failure, cleanup);
         if (failure is not null)
         {
             ExceptionDispatchInfo.Throw(failure);
@@ -465,7 +455,7 @@ public static partial class WindowsRadio
     public static BluetoothUnpairResult UnpairBluetooth(string deviceId)
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);
-        var info = ReadEndpoint(deviceId);
+        var info = EndpointFromId(deviceId).WaitWinRt();
         var result = info.Pairing.UnpairAsync().WaitWinRt();
         return MapUnpairing(result.Status);
     }
@@ -477,13 +467,9 @@ public static partial class WindowsRadio
             (int)status);
     }
 
-    private static DeviceInformation ReadEndpoint(string id)
+    private static IAsyncOperation<DeviceInformation> EndpointFromId(string id)
     {
-        return DeviceInformation.CreateFromIdAsync(
-                id,
-                EndpointProperties,
-                DeviceInformationKind.AssociationEndpoint)
-            .WaitWinRt();
+        return DeviceInformation.CreateFromIdAsync(id, EndpointProperties, DeviceInformationKind.AssociationEndpoint);
     }
 
     /// <summary>Marks an attempt finished and completes its unanswered deferrals.</summary>
@@ -697,7 +683,7 @@ public static partial class WindowsRadio
             {
                 // The lookup can block in the device stack, so it runs outside the gate that
                 // disposal and every other callback wait on. The result is still published under it.
-                var resolved = ReadEndpoint(update.Id);
+                var resolved = EndpointFromId(update.Id).WaitWinRt();
                 lock (_gate)
                 {
                     if (_ended)

@@ -173,10 +173,9 @@ public static class WifiProfile
 
         if (Between(element, "<hex>", "</hex>") is { } hex)
         {
-            var trimmed = hex.Trim();
             try
             {
-                return Convert.FromHexString(trimmed);
+                return Convert.FromHexString(hex.AsSpan().Trim());
             }
             catch (FormatException)
             {

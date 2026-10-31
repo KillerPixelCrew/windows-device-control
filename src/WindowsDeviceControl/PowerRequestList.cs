@@ -277,25 +277,15 @@ public static partial class PowerRequestList
     private static bool TryUInt32(ReadOnlySpan<byte> buffer, int offset, out uint value)
     {
         value = 0;
-        if (offset < 0 || offset > buffer.Length - 4)
-        {
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(offset, 4));
-        return true;
+        return offset >= 0 && offset <= buffer.Length
+            && BinaryPrimitives.TryReadUInt32LittleEndian(buffer[offset..], out value);
     }
 
     private static bool TryUInt64(ReadOnlySpan<byte> buffer, int offset, out ulong value)
     {
         value = 0;
-        if (offset < 0 || offset > buffer.Length - 8)
-        {
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(offset, 8));
-        return true;
+        return offset >= 0 && offset <= buffer.Length
+            && BinaryPrimitives.TryReadUInt64LittleEndian(buffer[offset..], out value);
     }
 
     /// <summary>

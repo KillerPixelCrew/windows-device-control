@@ -57,13 +57,13 @@ public sealed record WakeSecurityRestoreResult(IReadOnlyList<WakeSecurityRestore
 
 /// <summary>One step of a wake sign-in restore.</summary>
 /// <param name="Setting">What the step writes.</param>
-/// <param name="Scheme">The scheme of a scheme step, otherwise <see cref="Guid.Empty" />.</param>
+/// <param name="Scheme">The scheme of a <see cref="WakeSecuritySetting.SchemeConsoleLock" /> step, otherwise null.</param>
 /// <param name="Ac">The AC value; for <see cref="WakeSecuritySetting.NoLockScreen" /> the value itself. -1 deletes it.</param>
 /// <param name="Dc">The battery value; -1 deletes it.</param>
 /// <param name="PolicyExisted">For the policy step, whether the policy key existed when the snapshot was taken.</param>
 internal sealed record WakeSecurityRestoreItem(
     WakeSecuritySetting Setting,
-    Guid Scheme,
+    Guid? Scheme,
     int Ac,
     int Dc,
     bool PolicyExisted);
@@ -231,7 +231,7 @@ public static class WindowsWakeSecurity
     {
         List<WakeSecurityRestoreItem> plan =
         [
-            new(WakeSecuritySetting.ConsoleLockPolicy, Guid.Empty, snapshot.PolicyAc, snapshot.PolicyDc,
+            new(WakeSecuritySetting.ConsoleLockPolicy, Scheme: null, snapshot.PolicyAc, snapshot.PolicyDc,
                 snapshot.PolicyExisted)
         ];
         foreach (var scheme in snapshot.Schemes)
@@ -243,8 +243,8 @@ public static class WindowsWakeSecurity
             }
         }
 
-        plan.Add(new WakeSecurityRestoreItem(WakeSecuritySetting.ActiveSchemeRefresh, Guid.Empty, -1, -1, false));
-        plan.Add(new WakeSecurityRestoreItem(WakeSecuritySetting.NoLockScreen, Guid.Empty, snapshot.NoLockScreen, -1,
+        plan.Add(new WakeSecurityRestoreItem(WakeSecuritySetting.ActiveSchemeRefresh, Scheme: null, -1, -1, false));
+        plan.Add(new WakeSecurityRestoreItem(WakeSecuritySetting.NoLockScreen, Scheme: null, snapshot.NoLockScreen, -1,
             false));
         return plan;
     }
@@ -265,8 +265,7 @@ public static class WindowsWakeSecurity
             }
             catch (Exception ex)
             {
-                failures.Add(new WakeSecurityRestoreFailure(item.Setting,
-                    item.Setting == WakeSecuritySetting.SchemeConsoleLock ? item.Scheme : null, ex));
+                failures.Add(new WakeSecurityRestoreFailure(item.Setting, item.Scheme, ex));
             }
         }
 
@@ -300,7 +299,7 @@ public static class WindowsWakeSecurity
                 RemoveConsoleLockPolicy();
                 break;
             case WakeSecuritySetting.SchemeConsoleLock:
-                SetSchemeConsoleLock(item.Scheme, item.Ac, item.Dc);
+                SetSchemeConsoleLock(item.Scheme!.Value, item.Ac, item.Dc);
                 break;
             case WakeSecuritySetting.ActiveSchemeRefresh:
                 WindowsPower.RefreshActiveScheme();

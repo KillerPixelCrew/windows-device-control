@@ -134,10 +134,7 @@ public static partial class WindowsPower
         }
         finally
         {
-            if (pointer != 0)
-            {
-                LocalFree(pointer);
-            }
+            Marshal.FreeHGlobal(pointer);
         }
     }
 
@@ -184,7 +181,4 @@ public static partial class WindowsPower
     private static partial uint PowerWriteDCValueIndex(
         nint rootPowerKey, in Guid schemeGuid, in Guid subGroupGuid, in Guid powerSettingGuid,
         uint dcValueIndex);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial nint LocalFree(nint memory);
 }

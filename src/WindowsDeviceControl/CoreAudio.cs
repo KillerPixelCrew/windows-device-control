@@ -115,9 +115,7 @@ public static partial class CoreAudio
         }
 
         var call = new VolumeCall();
-        var result = WithDefaultVolume(direction, ref call,
-            static (volume, ref state)
-                => ReadVolume(volume, out state.Percentage, out state.Muted));
+        var result = WithDefaultVolume(direction, ref call, ReadVolume);
         percentage = call.Percentage;
         muted = call.Muted;
         return result;
@@ -197,8 +195,7 @@ public static partial class CoreAudio
     public static int GetVolume(string endpointId, out int percentage, out int muted)
     {
         var call = new VolumeCall();
-        var result = WithEndpointVolume(endpointId, ref call,
-            static (volume, ref state) => ReadVolume(volume, out state.Percentage, out state.Muted));
+        var result = WithEndpointVolume(endpointId, ref call, ReadVolume);
         percentage = call.Percentage;
         muted = call.Muted;
         return result;
@@ -256,18 +253,10 @@ public static partial class CoreAudio
                 return result;
             }
 
-            for (uint index = 0; index < count; index++)
+            ForEachDevice(collection, count, device =>
             {
-                IMMDevice? device = null;
-                try
+                if (device.GetId(out var id) >= 0 && !string.IsNullOrEmpty(id))
                 {
-                    if (collection.Item(index, out device) < 0 || device is null
-                                                               || device.GetId(out var id) < 0 ||
-                                                               string.IsNullOrEmpty(id))
-                    {
-                        continue;
-                    }
-
                     var name = ReadStringProperty(device, DeviceFriendlyNameKey, static value => value.StringValue)
                                ?? string.Empty;
                     records.Add(new AudioEndpoint(
@@ -275,11 +264,9 @@ public static partial class CoreAudio
                         name,
                         string.Equals(defaultId, id, StringComparison.Ordinal)));
                 }
-                finally
-                {
-                    Release(device);
-                }
-            }
+
+                return false;
+            });
 
             records.Sort(CompareEndpoints);
             endpoints = records;
@@ -415,7 +402,7 @@ public static partial class CoreAudio
         IMMDevice? device = null;
         try
         {
-            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
+            var result = OpenEndpoint(enumerator, endpointId, out device);
             if (result < 0)
             {
                 return result;
@@ -526,13 +513,13 @@ public static partial class CoreAudio
         try
         {
             var enumerator = Enumerator();
-            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
-            if (result < 0 || device is null)
+            var result = OpenEndpoint(enumerator, endpointId, out device);
+            if (result < 0)
             {
-                return result < 0 ? result : Failure;
+                return result;
             }
 
-            result = Activate(device, out volume);
+            result = Activate(device!, out volume);
             if (result < 0 || volume is null)
             {
                 return result < 0 ? result : Failure;
@@ -595,7 +582,7 @@ public static partial class CoreAudio
                 break;
         }
 
-        return result < 0 ? result : ReadVolume(volume, out call.Percentage, out call.Muted);
+        return result < 0 ? result : ReadVolume(volume, ref call);
     }
 
     private static int SetVolumeLevel(IAudioEndpointVolume volume, ref VolumeCall call)
@@ -635,21 +622,18 @@ public static partial class CoreAudio
         return result >= 0 && volume is null ? Failure : result;
     }
 
-    private static int ReadVolume(
-        IAudioEndpointVolume volume,
-        out int percentage,
-        out int muted)
+    private static int ReadVolume(IAudioEndpointVolume volume, ref VolumeCall call)
     {
-        percentage = 0;
-        muted = 0;
+        call.Percentage = 0;
+        call.Muted = 0;
         var result = volume.GetMasterVolumeLevelScalar(out var scalar);
         if (result >= 0)
         {
             result = volume.GetMute(out var isMuted);
             if (result >= 0)
             {
-                percentage = (int)(scalar * 100.0f + 0.5f);
-                muted = isMuted ? 1 : 0;
+                call.Percentage = (int)(scalar * 100.0f + 0.5f);
+                call.Muted = isMuted ? 1 : 0;
             }
         }
 

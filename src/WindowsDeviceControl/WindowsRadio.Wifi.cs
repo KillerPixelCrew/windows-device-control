@@ -456,11 +456,10 @@ public static unsafe partial class WindowsRadio
             {
                 return $"Wi-Fi reason code {code}";
             }
-        }
 
-        var end = buffer.IndexOf('\0');
-        var result = (end >= 0 ? buffer[..end] : buffer).Trim();
-        return result.IsEmpty ? $"Wi-Fi reason code {code}" : new string(result);
+            var result = NativeText.ReadFixed(text, buffer.Length).Trim();
+            return result.Length == 0 ? $"Wi-Fi reason code {code}" : result;
+        }
     }
 
     private static WlanInterfaceInfo SelectInterface(IReadOnlyList<WlanInterfaceInfo> interfaces)
@@ -500,17 +499,16 @@ public static unsafe partial class WindowsRadio
                 return null;
             }
 
-            var rawSsid = ReadSsidBytes(current.Association.Ssid);
-            if (rawSsid.Length == 0)
+            var key = ReadSsidKey(
+                current.Association.Ssid,
+                ClassifySecurity(current.Security.SecurityEnabled != 0, current.Security.AuthAlgorithm));
+            if (key.IsDefault)
             {
                 return null;
             }
 
-            var security = ClassifySecurity(
-                current.Security.SecurityEnabled != 0,
-                current.Security.AuthAlgorithm);
             return new CurrentConnection(
-                new WifiNetworkKey(rawSsid, security),
+                key,
                 (int)current.Association.SignalQuality,
                 NativeText.ReadFixed(current.ProfileName, 256));
         }
@@ -535,20 +533,20 @@ public static unsafe partial class WindowsRadio
         var connected = TryCurrentConnection(client, adapter)?.Key;
         foreach (var network in networks)
         {
-            if (network.RawSsid.Length == 0)
+            if (network.Key.IsDefault)
             {
                 continue;
             }
 
-            var key = new WifiNetworkKey(network.RawSsid, network.Security);
+            var key = network.Key;
             var facts = new WifiNetworkFacts(
                 key,
                 network.Signal,
-                network.ProfileName is not null || HasProfileFor(profiles, network.RawSsid),
+                network.ProfileName is not null || HasProfileFor(profiles, key.Ssid),
                 network.Connectable,
                 // By bytes: the connection's own security attributes can classify a transition
                 // network differently from its advertisement, and it is still the joined network.
-                connected is { } joined && joined.Ssid.SequenceEqual(network.RawSsid));
+                connected is { } joined && joined.Ssid.SequenceEqual(key.Ssid));
             merged[key] = merged.TryGetValue(key, out var existing)
                 ? MergeNetworkFacts(existing, facts)
                 : facts;
@@ -578,9 +576,8 @@ public static unsafe partial class WindowsRadio
             {
                 var profileName = NativeText.ReadFixed(item.ProfileName, 256);
                 return new AvailableNetwork(
-                    ReadSsidBytes(item.Ssid),
+                    ReadSsidKey(item.Ssid, ClassifySecurity(item.SecurityEnabled != 0, item.DefaultAuthAlgorithm)),
                     (int)item.SignalQuality,
-                    ClassifySecurity(item.SecurityEnabled != 0, item.DefaultAuthAlgorithm),
                     item.DefaultAuthAlgorithm,
                     item.Connectable != 0,
                     profileName.Length == 0 ? null : profileName);
@@ -640,7 +637,7 @@ public static unsafe partial class WindowsRadio
         List<string> boundProfiles = [];
         foreach (var entry in networks)
         {
-            if (entry.Security != network.Security || !network.Ssid.SequenceEqual(entry.RawSsid))
+            if (entry.Key != network)
             {
                 continue;
             }
@@ -817,9 +814,13 @@ public static unsafe partial class WindowsRadio
             }
 
             SavedProfileNames.Remove(only);
-            foreach (var key in SavedProfiles.Keys.Where(key => key.Adapter == only).ToArray())
+            // Dictionary.Remove does not invalidate an active enumerator.
+            foreach (var key in SavedProfiles.Keys)
             {
-                SavedProfiles.Remove(key);
+                if (key.Adapter == only)
+                {
+                    SavedProfiles.Remove(key);
+                }
             }
         }
     }
@@ -859,38 +860,31 @@ public static unsafe partial class WindowsRadio
     }
 
     /// <summary>Puts a replaced profile's XML back, or deletes a profile the attempt created.</summary>
-    private static void RollBackProfile(
+    private static Exception? TryRollBackProfile(
         nint client,
         Guid adapter,
         ProfileMutation? mutation)
     {
         if (mutation is not { } authored)
         {
-            return;
+            return null;
         }
 
-        if (authored.PreviousXml is { } previous)
-        {
-            SetProfile(client, adapter, previous);
-            return;
-        }
-
-        var status = WlanDeleteProfile(client, in adapter, authored.Name, 0);
-        InvalidateSavedProfiles(adapter);
-        if (status is not ErrorSuccess and not ErrorNotFound)
-        {
-            throw WlanFailure("WlanDeleteProfile", status);
-        }
-    }
-
-    private static Exception? TryRollBackProfile(
-        nint client,
-        Guid adapter,
-        ProfileMutation? mutation)
-    {
         try
         {
-            RollBackProfile(client, adapter, mutation);
+            if (authored.PreviousXml is { } previous)
+            {
+                SetProfile(client, adapter, previous);
+                return null;
+            }
+
+            var status = WlanDeleteProfile(client, in adapter, authored.Name, 0);
+            InvalidateSavedProfiles(adapter);
+            if (status is not ErrorSuccess and not ErrorNotFound)
+            {
+                throw WlanFailure("WlanDeleteProfile", status);
+            }
+
             return null;
         }
         catch (Exception ex)
@@ -907,9 +901,8 @@ public static unsafe partial class WindowsRadio
     private readonly record struct CurrentConnection(WifiNetworkKey Key, int Signal, string ProfileName);
 
     private readonly record struct AvailableNetwork(
-        byte[] RawSsid,
+        WifiNetworkKey Key,
         int Signal,
-        WifiSecurity Security,
         int Authentication,
         bool Connectable,
         string? ProfileName);
@@ -929,6 +922,6 @@ public static unsafe partial class WindowsRadio
     private sealed class WlanReasonException(uint reasonCode, string message)
         : Win32Exception((int)reasonCode, message)
     {
-        internal uint ReasonCode { get; } = reasonCode;
+        internal uint ReasonCode => unchecked((uint)NativeErrorCode);
     }
 }

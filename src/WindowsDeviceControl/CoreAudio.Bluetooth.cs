@@ -125,21 +125,9 @@ public static partial class CoreAudio
                 }
 
                 Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
-                for (var index = 0u; index < count; index++)
+                if (ForEachDevice(collection, count, visit))
                 {
-                    IMMDevice? endpoint = null;
-                    try
-                    {
-                        if (collection.Item(index, out endpoint) >= 0 && endpoint is not null
-                                                                      && visit(endpoint))
-                        {
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        Release(endpoint);
-                    }
+                    return true;
                 }
             }
             finally

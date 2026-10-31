@@ -51,11 +51,7 @@ public static partial class SystemRestorePoints
         {
             created = SetRestorePoint(ref begin, out status);
         }
-        catch (EntryPointNotFoundException)
-        {
-            return new SystemRestorePointOutcome(SystemRestorePointResult.Disabled, 0);
-        }
-        catch (DllNotFoundException)
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             // Server SKUs and stripped images ship without System Restore.
             return new SystemRestorePointOutcome(SystemRestorePointResult.Disabled, 0);

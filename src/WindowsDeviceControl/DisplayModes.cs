@@ -101,8 +101,7 @@ public static partial class DisplayModes
             return null;
         }
 
-        return new DisplayModeSnapshot(path, Project(current), supported.OrderBy(mode => mode.Width)
-            .ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray());
+        return new DisplayModeSnapshot(path, Project(current), Sorted(supported));
     }
 
     /// <summary>Revalidates a selected mode and applies it once.</summary>
@@ -318,6 +317,14 @@ public static partial class DisplayModes
     private static bool SameRoute(ActiveDisplayPath expected, ActiveDisplayPath? current)
     {
         return current is not null && expected.Target == current.Target && expected.SourceName == current.SourceName;
+    }
+
+    /// <summary>Orders modes by width, height and refresh rate, as every published mode list is.</summary>
+    /// <param name="modes">Unique modes to order.</param>
+    /// <returns>A new array in width, height and refresh order.</returns>
+    internal static DisplayMode[] Sorted(IEnumerable<DisplayMode> modes)
+    {
+        return modes.OrderBy(mode => mode.Width).ThenBy(mode => mode.Height).ThenBy(mode => mode.RefreshHz).ToArray();
     }
 
     private static DisplayMode Project(NativeMode mode)

@@ -198,13 +198,13 @@ public static partial class CoreAudio
         try
         {
             var enumerator = Enumerator();
-            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
-            if (result < 0 || device is null)
+            var result = OpenEndpoint(enumerator, endpointId, out device);
+            if (result < 0)
             {
-                return result < 0 ? result : Failure;
+                return result;
             }
 
-            result = Activate(device, out client);
+            result = Activate(device!, out client);
             if (result < 0 || client is null)
             {
                 return result < 0 ? result : Failure;
@@ -212,7 +212,7 @@ public static partial class CoreAudio
 
             candidate = Marshal.AllocCoTaskMem(HostPinProposalBytes);
             Func<AudioDeviceFormat, int> verdict;
-            hostFilter = FindHostPinFilter(enumerator, device, endpointId, out var hostPin);
+            hostFilter = FindHostPinFilter(enumerator, device!, endpointId, out var hostPin);
             if (hostFilter is not null)
             {
                 // Behind a hardware audio engine, exclusive streams are answered by the offload
@@ -280,13 +280,12 @@ public static partial class CoreAudio
             IKsControl? control = null;
             try
             {
-                if (ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(pending.Dequeue(), out filter)) < 0
-                    || filter is null)
+                if (OpenEndpoint(enumerator, pending.Dequeue(), out filter) < 0)
                 {
                     continue;
                 }
 
-                if (Activate(filter, out control) >= 0
+                if (Activate(filter!, out control) >= 0
                     && control is not null
                     && TryReadTopology(control, out var nodes, out var connections)
                     && SelectHostPin(nodes, connections) is { } found)
@@ -297,7 +296,7 @@ public static partial class CoreAudio
                     return owned;
                 }
 
-                QueueConnectedDevices(filter, seen, pending);
+                QueueConnectedDevices(filter!, seen, pending);
             }
             finally
             {

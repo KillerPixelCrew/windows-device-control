@@ -222,7 +222,8 @@ public static partial class DisplayLayouts
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
     public static DisplayArrangement Observe()
     {
-        return Observe([], out _);
+        var targets = Observe([], out _, readExtras: true);
+        return new DisplayArrangement(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -231,9 +232,11 @@ public static partial class DisplayLayouts
     /// </summary>
     /// <param name="read">Per-observation cache of identities by target route, populated by this call.</param>
     /// <param name="paths">The complete native path array used to build the observation.</param>
-    /// <returns>Readable target observations and their fingerprint; targets with unreadable identity are omitted.</returns>
-    internal static DisplayArrangement Observe(
-        Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, out DisplayTopology.PathInfo[] paths)
+    /// <param name="readExtras">False skips the DPI and HDR reads and leaves them null, for callers that only compare topology.</param>
+    /// <returns>Readable target observations; targets with unreadable identity are omitted.</returns>
+    internal static List<DisplayTargetObservation> Observe(
+        Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, out DisplayTopology.PathInfo[] paths,
+        bool readExtras)
     {
         (paths, var modes) = DisplayTopology.Query(DisplayTopology.AllPaths);
         List<DisplayTargetObservation> targets = [];
@@ -251,10 +254,10 @@ public static partial class DisplayLayouts
 
             var active = (path.Flags & DisplayTopology.PathActiveFlag) != 0;
             AddObservation(targets, new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
-                active ? ReadOutput(path, modes, identity) : null));
+                active ? ReadOutput(path, modes, identity, readExtras) : null));
         }
 
-        return new DisplayArrangement(targets, Fingerprint(targets), DateTimeOffset.UtcNow);
+        return targets;
     }
 
     /// <summary>
@@ -302,7 +305,7 @@ public static partial class DisplayLayouts
     {
         return new DisplayLayout(
         [
-            .. Observe().Targets.Where(target => target is { Active: true, Current: not null })
+            .. Observe([], out _, readExtras: true).Where(target => target is { Active: true, Current: not null })
                 .Select(target => target.Current!)
         ]);
     }
@@ -356,11 +359,11 @@ public static partial class DisplayLayouts
         }
 
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read = [];
-        DisplayArrangement arrangement;
+        List<DisplayTargetObservation> targets;
         DisplayTopology.PathInfo[] paths;
         try
         {
-            arrangement = Observe(read, out paths);
+            targets = Observe(read, out paths, readExtras: false);
         }
         catch (Win32Exception ex)
         {
@@ -371,14 +374,14 @@ public static partial class DisplayLayouts
         IReadOnlyList<DisplayTargetIdentity> absent =
         [
             .. layout.Outputs.Select(output => output.Target)
-                .Where(target => !arrangement.Targets.Any(other => other.Available && target.Matches(other.Target)))
+                .Where(target => !targets.Any(other => other.Available && target.Matches(other.Target)))
         ];
         if (absent.Count != 0)
         {
             return new DisplayLayoutResult(DisplayLayoutOutcome.TargetsAbsent, absent, 0, false, 0, []);
         }
 
-        if (apply && Matches(arrangement, layout))
+        if (apply && Matches(targets, layout))
         {
             var active = paths.Where(path => (path.Flags & DisplayTopology.PathActiveFlag) != 0).ToArray();
             return new DisplayLayoutResult(DisplayLayoutOutcome.AlreadyActive, [], 0, false, 0,
@@ -420,7 +423,8 @@ public static partial class DisplayLayouts
         {
             try
             {
-                if (ReadOutput(path, rollback.Modes, DisplayTopology.ReadTarget(path)) is { } output)
+                if (ReadOutput(path, rollback.Modes, DisplayTopology.ReadTarget(path),
+                        readExtras: true) is { } output)
                 {
                     rollbackExtras.Add((output, path));
                 }
@@ -463,7 +467,7 @@ public static partial class DisplayLayouts
     private static DisplayTopology.PathInfo? Driving(DisplayTopology.PathInfo[] active,
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, DisplayTargetIdentity target)
     {
-        var lookup = DisplayTopology.Match(active, target, path => DisplayTopology.ReadTarget(path, read),
+        var lookup = DisplayTopology.Match(active, target, path => DisplayTopology.ReadTarget(path),
             out var found, out _);
         return lookup == ActiveLookup.Found ? found : null;
     }
@@ -511,15 +515,15 @@ public static partial class DisplayLayouts
     ///     Whether the current arrangement already is this layout, within the tolerance a
     ///     captured rational refresh needs.
     /// </summary>
-    /// <param name="arrangement">Observed active outputs with readable current modes.</param>
+    /// <param name="targets">Observed active outputs with readable current modes.</param>
     /// <param name="layout">Requested complete desktop topology.</param>
     /// <returns>
     ///     Whether every active output matches placement, size, refresh tolerance and any requested rotation; HDR and DPI
     ///     are ignored.
     /// </returns>
-    internal static bool Matches(DisplayArrangement arrangement, DisplayLayout layout)
+    internal static bool Matches(IReadOnlyList<DisplayTargetObservation> targets, DisplayLayout layout)
     {
-        var active = arrangement.Targets.Where(target => target is { Active: true, Current: not null }).ToArray();
+        var active = targets.Where(target => target is { Active: true, Current: not null }).ToArray();
         if (active.Length != layout.Outputs.Count)
         {
             return false;
@@ -562,10 +566,11 @@ public static partial class DisplayLayouts
     internal static string Fingerprint(IEnumerable<DisplayTargetObservation> targets)
     {
         StringBuilder text = new();
-        foreach (var target in targets
-                     .OrderBy(target => Key(target.Target), StringComparer.OrdinalIgnoreCase))
+        foreach (var (key, target) in targets
+                     .Select(target => (Key: Key(target.Target), target))
+                     .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
         {
-            text.Append(Key(target.Target)).Append(target.Available ? "|available" : "|absent")
+            text.Append(key).Append(target.Available ? "|available" : "|absent")
                 .Append(target.Active ? "|active" : "|off");
             if (target.Current is { } current)
             {
@@ -587,8 +592,8 @@ public static partial class DisplayLayouts
             : $"{target.EdidManufacturerId}-{target.EdidProductCodeId}-{target.FriendlyName}";
     }
 
-    private static DisplayLayoutOutput? ReadOutput(
-        DisplayTopology.PathInfo path, DisplayTopology.ModeInfo[] modes, DisplayTargetIdentity identity)
+    private static DisplayLayoutOutput? ReadOutput(DisplayTopology.PathInfo path, DisplayTopology.ModeInfo[] modes,
+        DisplayTargetIdentity identity, bool readExtras)
     {
         if (path.SourceInfo.ModeInfoIdx >= modes.Length)
         {
@@ -605,9 +610,11 @@ public static partial class DisplayLayouts
         return new DisplayLayoutOutput(identity, source.X, source.Y, (int)source.Width, (int)source.Height,
             new DisplayRefresh(path.TargetInfo.RefreshRate.Numerator, path.TargetInfo.RefreshRate.Denominator),
             path.TargetInfo.Rotation,
+            readExtras &&
             DisplayScaling.TryRead(path.SourceInfo.AdapterId, path.SourceInfo.Id, out var percent, out _, out _)
                 ? percent
                 : null,
+            readExtras &&
             DisplayColor.TryRead(path.TargetInfo.AdapterId, path.TargetInfo.Id, out var enabled, out var supported) &&
             supported
                 ? enabled

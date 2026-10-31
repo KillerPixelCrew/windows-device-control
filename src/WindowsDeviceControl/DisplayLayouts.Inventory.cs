@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Windows.Devices.Display;
@@ -24,8 +23,7 @@ public static partial class DisplayLayouts
     /// <exception cref="COMException">Windows refused monitor-interface discovery.</exception>
     public static DisplayArrangement ObserveConnected()
     {
-        var observed = Observe();
-        var targets = new List<DisplayTargetObservation>(observed.Targets);
+        var targets = Observe([], out _, readExtras: true);
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(5));
         try
         {
@@ -48,10 +46,13 @@ public static partial class DisplayLayouts
 
                     var adapter = monitor.DisplayAdapterId;
                     var target = new DisplayTargetIdentity(device.Id, null, null, monitor.DisplayName,
-                        adapter.LowPart, adapter.HighPart, monitor.DisplayAdapterTargetId)
+                        adapter.LowPart, adapter.HighPart, monitor.DisplayAdapterTargetId);
+                    if (!targets.Exists(other => Same(other.Target, target)))
                     {
-                        EdidIdentity = DisplayEdid.ReadIdentity(device.Id)
-                    };
+                        // AddObservation keeps an already observed target, so only a new one needs its EDID identity.
+                        target = target with { EdidIdentity = DisplayEdid.ReadIdentity(device.Id) };
+                    }
+
                     AddObservation(targets, new DisplayTargetObservation(target, true, false, null));
                 }
                 catch (COMException)

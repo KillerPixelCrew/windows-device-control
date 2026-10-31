@@ -96,8 +96,9 @@ public static partial class CoreAudio
             }
 
             var configuration = SpatialAudioDeviceConfiguration.GetForDeviceId(ToWinRtDeviceId(endpointId));
+            var isSupported = configuration.IsSpatialAudioSupported;
             var supported = new List<Guid>();
-            if (configuration.IsSpatialAudioSupported)
+            if (isSupported)
             {
                 foreach (var format in KnownSpatialFormats)
                 {
@@ -109,7 +110,7 @@ public static partial class CoreAudio
             }
 
             state = new SpatialAudioState(
-                configuration.IsSpatialAudioSupported,
+                isSupported,
                 ParseFormat(configuration.DefaultSpatialAudioFormat),
                 ParseFormat(configuration.ActiveSpatialAudioFormat),
                 supported);
@@ -193,8 +194,7 @@ public static partial class CoreAudio
         try
         {
             var enumerator = Enumerator();
-            var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
-            return result < 0 ? result : device is null ? Failure : 0;
+            return OpenEndpoint(enumerator, endpointId, out device);
         }
         finally
         {

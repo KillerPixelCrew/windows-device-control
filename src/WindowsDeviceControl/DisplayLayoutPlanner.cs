@@ -67,16 +67,14 @@ internal static class DisplayLayoutPlanner
     private static bool Connected(DisplayLayout layout)
     {
         List<DisplayLayoutOutput> reached = [layout.Outputs.First(output => output.IsPrimary)];
-        var grew = true;
-        while (grew)
+        for (var index = 0; index < reached.Count; index++)
         {
-            grew = false;
-            foreach (var candidate in layout.Outputs.Except(reached))
+            var current = reached[index];
+            foreach (var candidate in layout.Outputs)
             {
-                if (reached.Any(other => Touches(candidate, other)))
+                if (!reached.Contains(candidate) && Touches(candidate, current))
                 {
                     reached.Add(candidate);
-                    grew = true;
                 }
             }
         }

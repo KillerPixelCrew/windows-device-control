@@ -218,7 +218,7 @@ public sealed class WindowsRadioTests
 
         var decoded = WithNative(bytes, list => WindowsRadio.ReadWlanList(list,
             static (WindowsRadio.WlanAvailableNetwork network) => (
-                Ssid: WindowsRadio.ReadSsidBytes(network.Ssid),
+                Ssid: WindowsRadio.ReadSsidKey(network.Ssid, WindowsRadio.WifiSecurity.Open).Ssid.ToArray(),
                 network.Connectable,
                 network.SignalQuality,
                 network.SecurityEnabled,
@@ -281,7 +281,9 @@ public sealed class WindowsRadioTests
 
         Assert.Equal(604, Marshal.SizeOf<WindowsRadio.WlanConnectionAttributes>());
         Assert.Equal(1, attributes.State);
-        Assert.Equal("Cafe"u8.ToArray(), WindowsRadio.ReadSsidBytes(attributes.Association.Ssid));
+        Assert.Equal(
+            "Cafe"u8.ToArray(),
+            WindowsRadio.ReadSsidKey(attributes.Association.Ssid, WindowsRadio.WifiSecurity.Open).Ssid.ToArray());
         Assert.Equal(64u, attributes.Association.SignalQuality);
         Assert.Equal(1, attributes.Security.SecurityEnabled);
         Assert.Equal(9, attributes.Security.AuthAlgorithm);
@@ -318,7 +320,9 @@ public sealed class WindowsRadioTests
 
         Assert.Equal(572, Marshal.SizeOf<WindowsRadio.WlanConnectionNotificationData>());
         Assert.Equal(0x48001u, payload.ReasonCode);
-        Assert.Equal("Home"u8.ToArray(), WindowsRadio.ReadSsidBytes(payload.Ssid));
+        Assert.Equal(
+            "Home"u8.ToArray(),
+            WindowsRadio.ReadSsidKey(payload.Ssid, WindowsRadio.WifiSecurity.Open).Ssid.ToArray());
     }
 
     // ---- WLAN profile documents ----

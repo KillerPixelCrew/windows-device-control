@@ -36,9 +36,11 @@ public static unsafe partial class WindowsRadio
         return results;
     }
 
-    internal static byte[] ReadSsidBytes(Dot11Ssid ssid)
+    /// <summary>The SSID as a network key with the given security, or default for an empty (hidden) SSID.</summary>
+    internal static WifiNetworkKey ReadSsidKey(Dot11Ssid ssid, WifiSecurity security)
     {
-        return new ReadOnlySpan<byte>(ssid.Value, Math.Min((int)ssid.Length, 32)).ToArray();
+        var bytes = new ReadOnlySpan<byte>(ssid.Value, Math.Min((int)ssid.Length, 32));
+        return bytes.IsEmpty ? default : new WifiNetworkKey(bytes, security);
     }
 
     [LibraryImport("wlanapi.dll")]

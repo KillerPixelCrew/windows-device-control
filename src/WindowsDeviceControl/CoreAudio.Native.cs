@@ -66,6 +66,18 @@ public static partial class CoreAudio
     }
 
     /// <summary>
+    ///     Opens one endpoint by ID on the shared enumerator, forgetting the enumerator when the audio
+    ///     service is gone.
+    /// </summary>
+    /// <returns>The failing HRESULT, Failure when Windows returned no device, otherwise 0.</returns>
+    /// <remarks>The caller releases <paramref name="device" /> in every case.</remarks>
+    private static int OpenEndpoint(IMMDeviceEnumerator enumerator, string endpointId, out IMMDevice? device)
+    {
+        var result = ForgetEnumeratorIfGone(enumerator, enumerator.GetDevice(endpointId, out device));
+        return result < 0 ? result : device is null ? Failure : 0;
+    }
+
+    /// <summary>
     ///     RPC_E_DISCONNECTED, RPC_S_SERVER_UNAVAILABLE and AUDCLNT_E_SERVICE_NOT_RUNNING: the
     ///     results that mean the enumerator's service went away rather than one device.
     /// </summary>
@@ -128,6 +140,29 @@ public static partial class CoreAudio
             // Release only this claim; FinalReleaseComObject would invalidate an RCW shared by other callers.
             Marshal.ReleaseComObject(value);
         }
+    }
+
+    /// <summary>Visits each readable item of an endpoint collection, releasing each after its visit.</summary>
+    /// <returns>True when a visit stopped the walk by returning true.</returns>
+    private static bool ForEachDevice(IMMDeviceCollection collection, uint count, Func<IMMDevice, bool> visit)
+    {
+        for (var index = 0u; index < count; index++)
+        {
+            IMMDevice? device = null;
+            try
+            {
+                if (collection.Item(index, out device) >= 0 && device is not null && visit(device))
+                {
+                    return true;
+                }
+            }
+            finally
+            {
+                Release(device);
+            }
+        }
+
+        return false;
     }
 
     [LibraryImport("ole32.dll")]

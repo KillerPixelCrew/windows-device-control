@@ -30,13 +30,7 @@ public static partial class WindowsRadio
     {
         ValidateRadioKind(kind);
         var radios = GetRadios(kind, out var states);
-        var power = Power.Absent;
-        for (var index = 0; index < radios.Count; index++)
-        {
-            power = Prefer(power, MapPower(states?[index] ?? radios[index].State));
-        }
-
-        return power;
+        return AggregatePower(radios.Select((radio, index) => MapPower(states?[index] ?? radio.State)));
     }
 
     /// <summary>Asks Windows whether this process may change radio power.</summary>
@@ -172,7 +166,6 @@ public static partial class WindowsRadio
         {
             // A stalled native enumeration must not block readers that can still use the cache.
             all = Radio.GetRadiosAsync().WaitWinRt().ToArray();
-            observed = null;
             lock (RadioCacheLock)
             {
                 _radioCache = (Stopwatch.GetTimestamp(), all);
