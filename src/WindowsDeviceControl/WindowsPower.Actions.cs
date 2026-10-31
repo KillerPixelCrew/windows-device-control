@@ -92,7 +92,7 @@ public static partial class WindowsPower
         {
             if (!SetSuspendState(hibernate, false, false))
             {
-                throw new Win32Exception(Marshal.GetLastPInvokeError());
+                throw Win32Error.LastFailure("SetSuspendState");
             }
         }
 

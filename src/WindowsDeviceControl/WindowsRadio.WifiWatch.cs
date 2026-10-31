@@ -238,7 +238,7 @@ public static unsafe partial class WindowsRadio
                     0,
                     0,
                     0);
-                CheckWlan("WlanRegisterNotification", status);
+                Check(status, "WlanRegisterNotification");
                 return registration;
             }
             catch

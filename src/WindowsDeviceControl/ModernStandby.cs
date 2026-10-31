@@ -154,7 +154,7 @@ public static partial class ModernStandby
         var buffer = new byte[CapabilitiesBytes];
         if (!GetPwrCapabilities(buffer))
         {
-            throw Failure((uint)Marshal.GetLastWin32Error(), "GetPwrCapabilities");
+            throw LastFailure("GetPwrCapabilities");
         }
 
         return buffer;
@@ -231,7 +231,7 @@ public static partial class ModernStandby
     {
         if (!DevicePowerOpen(0))
         {
-            throw Failure((uint)Marshal.GetLastWin32Error(), "DevicePowerOpen");
+            throw LastFailure("DevicePowerOpen");
         }
 
         try

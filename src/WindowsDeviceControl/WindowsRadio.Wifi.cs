@@ -75,7 +75,7 @@ public static unsafe partial class WindowsRadio
     {
         using var client = WlanClient.Open();
         ForEachAdapter(client, false,
-            adapter => CheckWlan("WlanScan", WlanScan(client.Handle, in adapter.Id, 0, 0, 0)));
+            adapter => Check(WlanScan(client.Handle, in adapter.Id, 0, 0, 0), "WlanScan"));
     }
 
     /// <summary>Lists the Wi-Fi networks currently visible.</summary>
@@ -289,7 +289,7 @@ public static unsafe partial class WindowsRadio
 
             if (accepted != ErrorSuccess)
             {
-                throw Fail(WlanFailure("WlanConnect", accepted));
+                throw Fail(Failure(accepted, "WlanConnect"));
             }
 
             var outcome = verdict.Wait(ConnectTimeout);
@@ -338,7 +338,7 @@ public static unsafe partial class WindowsRadio
             if (MapInterfaceState(adapter.State)
                 is WifiConnectionState.Connected or WifiConnectionState.Connecting)
             {
-                CheckWlan("WlanDisconnect", WlanDisconnect(client.Handle, in adapter.Id, 0));
+                Check(WlanDisconnect(client.Handle, in adapter.Id, 0), "WlanDisconnect");
             }
         });
     }
@@ -564,7 +564,7 @@ public static unsafe partial class WindowsRadio
     private static AvailableNetwork[] ReadAvailableNetworks(nint client, Guid adapter)
     {
         var status = WlanGetAvailableNetworkList(client, in adapter, 0, 0, out var list);
-        CheckWlan("WlanGetAvailableNetworkList", status);
+        Check(status, "WlanGetAvailableNetworkList");
         if (list == 0)
         {
             return [];
@@ -720,7 +720,7 @@ public static unsafe partial class WindowsRadio
         {
             if (failOnListError)
             {
-                throw WlanFailure("WlanGetProfileList", status);
+                throw Failure(status, "WlanGetProfileList");
             }
 
             return [];
@@ -856,7 +856,7 @@ public static unsafe partial class WindowsRadio
 
         throw reason != 0
             ? new WlanReasonException(reason, $"WlanSetProfile failed: {ReasonText(reason)}")
-            : WlanFailure("WlanSetProfile", status);
+            : Failure(status, "WlanSetProfile");
     }
 
     /// <summary>Puts a replaced profile's XML back, or deletes a profile the attempt created.</summary>
@@ -882,7 +882,7 @@ public static unsafe partial class WindowsRadio
             InvalidateSavedProfiles(adapter);
             if (status is not ErrorSuccess and not ErrorNotFound)
             {
-                throw WlanFailure("WlanDeleteProfile", status);
+                throw Failure(status, "WlanDeleteProfile");
             }
 
             return null;

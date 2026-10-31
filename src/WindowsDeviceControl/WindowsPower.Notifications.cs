@@ -29,8 +29,7 @@ public sealed class PowerNotificationRegistration : SafeHandleZeroOrMinusOneIsIn
     {
         if (handle == 0)
         {
-            var error = Marshal.GetLastPInvokeError();
-            throw new Win32Exception(error, $"{operation} failed (Win32 {error}).");
+            throw Win32Error.LastFailure(operation);
         }
 
         return new PowerNotificationRegistration(handle, suspendResume);

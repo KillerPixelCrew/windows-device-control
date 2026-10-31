@@ -273,7 +273,7 @@ public static partial class WindowsPower
         {
             if (!GetSystemCpuSetInformation(pointer, required, out written, GetCurrentProcess(), 0))
             {
-                throw Failure((uint)Marshal.GetLastWin32Error(), "GetSystemCpuSetInformation");
+                throw LastFailure("GetSystemCpuSetInformation");
             }
         }
 

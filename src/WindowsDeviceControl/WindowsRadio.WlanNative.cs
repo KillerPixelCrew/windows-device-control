@@ -151,14 +151,14 @@ public static unsafe partial class WindowsRadio
         public static WlanClient Open()
         {
             var status = WlanOpenHandle(2, 0, out _, out var handle);
-            return status == ErrorSuccess ? new WlanClient(handle) : throw WlanFailure("WlanOpenHandle", status);
+            return status == ErrorSuccess ? new WlanClient(handle) : throw Failure(status, "WlanOpenHandle");
         }
 
         /// <summary>Every WLAN interface; empty on a machine without one.</summary>
         internal IReadOnlyList<WlanInterfaceInfo> Interfaces()
         {
             var status = WlanEnumInterfaces(Handle, 0, out var list);
-            CheckWlan("WlanEnumInterfaces", status);
+            Check(status, "WlanEnumInterfaces");
             if (list == 0)
             {
                 return [];

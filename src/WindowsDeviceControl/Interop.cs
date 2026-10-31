@@ -40,25 +40,13 @@ internal static class Win32Error
         return new Win32Exception(unchecked((int)status), $"{operation} failed (status {status}).");
     }
 
-    /// <summary>Throws the preserved WLAN failure for a non-zero status.</summary>
-    /// <param name="operation">WLAN operation name included in the message.</param>
-    /// <param name="status">Native WLAN status; zero is success.</param>
-    /// <exception cref="Win32Exception"><paramref name="status" /> is nonzero.</exception>
-    internal static void CheckWlan(string operation, uint status)
+    /// <summary>The exception for a call that failed through the thread's last P/Invoke error.</summary>
+    /// <param name="operation">Operation name included in the message.</param>
+    /// <returns>An exception preserving the last error in NativeErrorCode.</returns>
+    /// <remarks>Call it immediately after the failed import, which must declare SetLastError.</remarks>
+    internal static Win32Exception LastFailure(string operation)
     {
-        if (status != ErrorSuccess)
-        {
-            throw WlanFailure(operation, status);
-        }
-    }
-
-    /// <summary>The WLAN form of <see cref="Failure" />, which keeps its own message wording.</summary>
-    /// <param name="operation">WLAN operation name included in the message.</param>
-    /// <param name="status">Native unsigned WLAN status.</param>
-    /// <returns>An exception preserving all status bits in NativeErrorCode.</returns>
-    internal static Win32Exception WlanFailure(string operation, uint status)
-    {
-        return new Win32Exception(unchecked((int)status), $"{operation} failed (Win32 {status}).");
+        return Failure(unchecked((uint)Marshal.GetLastPInvokeError()), operation);
     }
 }
 
