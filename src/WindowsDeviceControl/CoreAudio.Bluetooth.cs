@@ -11,12 +11,6 @@ public static partial class CoreAudio
     private const uint DeviceStateAll = 0x0000000F;
     private const uint KsPropertyTypeGet = 1;
 
-    private static readonly Guid DeviceTopologyId =
-        new("2A07407E-6497-4A18-9787-32F79BD0D98F");
-
-    private static readonly Guid KsControlId =
-        new("28F54685-06FD-11D2-B27A-00A0C9223196");
-
     private static readonly Guid BluetoothAudioPropertySet =
         new("7FA06C40-B8F6-4C7E-8556-E8C33A12E54D");
 
@@ -36,20 +30,18 @@ public static partial class CoreAudio
     /// <exception cref="COMException">Core Audio could not enumerate the endpoints.</exception>
     public static IReadOnlyList<BluetoothAudioContainer> ListBluetoothAudioContainers()
     {
-        var groups = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var groups = new Dictionary<string, bool>(StringComparer.Ordinal);
         ForEachEndpoint(Enumerator(), endpoint =>
         {
             if (TryReadContainer(endpoint) is { } container)
             {
-                var active = endpoint.GetState(out var state) >= 0
-                             && state == DeviceStateActive;
-                groups[container] = groups.GetValueOrDefault(container) || active;
+                groups[container] = groups.GetValueOrDefault(container)
+                                    || (endpoint.GetState(out var state) >= 0 && state == DeviceStateActive);
             }
 
             return false;
         });
-        return groups.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+        return groups.OrderBy(entry => entry.Key, StringComparer.Ordinal)
             .Select(entry => new BluetoothAudioContainer(entry.Key, entry.Value))
             .ToArray();
     }
@@ -83,7 +75,7 @@ public static partial class CoreAudio
         var matched = false;
         var sent = ForEachEndpoint(enumerator, endpoint =>
         {
-            if (!string.Equals(TryReadContainer(endpoint), target, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(TryReadContainer(endpoint), target, StringComparison.Ordinal))
             {
                 return false;
             }
@@ -179,7 +171,7 @@ public static partial class CoreAudio
         IKsControl? control = null;
         try
         {
-            Marshal.ThrowExceptionForHR(Activate(endpoint, DeviceTopologyId, out topology));
+            Marshal.ThrowExceptionForHR(Activate(endpoint, out topology));
             if (topology is null)
             {
                 throw new InvalidCastException("The endpoint does not expose IDeviceTopology.");
@@ -203,7 +195,7 @@ public static partial class CoreAudio
                 throw new InvalidOperationException("The audio adapter could not be opened.");
             }
 
-            Marshal.ThrowExceptionForHR(Activate(adapter, KsControlId, out control));
+            Marshal.ThrowExceptionForHR(Activate(adapter, out control));
             if (control is null)
             {
                 throw new InvalidCastException("The audio adapter does not expose IKsControl.");
@@ -217,7 +209,7 @@ public static partial class CoreAudio
             };
             Marshal.ThrowExceptionForHR(control.KsProperty(
                 ref property,
-                (uint)Marshal.SizeOf<KsProperty>(),
+                KsPropertySize,
                 0,
                 0,
                 out _));

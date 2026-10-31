@@ -59,33 +59,31 @@ public static partial class DisplayColor
     /// <param name="id">Target ID on that adapter.</param>
     /// <param name="enabled">Requested advanced-color state.</param>
     /// <returns>The preflight outcome or single write status; Written is acceptance without readback.</returns>
+    /// <remarks>The caller already holds <see cref="DisplayTopology.WriteGate" /> (the public overload or DisplayLayouts.Apply).</remarks>
     internal static DisplaySetResult SetHdr(DisplayTopology.Luid adapter, uint id, bool enabled)
     {
-        lock (DisplayTopology.WriteGate)
+        if (!TryRead(adapter, id, out var current, out var supported))
         {
-            if (!TryRead(adapter, id, out var current, out var supported))
-            {
-                return new DisplaySetResult(DisplaySetOutcome.Unreadable, 0);
-            }
-
-            if (!supported)
-            {
-                return new DisplaySetResult(enabled ? DisplaySetOutcome.Unsupported : DisplaySetOutcome.AlreadySet, 0);
-            }
-
-            if (current == enabled)
-            {
-                return new DisplaySetResult(DisplaySetOutcome.AlreadySet, 0);
-            }
-
-            AdvancedColorState packet = new()
-            {
-                Header = DisplayTopology.Header<AdvancedColorState>(SetAdvancedColorState, adapter, id),
-                EnableAdvancedColor = enabled ? 1u : 0u
-            };
-            var status = DisplayConfigSetDeviceInfo(ref packet);
-            return new DisplaySetResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused, status);
+            return new DisplaySetResult(DisplaySetOutcome.Unreadable, 0);
         }
+
+        if (!supported)
+        {
+            return new DisplaySetResult(enabled ? DisplaySetOutcome.Unsupported : DisplaySetOutcome.AlreadySet, 0);
+        }
+
+        if (current == enabled)
+        {
+            return new DisplaySetResult(DisplaySetOutcome.AlreadySet, 0);
+        }
+
+        AdvancedColorState packet = new()
+        {
+            Header = DisplayTopology.Header<AdvancedColorState>(SetAdvancedColorState, adapter, id),
+            EnableAdvancedColor = enabled ? 1u : 0u
+        };
+        var status = DisplayConfigSetDeviceInfo(ref packet);
+        return new DisplaySetResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused, status);
     }
 
     /// <summary>Reads advanced-color state on an already-resolved target route.</summary>

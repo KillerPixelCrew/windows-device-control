@@ -22,15 +22,15 @@ public static unsafe partial class WindowsRadio
     internal static TResult[] ReadWlanList<TRecord, TResult>(
         nint list,
         Func<TRecord, TResult> read)
-        where TRecord : struct
+        where TRecord : unmanaged
     {
         var count = checked((int)(uint)Marshal.ReadInt32(list));
         var start = list + 8;
-        var stride = Marshal.SizeOf<TRecord>();
+        var stride = sizeof(TRecord);
         var results = new TResult[count];
         for (var index = 0; index < results.Length; index++)
         {
-            results[index] = read(Marshal.PtrToStructure<TRecord>(start + checked(index * stride)));
+            results[index] = read(*(TRecord*)(start + checked(index * stride)));
         }
 
         return results;
@@ -38,11 +38,7 @@ public static unsafe partial class WindowsRadio
 
     internal static byte[] ReadSsidBytes(Dot11Ssid ssid)
     {
-        var length = Math.Min((int)ssid.Length, 32);
-        var bytes = new byte[length];
-        var source = ssid.Value;
-        Marshal.Copy((nint)source, bytes, 0, length);
-        return bytes;
+        return new ReadOnlySpan<byte>(ssid.Value, Math.Min((int)ssid.Length, 32)).ToArray();
     }
 
     [LibraryImport("wlanapi.dll")]
@@ -152,13 +148,8 @@ public static unsafe partial class WindowsRadio
 
         public static WlanClient Open()
         {
-            return TryOpen(out var status) ?? throw WlanFailure("WlanOpenHandle", status);
-        }
-
-        public static WlanClient? TryOpen(out uint status)
-        {
-            status = WlanOpenHandle(2, 0, out _, out var handle);
-            return status == ErrorSuccess ? new WlanClient(handle) : null;
+            var status = WlanOpenHandle(2, 0, out _, out var handle);
+            return status == ErrorSuccess ? new WlanClient(handle) : throw WlanFailure("WlanOpenHandle", status);
         }
 
         /// <summary>Every WLAN interface; empty on a machine without one.</summary>
@@ -236,7 +227,7 @@ public static unsafe partial class WindowsRadio
         internal uint Flags;
 
         // WLAN_AVAILABLE_NETWORK ends dwFlags, dwReserved. Leaving the reserved word out makes the
-        // struct 624 bytes against the native 628, and ReadWlanList strides by Marshal.SizeOf, so
+        // struct 624 bytes against the native 628, and ReadWlanList strides by sizeof(TRecord), so
         // every record after the first would be decoded four bytes per index too early.
         internal uint Reserved;
     }

@@ -107,11 +107,6 @@ public sealed class AudioFilePreview : IDisposable
     /// <remarks>Idempotent. Future Play calls throw ObjectDisposedException; Stop remains harmless.</remarks>
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
         _disposed = true;
         Stop();
     }

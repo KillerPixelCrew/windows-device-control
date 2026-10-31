@@ -92,9 +92,7 @@ public static partial class DisplayEdid
     /// <returns>Unique modes sorted by width, height and refresh; empty for an invalid base, with invalid extensions skipped.</returns>
     internal static IReadOnlyList<DisplayMode> Parse(ReadOnlySpan<byte> edid)
     {
-        if (edid.Length < 128 || edid.Length > 32768 || edid[18] != 1
-            || !edid[..8].SequenceEqual(Magic)
-            || !Checksum(edid[..128]))
+        if (edid.Length > 32768 || !IsValidBase(edid))
         {
             return [];
         }
@@ -151,6 +149,12 @@ public static partial class DisplayEdid
         }
 
         return (sum & 255) == 0;
+    }
+
+    // Validates the EDID 1.x base block: complete length, header, version and checksum.
+    private static bool IsValidBase(ReadOnlySpan<byte> edid)
+    {
+        return edid.Length >= 128 && edid[18] == 1 && edid[..8].SequenceEqual(Magic) && Checksum(edid[..128]);
     }
 
     private static void AddStandard(ReadOnlySpan<byte> timings, int revision, HashSet<DisplayMode> modes)

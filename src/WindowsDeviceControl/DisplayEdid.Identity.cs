@@ -46,7 +46,7 @@ public static partial class DisplayEdid
     /// <remarks>Pure parsing; performs no Windows query, native driver call or hardware write.</remarks>
     public static string? ParseIdentity(ReadOnlySpan<byte> edid)
     {
-        if (edid.Length < 128 || edid[18] != 1 || !edid[..8].SequenceEqual(Magic) || !Checksum(edid[..128]))
+        if (!IsValidBase(edid))
         {
             return null;
         }

@@ -13,7 +13,6 @@ public static class Backlight
 {
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
-    private const uint ShareReadWrite = 0x00000003;
 
     private const uint IoctlVideoQueryDisplayBrightness = 0x230498;
     private const uint IoctlVideoSetDisplayBrightness = 0x23049C;
@@ -102,7 +101,7 @@ public static class Backlight
         return Kernel32.CreateFile(
             @"\\.\LCD",
             GenericRead | GenericWrite,
-            ShareReadWrite,
+            Kernel32.FileShareRead | Kernel32.FileShareWrite,
             0,
             Kernel32.OpenExisting,
             0,

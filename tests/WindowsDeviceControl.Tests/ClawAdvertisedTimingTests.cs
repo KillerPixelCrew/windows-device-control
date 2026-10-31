@@ -23,50 +23,33 @@ public sealed class ClawAdvertisedTimingTests
     [Fact]
     public void ReadAdvertisedRefreshRates_TheReferencePanel_ReportsOnlyWhatItActuallyAdvertises()
     {
-        var rates = ReadRates(Bytes(ClawEdid));
+        var rates = ReadRates(Convert.FromHexString(ClawEdid));
 
         // Both detailed timings are 1920x1200: 315.50 MHz and 157.75 MHz over a 2080x1264 total.
+        // Windows enumerates and the driver accepts 30/48/75/100 too; the panel advertises none of them.
         Assert.Equal([60, 120], rates);
     }
 
-    [Fact]
-    public void ReadAdvertisedRefreshRates_DoesNotReportTheDriverSynthesizedRates()
-    {
-        var rates = ReadRates(Bytes(ClawEdid));
-
-        // Windows enumerates and the driver accepts all of these; the panel advertises none of them.
-        Assert.DoesNotContain(30, rates);
-        Assert.DoesNotContain(48, rates);
-        Assert.DoesNotContain(75, rates);
-        Assert.DoesNotContain(100, rates);
-    }
-
     [Theory]
-    [InlineData(null)]
     [InlineData("")]
     [InlineData("00ffffffffffff00")]
     public void ReadAdvertisedRefreshRates_ShortOrMissingData_ReportsNothingRatherThanGuessing(
-        string? hex)
+        string hex)
     {
-        Assert.Empty(ReadRates(hex is null ? null : Bytes(hex)));
+        Assert.Empty(ReadRates(Convert.FromHexString(hex)));
     }
 
     [Fact]
     public void ReadAdvertisedRefreshRates_WrongHeader_IsRefused()
     {
-        var corrupt = Bytes(ClawEdid);
+        var corrupt = Convert.FromHexString(ClawEdid);
         corrupt[1] = 0x00;
 
         Assert.Empty(ReadRates(corrupt));
     }
 
-    private static int[] ReadRates(byte[]? edid)
+    private static int[] ReadRates(byte[] edid)
     {
-        return DisplayEdid.Parse(edid ?? []).Select(mode => mode.RefreshHz).Distinct().Order().ToArray();
-    }
-
-    private static byte[] Bytes(string hex)
-    {
-        return Convert.FromHexString(hex);
+        return DisplayEdid.Parse(edid).Select(mode => mode.RefreshHz).Distinct().Order().ToArray();
     }
 }

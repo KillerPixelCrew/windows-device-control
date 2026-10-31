@@ -45,16 +45,7 @@ public static unsafe partial class WindowsRadio
     {
         ArgumentNullException.ThrowIfNull(onEvent);
         var watch = new WifiWatch(onEvent);
-        var registration = WlanNotificationRegistration.TryOpen(watch.OnNotification, out var status)
-                           ?? throw WlanFailure("WlanOpenHandle", status);
-        status = registration.Register(WlanNotificationSourceAcm);
-        if (status != ErrorSuccess)
-        {
-            registration.Dispose();
-            throw WlanFailure("WlanRegisterNotification", status);
-        }
-
-        watch.Registration = registration;
+        watch.Registration = WlanNotificationRegistration.Start(watch.OnNotification);
         return watch;
     }
 
@@ -103,34 +94,19 @@ public static unsafe partial class WindowsRadio
             Registration?.Dispose();
         }
 
-        internal void OnNotification(nint data, nint context)
+        internal void OnNotification(WlanNotificationData notification)
         {
-            try
+            if (Volatile.Read(ref _disposed) != 0 || MapWatchEvent(notification.Code) is not { } change)
             {
-                // WLAN occasionally delivers a null notification pointer.
-                if (data == 0 || Volatile.Read(ref _disposed) != 0)
-                {
-                    return;
-                }
-
-                var notification = *(WlanNotificationData*)data;
-                if (notification.Source != WlanNotificationSourceAcm
-                    || MapWatchEvent(notification.Code) is not { } change)
-                {
-                    return;
-                }
-
-                lock (_gate)
-                {
-                    if (Volatile.Read(ref _disposed) == 0)
-                    {
-                        events(change);
-                    }
-                }
+                return;
             }
-            catch
+
+            lock (_gate)
             {
-                // A native service callback cannot propagate managed failures.
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    events(change);
+                }
             }
         }
     }
@@ -155,24 +131,22 @@ public static unsafe partial class WindowsRadio
             _ready.Dispose();
         }
 
-        public static ConnectionVerdict? TryStart(
-            Guid adapter,
-            string profile,
-            out uint status)
+        /// <summary>Registers for the adapter's connection completions before the request is sent.</summary>
+        /// <exception cref="Win32Exception">The WLAN handle could not be opened or registered.</exception>
+        public static ConnectionVerdict Start(Guid adapter, string profile)
         {
             var verdict = new ConnectionVerdict(adapter, profile);
-            verdict._registration = WlanNotificationRegistration.TryOpen(verdict.OnNotification, out status);
-            if (verdict._registration is not null)
+            try
             {
-                status = verdict._registration.Register(WlanNotificationSourceAcm);
-                if (status == ErrorSuccess)
-                {
-                    return verdict;
-                }
+                verdict._registration = WlanNotificationRegistration.Start(verdict.OnNotification);
+            }
+            catch
+            {
+                verdict.Dispose();
+                throw;
             }
 
-            verdict.Dispose();
-            return null;
+            return verdict;
         }
 
         internal ConnectionOutcome? Wait(TimeSpan timeout)
@@ -180,52 +154,37 @@ public static unsafe partial class WindowsRadio
             return _ready.Wait(timeout) ? _outcome : null;
         }
 
-        private void OnNotification(nint data, nint context)
+        private void OnNotification(WlanNotificationData notification)
         {
-            try
+            if (notification.InterfaceId != _adapter
+                || notification.Code is not AcmConnectionComplete and not AcmConnectionAttemptFail)
             {
-                // WLAN occasionally delivers a null notification pointer.
-                if (data == 0)
-                {
-                    return;
-                }
-
-                var notification = *(WlanNotificationData*)data;
-                if (notification.Source != WlanNotificationSourceAcm
-                    || notification.InterfaceId != _adapter
-                    || notification.Code is not AcmConnectionComplete and not AcmConnectionAttemptFail)
-                {
-                    return;
-                }
-
-                var reason = 0u;
-                var profile = string.Empty;
-                if (notification.Data != 0
-                    && notification.DataSize >= (uint)sizeof(WlanConnectionNotificationData))
-                {
-                    var payload = (WlanConnectionNotificationData*)notification.Data;
-                    reason = payload->ReasonCode;
-                    profile = NativeText.ReadFixed(payload->ProfileName, 256);
-                }
-
-                if (!IsCompletionForProfile(profile, _profile))
-                {
-                    return;
-                }
-
-                _outcome = new ConnectionOutcome(
-                    notification.Code == AcmConnectionComplete && reason == 0,
-                    reason);
-                _ready.Set();
+                return;
             }
-            catch
+
+            var reason = 0u;
+            var profile = string.Empty;
+            if (notification.Data != 0
+                && notification.DataSize >= (uint)sizeof(WlanConnectionNotificationData))
             {
-                // Native callback failures cannot cross WLANAPI.
+                var payload = (WlanConnectionNotificationData*)notification.Data;
+                reason = payload->ReasonCode;
+                profile = NativeText.ReadFixed(payload->ProfileName, 256);
             }
+
+            if (!IsCompletionForProfile(profile, _profile))
+            {
+                return;
+            }
+
+            _outcome = new ConnectionOutcome(
+                notification.Code == AcmConnectionComplete && reason == 0,
+                reason);
+            _ready.Set();
         }
     }
 
-    /// <summary>A WLAN notification callback registered on a client handle of its own.</summary>
+    /// <summary>An ACM notification handler registered on a WLAN client handle of its own.</summary>
     /// <remarks>
     ///     Native code holds only the delegate's function pointer, so the registration keeps
     ///     the delegate alive until disposal has unregistered it and closed the handle. Disposal
@@ -235,18 +194,14 @@ public static unsafe partial class WindowsRadio
     {
         private readonly WlanNotificationCallback _callback;
         private readonly WlanClient _client;
-        private readonly nint _pointer;
+        private readonly Action<WlanNotificationData> _handler;
         private int _disposed;
-        private bool _registered;
 
-        private WlanNotificationRegistration(
-            WlanClient client,
-            WlanNotificationCallback callback,
-            nint pointer)
+        private WlanNotificationRegistration(WlanClient client, Action<WlanNotificationData> handler)
         {
             _client = client;
-            _callback = callback;
-            _pointer = pointer;
+            _handler = handler;
+            _callback = OnNative;
         }
 
         public void Dispose()
@@ -258,46 +213,62 @@ public static unsafe partial class WindowsRadio
 
             // Unregister before closing: the unregister waits for a running callback, so the
             // delegate stays rooted and the handle open until no native call can reach either.
-            if (_registered)
-            {
-                WlanRegisterNotification(_client.Handle, WlanNotificationSourceNone, 0, 0, 0, 0, 0);
-            }
-
+            WlanRegisterNotification(_client.Handle, WlanNotificationSourceNone, 0, 0, 0, 0, 0);
             _client.Dispose();
             GC.KeepAlive(_callback);
         }
 
-        /// <summary>Opens a client handle for the callback, or returns null with the open status.</summary>
-        internal static WlanNotificationRegistration? TryOpen(
-            WlanNotificationCallback callback,
-            out uint status)
+        /// <summary>Opens a client handle and registers the handler for ACM notifications on it.</summary>
+        /// <param name="handler">Receives each ACM notification on the WLAN service thread.</param>
+        /// <exception cref="Win32Exception">
+        ///     <c>WlanOpenHandle</c> or <c>WlanRegisterNotification</c> failed; the native status is
+        ///     <see cref="Win32Exception.NativeErrorCode" />.
+        /// </exception>
+        internal static WlanNotificationRegistration Start(Action<WlanNotificationData> handler)
         {
-            var client = WlanClient.TryOpen(out status);
-            if (client is null)
-            {
-                return null;
-            }
-
+            var client = WlanClient.Open();
             try
             {
-                return new WlanNotificationRegistration(
-                    client,
-                    callback,
-                    Marshal.GetFunctionPointerForDelegate(callback));
+                var registration = new WlanNotificationRegistration(client, handler);
+                var status = WlanRegisterNotification(
+                    client.Handle,
+                    WlanNotificationSourceAcm,
+                    1,
+                    Marshal.GetFunctionPointerForDelegate(registration._callback),
+                    0,
+                    0,
+                    0);
+                CheckWlan("WlanRegisterNotification", status);
+                return registration;
             }
             catch
             {
+                // Only the handle is closed: nothing was registered, so there is nothing to unregister.
                 client.Dispose();
                 throw;
             }
         }
 
-        /// <summary>Registers the callback for the given notification sources.</summary>
-        internal uint Register(uint sources)
+        private void OnNative(nint data, nint context)
         {
-            var status = WlanRegisterNotification(_client.Handle, sources, 1, _pointer, 0, 0, 0);
-            _registered |= status == ErrorSuccess;
-            return status;
+            try
+            {
+                // WLAN occasionally delivers a null notification pointer.
+                if (data == 0)
+                {
+                    return;
+                }
+
+                var notification = *(WlanNotificationData*)data;
+                if (notification.Source == WlanNotificationSourceAcm)
+                {
+                    _handler(notification);
+                }
+            }
+            catch
+            {
+                // A native service callback cannot propagate managed failures.
+            }
         }
     }
 

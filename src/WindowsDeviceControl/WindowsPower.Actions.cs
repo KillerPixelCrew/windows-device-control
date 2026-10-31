@@ -88,14 +88,12 @@ public static partial class WindowsPower
     private sealed class NativePowerActionApi : IPowerActionApi
     {
         /// <inheritdoc />
-        public bool Suspend(bool hibernate)
+        public void Suspend(bool hibernate)
         {
             if (!SetSuspendState(hibernate, false, false))
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
-
-            return true;
         }
 
         /// <inheritdoc />
@@ -121,8 +119,8 @@ internal interface IPowerActionApi
 {
     /// <summary>Requests standby or hibernation synchronously.</summary>
     /// <param name="hibernate">True selects hibernation; false selects standby.</param>
-    /// <returns>True when the native call returns; refusals throw Win32Exception, normally before any transition.</returns>
-    bool Suspend(bool hibernate);
+    /// <exception cref="Win32Exception">Windows refused the request, normally before any transition.</exception>
+    void Suspend(bool hibernate);
     /// <summary>Starts a system tool and waits for its exit.</summary>
     /// <param name="start">Absolute executable and arguments prepared by the caller.</param>
     /// <param name="cancellationToken">Cancels waiting without terminating a dispatched process.</param>

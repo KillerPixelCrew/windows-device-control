@@ -107,13 +107,13 @@ internal static class DisplayLayoutPlanner
             Func<DisplayTopology.PathInfo, DisplayTargetIdentity> readTarget)
     {
         var candidates = paths
-            .Select((path, index) => (Path: path, Index: index, Target: Identity(path, readTarget)))
+            .Select(path => (Path: path, Target: Identity(path, readTarget)))
             .Where(candidate => candidate.Target is not null)
             .ToArray();
 
         List<DisplayTopology.PathInfo> plannedPaths = [];
         List<DisplayTopology.ModeInfo> plannedModes = [];
-        HashSet<(uint Adapter, int High, uint Source)> takenSources = [];
+        HashSet<DisplayTopology.RouteKey> takenSources = [];
 
         foreach (var output in layout.Outputs)
         {
@@ -123,19 +123,18 @@ internal static class DisplayLayoutPlanner
                 return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
             }
 
-            if (matching.Select(candidate => (candidate.Path.TargetInfo.AdapterId.LowPart,
-                    candidate.Path.TargetInfo.AdapterId.HighPart, candidate.Path.TargetInfo.Id)).Distinct().Count() > 1)
+            if (matching.Select(candidate => candidate.Path.TargetRoute).Distinct().Count() > 1)
             {
                 return ([], [], DisplayLayoutProblem.NoDisplayPath, output.Target);
             }
 
             // Preserve an active source before considering alternate routes.
             var chosen = matching.FirstOrDefault(candidate =>
-                (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0
-                && Free(candidate.Path, takenSources));
+                (candidate.Path.Flags & DisplayTopology.PathActiveFlag) != 0
+                && !takenSources.Contains(candidate.Path.SourceRoute));
             if (chosen.Target is null)
             {
-                chosen = matching.Where(candidate => Free(candidate.Path, takenSources))
+                chosen = matching.Where(candidate => !takenSources.Contains(candidate.Path.SourceRoute))
                     .OrderBy(candidate => candidate.Path.SourceInfo.Id)
                     .FirstOrDefault();
             }
@@ -145,10 +144,10 @@ internal static class DisplayLayoutPlanner
                 return ([], [], DisplayLayoutProblem.NoFreeSource, output.Target);
             }
 
-            takenSources.Add(SourceKey(chosen.Path));
+            takenSources.Add(chosen.Path.SourceRoute);
             // Capture the preserved rotation before changing the path's active flag.
             var current = matching.FirstOrDefault(candidate =>
-                (candidate.Path.Flags & DisplayLayouts.PathActiveFlag) != 0);
+                (candidate.Path.Flags & DisplayTopology.PathActiveFlag) != 0);
             var rotation = output.Rotation != 0
                 ? output.Rotation
                 : current.Target is not null && current.Path.TargetInfo.Rotation != 0
@@ -156,11 +155,11 @@ internal static class DisplayLayoutPlanner
                     : 1;
 
             var path = chosen.Path;
-            path.Flags |= DisplayLayouts.PathActiveFlag;
+            path.Flags |= DisplayTopology.PathActiveFlag;
             path.SourceInfo.ModeInfoIdx = (uint)plannedModes.Count;
             // The target mode is left to Windows: the requested refresh plus ALLOW_CHANGES is what
             // lets the driver pick a signal it can actually produce for this resolution.
-            path.TargetInfo.ModeInfoIdx = DisplayLayouts.InvalidModeIndex;
+            path.TargetInfo.ModeInfoIdx = DisplayTopology.InvalidModeIndex;
             path.TargetInfo.RefreshRate = new DisplayTopology.Rational
             {
                 Numerator = output.Refresh.Numerator,
@@ -174,7 +173,7 @@ internal static class DisplayLayoutPlanner
 
             plannedModes.Add(new DisplayTopology.ModeInfo
             {
-                InfoType = DisplayLayouts.SourceModeType,
+                InfoType = DisplayTopology.SourceModeType,
                 Id = path.SourceInfo.Id,
                 AdapterId = path.SourceInfo.AdapterId,
                 Mode = new DisplayTopology.ModeUnion
@@ -183,7 +182,7 @@ internal static class DisplayLayoutPlanner
                     {
                         Width = (uint)output.Width,
                         Height = (uint)output.Height,
-                        PixelFormat = DisplayLayouts.Pixel32Bpp,
+                        PixelFormat = DisplayTopology.Pixel32Bpp,
                         X = output.X,
                         Y = output.Y
                     }
@@ -200,31 +199,18 @@ internal static class DisplayLayoutPlanner
             }
 
             var path = candidate.Path;
-            path.Flags &= ~DisplayLayouts.PathActiveFlag;
-            path.SourceInfo.ModeInfoIdx = DisplayLayouts.InvalidModeIndex;
-            path.TargetInfo.ModeInfoIdx = DisplayLayouts.InvalidModeIndex;
+            path.Flags &= ~DisplayTopology.PathActiveFlag;
+            path.SourceInfo.ModeInfoIdx = DisplayTopology.InvalidModeIndex;
+            path.TargetInfo.ModeInfoIdx = DisplayTopology.InvalidModeIndex;
             plannedPaths.Add(path);
         }
 
         return ([.. plannedPaths], [.. plannedModes], null, null);
     }
 
-    private static bool Free(DisplayTopology.PathInfo path, HashSet<(uint, int, uint)> taken)
-    {
-        return !taken.Contains(SourceKey(path));
-    }
-
-    private static (uint, int, uint) SourceKey(DisplayTopology.PathInfo path)
-    {
-        return (path.SourceInfo.AdapterId.LowPart, path.SourceInfo.AdapterId.HighPart, path.SourceInfo.Id);
-    }
-
     private static bool Same(DisplayTopology.PathInfo first, DisplayTopology.PathInfo second)
     {
-        return first.TargetInfo.AdapterId.LowPart == second.TargetInfo.AdapterId.LowPart
-               && first.TargetInfo.AdapterId.HighPart == second.TargetInfo.AdapterId.HighPart
-               && first.TargetInfo.Id == second.TargetInfo.Id
-               && SourceKey(first) == SourceKey(second);
+        return first.TargetRoute == second.TargetRoute && first.SourceRoute == second.SourceRoute;
     }
 
     private static DisplayTargetIdentity? Identity(

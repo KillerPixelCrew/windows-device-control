@@ -40,8 +40,8 @@ public sealed class PowerNotificationRegistration : SafeHandleZeroOrMinusOneIsIn
     protected override bool ReleaseHandle()
     {
         return _suspendResume
-            ? WindowsPower.UnregisterSuspendResume(handle)
-            : WindowsPower.UnregisterPowerSetting(handle);
+            ? WindowsPower.UnregisterSuspendResumeNotification(handle)
+            : WindowsPower.UnregisterPowerSettingNotification(handle);
     }
 }
 
@@ -77,27 +77,17 @@ public static partial class WindowsPower
             RegisterSuspendResumeNotification(window, 0), true, "RegisterSuspendResumeNotification");
     }
 
-    internal static bool UnregisterPowerSetting(nint registration)
-    {
-        return UnregisterPowerSettingNotification(registration);
-    }
-
-    internal static bool UnregisterSuspendResume(nint registration)
-    {
-        return UnregisterSuspendResumeNotificationNative(registration);
-    }
-
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial nint RegisterPowerSettingNotification(nint recipient, in Guid setting, uint flags);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool UnregisterPowerSettingNotification(nint registration);
+    internal static partial bool UnregisterPowerSettingNotification(nint registration);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial nint RegisterSuspendResumeNotification(nint recipient, uint flags);
 
-    [LibraryImport("user32.dll", EntryPoint = "UnregisterSuspendResumeNotification", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool UnregisterSuspendResumeNotificationNative(nint registration);
+    internal static partial bool UnregisterSuspendResumeNotification(nint registration);
 }

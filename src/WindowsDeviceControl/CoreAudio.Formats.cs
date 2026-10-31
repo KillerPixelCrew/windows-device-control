@@ -28,6 +28,9 @@ public static partial class CoreAudio
     /// <summary>Endpoint, topology and wave filters, with room for an extension filter between them.</summary>
     private const int MaximumTopologyDevices = 8;
 
+    /// <summary>Bytes per KSTOPOLOGY_CONNECTION and per node-type GUID in a topology reply.</summary>
+    private const int TopologyItemSize = 16;
+
     private static readonly Guid PinPropertySet = new("8C134960-51AD-11CF-878A-94F801C10000");
     private static readonly Guid TopologyPropertySet = new("720D4AC0-7533-11D0-A5D6-28DB04C10000");
 
@@ -37,8 +40,13 @@ public static partial class CoreAudio
     private static readonly Guid AudioMajorFormat = new("73647561-0000-0010-8000-00AA00389B71");
     private static readonly Guid WaveFormatSpecifier = new("05589F81-C356-11CE-BF01-00AA0055595A");
 
-    private static readonly Guid AudioClientId =
-        new("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
+    private static readonly int KsDataFormatSize = Marshal.SizeOf<KsDataFormat>();
+
+    /// <summary>A KSDATAFORMAT followed by the WAVEFORMATEXTENSIBLE it announces.</summary>
+    private static readonly int HostPinProposalBytes = KsDataFormatSize + Marshal.SizeOf<WaveFormatExtensible>();
+
+    private static readonly uint KsPropertySize = (uint)Marshal.SizeOf<KsProperty>();
+    private static readonly uint KsPinPropertySize = (uint)Marshal.SizeOf<KsPinProperty>();
 
     private static readonly Guid PcmSubFormat =
         new("00000001-0000-0010-8000-00AA00389B71");
@@ -196,14 +204,13 @@ public static partial class CoreAudio
                 return result < 0 ? result : Failure;
             }
 
-            result = Activate(device, AudioClientId, out client);
+            result = Activate(device, out client);
             if (result < 0 || client is null)
             {
                 return result < 0 ? result : Failure;
             }
 
-            candidate = Marshal.AllocCoTaskMem(Marshal.SizeOf<KsDataFormat>() + Marshal.SizeOf<WaveFormatExtensible>());
-            var buffer = candidate;
+            candidate = Marshal.AllocCoTaskMem(HostPinProposalBytes);
             Func<AudioDeviceFormat, int> verdict;
             hostFilter = FindHostPinFilter(enumerator, device, endpointId, out var hostPin);
             if (hostFilter is not null)
@@ -211,15 +218,15 @@ public static partial class CoreAudio
                 // Behind a hardware audio engine, exclusive streams are answered by the offload
                 // pin, which can accept far more than the host pin the shared engine runs on.
                 var pinControl = (IKsPinControl)hostFilter;
-                verdict = format => ProposeHostPinFormat(pinControl, hostPin, buffer, format);
+                verdict = format => ProposeHostPinFormat(pinControl, hostPin, candidate, format);
             }
             else
             {
                 var probe = client;
                 verdict = format =>
                 {
-                    Marshal.StructureToPtr(BuildFormat(format), buffer, false);
-                    return probe.IsFormatSupported(ShareModeExclusive, buffer, 0);
+                    Marshal.StructureToPtr(BuildFormat(format), candidate, false);
+                    return probe.IsFormatSupported(ShareModeExclusive, candidate, 0);
                 };
             }
 
@@ -279,7 +286,7 @@ public static partial class CoreAudio
                     continue;
                 }
 
-                if (Activate(filter, KsControlId, out control) >= 0
+                if (Activate(filter, out control) >= 0
                     && control is not null
                     && TryReadTopology(control, out var nodes, out var connections)
                     && SelectHostPin(nodes, connections) is { } found)
@@ -307,7 +314,7 @@ public static partial class CoreAudio
         IDeviceTopology? topology = null;
         try
         {
-            if (Activate(device, DeviceTopologyId, out topology) < 0
+            if (Activate(device, out topology) < 0
                 || topology is null
                 || topology.GetConnectorCount(out var count) < 0)
             {
@@ -350,9 +357,8 @@ public static partial class CoreAudio
     {
         nodes = [];
         connections = [];
-        if (!TryReadMultipleItem(control, TopologyNodes, out var nodeData, out var nodeCount, itemSize: 16)
-            || !TryReadMultipleItem(control, TopologyConnections, out var connectionData, out var connectionCount,
-                itemSize: 16))
+        if (!TryReadMultipleItem(control, TopologyNodes, out var nodeData, out var nodeCount)
+            || !TryReadMultipleItem(control, TopologyConnections, out var connectionData, out var connectionCount))
         {
             return false;
         }
@@ -360,13 +366,13 @@ public static partial class CoreAudio
         var nodeTypes = new Guid[nodeCount];
         for (var index = 0; index < nodeCount; index++)
         {
-            nodeTypes[index] = new Guid(nodeData.AsSpan(16 * index, 16));
+            nodeTypes[index] = new Guid(nodeData.AsSpan(TopologyItemSize * index, TopologyItemSize));
         }
 
         var links = new KsTopologyConnection[connectionCount];
         for (var index = 0; index < connectionCount; index++)
         {
-            var offset = 16 * index;
+            var offset = TopologyItemSize * index;
             links[index] = new KsTopologyConnection(
                 BitConverter.ToUInt32(connectionData, offset),
                 BitConverter.ToUInt32(connectionData, offset + 4),
@@ -382,18 +388,15 @@ public static partial class CoreAudio
     /// <summary>Reads one KSMULTIPLE_ITEM topology property: a size query, then the items.</summary>
     /// <param name="control">The filter.</param>
     /// <param name="id">The KSPROPSETID_Topology property.</param>
-    /// <param name="items">The item bytes after the header.</param>
+    /// <param name="items">The bytes of the <paramref name="count" /> items after the header.</param>
     /// <param name="count">The item count, bounded by the bytes returned.</param>
-    /// <param name="itemSize">Bytes per item.</param>
     /// <returns>Whether the property was read.</returns>
-    private static bool TryReadMultipleItem(IKsControl control, uint id, out byte[] items, out int count,
-        int itemSize)
+    private static bool TryReadMultipleItem(IKsControl control, uint id, out byte[] items, out int count)
     {
         items = [];
         count = 0;
         var property = new KsProperty { Set = TopologyPropertySet, Id = id, Flags = KsPropertyTypeGet };
-        var length = (uint)Marshal.SizeOf<KsProperty>();
-        control.KsProperty(ref property, length, 0, 0, out var required);
+        control.KsProperty(ref property, KsPropertySize, 0, 0, out var required);
         if (required < MultipleItemHeaderSize || required > MaximumTopologyBytes)
         {
             return false;
@@ -402,22 +405,21 @@ public static partial class CoreAudio
         var buffer = Marshal.AllocCoTaskMem((int)required);
         try
         {
-            if (control.KsProperty(ref property, length, buffer, required, out var returned) < 0
+            if (control.KsProperty(ref property, KsPropertySize, buffer, required, out var returned) < 0
                 || returned < MultipleItemHeaderSize
                 || returned > required)
             {
                 return false;
             }
 
-            var data = new byte[returned];
-            Marshal.Copy(buffer, data, 0, (int)returned);
-            count = Math.Min(BitConverter.ToInt32(data, 4), (int)(returned - MultipleItemHeaderSize) / itemSize);
+            count = Math.Min(Marshal.ReadInt32(buffer, 4), (int)(returned - MultipleItemHeaderSize) / TopologyItemSize);
             if (count < 0)
             {
                 return false;
             }
 
-            items = data[(int)MultipleItemHeaderSize..];
+            items = new byte[count * TopologyItemSize];
+            Marshal.Copy(buffer + (int)MultipleItemHeaderSize, items, 0, items.Length);
             return true;
         }
         finally
@@ -461,23 +463,21 @@ public static partial class CoreAudio
     private static int ProposeHostPinFormat(IKsPinControl control, uint pin, nint buffer, AudioDeviceFormat format)
     {
         var wave = BuildFormat(format);
-        var dataFormatSize = Marshal.SizeOf<KsDataFormat>();
         Marshal.StructureToPtr(new KsDataFormat
         {
-            FormatSize = (uint)(dataFormatSize + Marshal.SizeOf<WaveFormatExtensible>()),
-            SampleSize = wave.BlockAlign,
+            FormatSize = (uint)HostPinProposalBytes,
+            SampleSize = wave.Format.BlockAlign,
             MajorFormat = AudioMajorFormat,
             SubFormat = wave.SubFormat,
             Specifier = WaveFormatSpecifier
         }, buffer, false);
-        Marshal.StructureToPtr(wave, buffer + dataFormatSize, false);
+        Marshal.StructureToPtr(wave, buffer + KsDataFormatSize, false);
         var property = new KsPinProperty
         {
             Property = new KsProperty { Set = PinPropertySet, Id = PinProposeDataFormat, Flags = KsPropertyTypeSet },
             PinId = pin
         };
-        return control.KsProperty(ref property, (uint)Marshal.SizeOf<KsPinProperty>(), buffer,
-            (uint)(dataFormatSize + Marshal.SizeOf<WaveFormatExtensible>()), out _);
+        return control.KsProperty(ref property, KsPinPropertySize, buffer, (uint)HostPinProposalBytes, out _);
     }
 
     /// <summary>One KSTOPOLOGY_CONNECTION; <see cref="FilterNode" /> as a node names a filter pin.</summary>
@@ -572,13 +572,16 @@ public static partial class CoreAudio
         var blockAlign = (ushort)(format.Channels * format.ContainerBitsPerSample / 8);
         return new WaveFormatExtensible
         {
-            FormatTag = WaveFormatExtensibleTag,
-            Channels = (ushort)format.Channels,
-            SamplesPerSecond = (uint)format.SampleRate,
-            AverageBytesPerSecond = (uint)format.SampleRate * blockAlign,
-            BlockAlign = blockAlign,
-            BitsPerSample = (ushort)format.ContainerBitsPerSample,
-            ExtraSize = WaveFormatExtensibleExtraSize,
+            Format = new WaveFormat
+            {
+                FormatTag = WaveFormatExtensibleTag,
+                Channels = (ushort)format.Channels,
+                SamplesPerSecond = (uint)format.SampleRate,
+                AverageBytesPerSecond = (uint)format.SampleRate * blockAlign,
+                BlockAlign = blockAlign,
+                BitsPerSample = (ushort)format.ContainerBitsPerSample,
+                ExtraSize = WaveFormatExtensibleExtraSize
+            },
             ValidBitsPerSample = (ushort)format.BitsPerSample,
             ChannelMask = format.ChannelMask,
             SubFormat = format.IsFloat ? IeeeFloatSubFormat : PcmSubFormat
@@ -592,28 +595,29 @@ public static partial class CoreAudio
     internal static bool TryReadFormat(WaveFormatExtensible native, out AudioDeviceFormat format)
     {
         format = default;
-        if (native.FormatTag == WaveFormatExtensibleTag && native.ExtraSize >= WaveFormatExtensibleExtraSize)
+        var header = native.Format;
+        if (header.FormatTag == WaveFormatExtensibleTag && header.ExtraSize >= WaveFormatExtensibleExtraSize)
         {
             format = new AudioDeviceFormat(
-                native.Channels,
-                (int)native.SamplesPerSecond,
+                header.Channels,
+                (int)header.SamplesPerSecond,
                 native.ValidBitsPerSample,
-                native.BitsPerSample,
+                header.BitsPerSample,
                 native.ChannelMask,
                 native.SubFormat == IeeeFloatSubFormat);
             return true;
         }
 
         // Plain WAVEFORMATEX: PCM (1) or IEEE float (3), with no mask or valid-bits field.
-        if (native.FormatTag is 1 or 3)
+        if (header.FormatTag is 1 or 3)
         {
             format = new AudioDeviceFormat(
-                native.Channels,
-                (int)native.SamplesPerSecond,
-                native.BitsPerSample,
-                native.BitsPerSample,
-                DefaultChannelMask(native.Channels),
-                native.FormatTag == 3);
+                header.Channels,
+                (int)header.SamplesPerSecond,
+                header.BitsPerSample,
+                header.BitsPerSample,
+                DefaultChannelMask(header.Channels),
+                header.FormatTag == 3);
             return true;
         }
 
@@ -636,16 +640,7 @@ public static partial class CoreAudio
             return TryReadFormat(Marshal.PtrToStructure<WaveFormatExtensible>(native), out format);
         }
 
-        return TryReadFormat(new WaveFormatExtensible
-        {
-            FormatTag = header.FormatTag,
-            Channels = header.Channels,
-            SamplesPerSecond = header.SamplesPerSecond,
-            AverageBytesPerSecond = header.AverageBytesPerSecond,
-            BlockAlign = header.BlockAlign,
-            BitsPerSample = header.BitsPerSample,
-            ExtraSize = header.ExtraSize
-        }, out format);
+        return TryReadFormat(new WaveFormatExtensible { Format = header }, out format);
     }
 
     private static nint AllocateFormat(WaveFormatExtensible format)

@@ -66,6 +66,8 @@ internal static class Win32Error
 internal static partial class Kernel32
 {
     internal const uint OpenExisting = 3;
+    internal const uint FileShareRead = 0x00000001;
+    internal const uint FileShareWrite = 0x00000002;
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
         StringMarshalling = StringMarshalling.Utf16)]

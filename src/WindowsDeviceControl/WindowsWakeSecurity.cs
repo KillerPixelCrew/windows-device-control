@@ -349,26 +349,17 @@ public static class WindowsWakeSecurity
 
     private static void WriteValues(string path, params (string Name, int Value)[] values)
     {
-        if (values.Any(entry => entry.Value >= 0))
-        {
-            using var created = Registry.LocalMachine.CreateSubKey(path);
-            foreach (var (name, value) in values)
-            {
-                SetOrDelete(created, name, value);
-            }
-
-            return;
-        }
-
-        using var existing = Registry.LocalMachine.OpenSubKey(path, true);
-        if (existing is null)
+        using var key = values.Any(entry => entry.Value >= 0)
+            ? Registry.LocalMachine.CreateSubKey(path)
+            : Registry.LocalMachine.OpenSubKey(path, true);
+        if (key is null)
         {
             return;
         }
 
         foreach (var (name, value) in values)
         {
-            SetOrDelete(existing, name, value);
+            SetOrDelete(key, name, value);
         }
     }
 
@@ -384,14 +375,9 @@ public static class WindowsWakeSecurity
         }
     }
 
-    private static List<Guid> SchemesOrActive()
+    private static IReadOnlyList<Guid> SchemesOrActive()
     {
-        List<Guid> result = [.. WindowsPower.EnumerateSchemes()];
-        if (result.Count == 0)
-        {
-            result.Add(WindowsPower.GetActiveScheme());
-        }
-
-        return result;
+        var schemes = WindowsPower.EnumerateSchemes();
+        return schemes.Count > 0 ? schemes : [WindowsPower.GetActiveScheme()];
     }
 }

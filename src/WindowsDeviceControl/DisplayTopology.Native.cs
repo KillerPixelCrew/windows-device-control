@@ -9,6 +9,10 @@ public static partial class DisplayTopology
     internal const uint SdcValidate = 0x40;
     internal const uint SdcApply = 0x80;
     internal const uint SaveToDatabase = 0x200;
+    internal const uint PathActiveFlag = 0x1;
+    internal const uint InvalidModeIndex = 0xffffffff;
+    internal const uint SourceModeType = 1;
+    internal const uint Pixel32Bpp = 4;
     private const uint UseSupplied = 0x20;
     private const uint AllowChanges = 0x400;
     private const int GetSourceName = 1;
@@ -89,6 +93,12 @@ public static partial class DisplayTopology
         public PathSourceInfo SourceInfo;
         public PathTargetInfo TargetInfo;
         public uint Flags;
+
+        /// <summary>The source route: adapter LUID and source ID.</summary>
+        internal readonly RouteKey SourceRoute => new(SourceInfo.AdapterId, SourceInfo.Id);
+
+        /// <summary>The target route: adapter LUID and target ID.</summary>
+        internal readonly RouteKey TargetRoute => new(TargetInfo.AdapterId, TargetInfo.Id);
     }
 
     /// <summary>Source half of a mode record: the desktop rectangle this display shows.</summary>

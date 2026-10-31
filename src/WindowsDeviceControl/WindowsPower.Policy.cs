@@ -15,11 +15,22 @@ public static partial class WindowsPower
     /// <exception cref="System.ComponentModel.Win32Exception">The stored value could not be read.</exception>
     public static uint ReadSetting(Guid scheme, Guid subgroup, Guid setting, bool onBattery)
     {
-        var status = onBattery
-            ? PowerReadDCValueIndex(0, in scheme, in subgroup, in setting, out var value)
-            : PowerReadACValueIndex(0, in scheme, in subgroup, in setting, out value);
-        Check(status, "Read power setting");
+        Check(ReadSettingStatus(scheme, subgroup, setting, onBattery, out var value), "Read power setting");
         return value;
+    }
+
+    /// <summary>Reads an AC or battery policy value and returns the native status instead of throwing.</summary>
+    /// <param name="scheme">Power scheme identity.</param>
+    /// <param name="subgroup">Policy subgroup identity.</param>
+    /// <param name="setting">Policy setting identity.</param>
+    /// <param name="onBattery">True selects the DC value; false selects AC.</param>
+    /// <param name="value">The raw Windows policy value when the status is success.</param>
+    /// <returns>The Win32 status the read returned; zero is success.</returns>
+    private static uint ReadSettingStatus(Guid scheme, Guid subgroup, Guid setting, bool onBattery, out uint value)
+    {
+        return onBattery
+            ? PowerReadDCValueIndex(0, in scheme, in subgroup, in setting, out value)
+            : PowerReadACValueIndex(0, in scheme, in subgroup, in setting, out value);
     }
 
     /// <summary>Writes one policy value once. Does not activate a scheme or retry a failed write.</summary>

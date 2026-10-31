@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using Xunit;
 
 namespace WindowsDeviceControl.Tests;
@@ -36,17 +37,8 @@ public sealed class PowerRequestListTests
         BitConverter.GetBytes((ulong)(NameString - Diagnostic)).CopyTo(b, Diagnostic + 16); // name offset
         BitConverter.GetBytes(1234u).CopyTo(b, Diagnostic + 24); // pid
 
-        WriteUtf16(b, NameString, "a.exe");
+        Encoding.Unicode.GetBytes("a.exe").CopyTo(b, NameString);
         return b;
-    }
-
-    private static void WriteUtf16(byte[] buffer, int offset, string text)
-    {
-        foreach (var unit in text)
-        {
-            BitConverter.GetBytes((ushort)unit).CopyTo(buffer, offset);
-            offset += 2;
-        }
     }
 
     [Fact]
@@ -154,7 +146,7 @@ public sealed class PowerRequestListTests
         BitConverter.GetBytes((ulong)(ReasonContext - Diagnostic)).CopyTo(b, Diagnostic + 32);
         BitConverter.GetBytes(flags).CopyTo(b, ReasonContext);
         BitConverter.GetBytes((ulong)(ReasonString - ReasonContext)).CopyTo(b, ReasonContext + 8);
-        WriteUtf16(b, ReasonString, reason);
+        Encoding.Unicode.GetBytes(reason).CopyTo(b, ReasonString);
         return b;
     }
 

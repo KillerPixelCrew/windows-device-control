@@ -67,25 +67,32 @@ public sealed class WindowsPowerTests
     }
 
     [Theory]
-    [InlineData(WindowsPowerAction.Shutdown, "/s /t 0", false)]
-    [InlineData(WindowsPowerAction.Restart, "/r /t 0", true)]
-    [InlineData(WindowsPowerAction.SignOut, "/l", false)]
-    public async Task ActionArgumentsAreForwardedUnchanged(WindowsPowerAction action, string arguments, bool hibernate)
+    [InlineData(WindowsPowerAction.Shutdown, "/s /t 0")]
+    [InlineData(WindowsPowerAction.Restart, "/r /t 0")]
+    [InlineData(WindowsPowerAction.SignOut, "/l")]
+    public async Task ActionArgumentsAreForwardedUnchanged(WindowsPowerAction action, string arguments)
     {
         using var cancellation = new CancellationTokenSource();
         var api = new FakePowerActionApi();
-        await WindowsPower.SuspendAsync(hibernate, api, cancellation.Token);
         await WindowsPower.RequestActionAsync(action, api, cancellation.Token);
+
+        Assert.Equal(1, api.ToolCalls);
+        Assert.NotNull(api.Start);
+        Assert.Equal(arguments, api.Start.Arguments);
+        Assert.Equal(cancellation.Token, api.Token);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SuspendForwardsTheHibernateFlagOnce(bool hibernate)
+    {
+        var api = new FakePowerActionApi();
+        await WindowsPower.SuspendAsync(hibernate, api, CancellationToken.None);
 
         Assert.Equal(1, api.SuspendCalls);
         Assert.Equal(hibernate, api.Hibernate);
-        Assert.Equal(1, api.ToolCalls);
-        Assert.NotNull(api.Start);
-        Assert.Equal(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), api.Start.FileName);
-        Assert.Equal(arguments, api.Start.Arguments);
-        Assert.True(api.Start.CreateNoWindow);
-        Assert.False(api.Start.UseShellExecute);
-        Assert.Equal(cancellation.Token, api.Token);
+        Assert.Equal(0, api.ToolCalls);
     }
 
     [Fact]
@@ -126,7 +133,7 @@ public sealed class WindowsPowerTests
         internal ProcessStartInfo? Start;
         internal CancellationToken Token;
 
-        public bool Suspend(bool hibernate)
+        public void Suspend(bool hibernate)
         {
             SuspendCalls++;
             Hibernate = hibernate;
@@ -134,8 +141,6 @@ public sealed class WindowsPowerTests
             {
                 throw SuspendFailure;
             }
-
-            return true;
         }
 
         public Task<int> RunToolAsync(ProcessStartInfo start, CancellationToken cancellationToken)

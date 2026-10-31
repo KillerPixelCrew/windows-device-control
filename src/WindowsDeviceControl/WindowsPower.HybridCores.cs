@@ -231,16 +231,8 @@ public static partial class WindowsPower
 
     private static bool CanRead(Guid scheme, Guid setting)
     {
-        try
-        {
-            ReadSetting(scheme, SubgroupProcessor, setting, false);
-            ReadSetting(scheme, SubgroupProcessor, setting, true);
-            return true;
-        }
-        catch (Win32Exception)
-        {
-            return false;
-        }
+        return ReadSettingStatus(scheme, SubgroupProcessor, setting, false, out _) == ErrorSuccess
+               && ReadSettingStatus(scheme, SubgroupProcessor, setting, true, out _) == ErrorSuccess;
     }
 
     private static List<uint> PossibleValues(Guid setting)

@@ -152,7 +152,6 @@ public static partial class CoreAudio
     private sealed class VolumeWatch : IDisposable
     {
         private readonly VolumeCallback _callback;
-        private readonly object _gate = new();
         private nint _callbackPointer;
         private IMMDevice? _device;
         private IAudioEndpointVolume? _volume;
@@ -172,45 +171,26 @@ public static partial class CoreAudio
 
         public void Dispose()
         {
-            IAudioEndpointVolume? volume;
-            IMMDevice? device;
-            nint pointer;
-            lock (_gate)
-            {
-                volume = _volume;
-                device = _device;
-                pointer = _callbackPointer;
-                _volume = null;
-                _device = null;
-                _callbackPointer = 0;
-            }
-
+            var volume = Interlocked.Exchange(ref _volume, null);
             if (volume is null)
             {
                 return;
             }
+
+            var device = _device;
+            _device = null;
+            var pointer = _callbackPointer;
+            _callbackPointer = 0;
 
             // Unregistering waits for an in-flight callback to return, so nothing here holds a lock
             // the callback could want.
             _callback.Detach();
             try
             {
-                if (pointer != 0)
-                {
-                    _ = volume.UnregisterControlChangeNotify(pointer);
-                }
-            }
-            catch (COMException)
-            {
-                // The endpoint is gone; there is nothing left to unregister from.
+                UnregisterCallback(pointer, volume.UnregisterControlChangeNotify);
             }
             finally
             {
-                if (pointer != 0)
-                {
-                    Marshal.Release(pointer);
-                }
-
                 Release(volume);
                 Release(device);
             }
@@ -246,24 +226,34 @@ public static partial class CoreAudio
             // Unregistering waits for an in-flight callback to return, so nothing here holds a lock
             // the callback could want.
             _callback.Detach();
-            try
-            {
-                if (_callbackPointer != 0)
-                {
-                    _ = _enumerator.UnregisterEndpointNotificationCallback(_callbackPointer);
-                }
-            }
-            catch (COMException)
-            {
-            }
-            finally
-            {
-                if (_callbackPointer != 0)
-                {
-                    Marshal.Release(_callbackPointer);
-                    _callbackPointer = 0;
-                }
-            }
+            var pointer = _callbackPointer;
+            _callbackPointer = 0;
+            UnregisterCallback(pointer, _enumerator.UnregisterEndpointNotificationCallback);
+        }
+    }
+
+    /// <summary>
+    ///     Unregisters one callback pointer and releases it. A COMException from the unregistration
+    ///     means the endpoint or enumerator is gone, which leaves nothing to unregister from.
+    /// </summary>
+    private static void UnregisterCallback(nint pointer, Func<nint, int> unregister)
+    {
+        if (pointer == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = unregister(pointer);
+        }
+        catch (COMException)
+        {
+            // The endpoint or enumerator is gone; there is nothing left to unregister from.
+        }
+        finally
+        {
+            Marshal.Release(pointer);
         }
     }
 
@@ -328,7 +318,7 @@ public static partial class CoreAudio
             return 0;
         }
 
-        public int OnPropertyValueChanged(string deviceId, PropertyKey key)
+        public int OnPropertyValueChanged(nint deviceId, PropertyKey key)
         {
             return 0;
         }
@@ -381,6 +371,6 @@ public static partial class CoreAudio
             [MarshalAs(UnmanagedType.LPWStr)] string? defaultDeviceId);
 
         [PreserveSig]
-        int OnPropertyValueChanged([MarshalAs(UnmanagedType.LPWStr)] string deviceId, PropertyKey key);
+        int OnPropertyValueChanged(nint deviceId, PropertyKey key);
     }
 }

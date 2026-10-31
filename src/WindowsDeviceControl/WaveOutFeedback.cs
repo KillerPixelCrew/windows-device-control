@@ -121,7 +121,7 @@ public sealed partial class WaveOutFeedback : IDisposable
             flags = ((WaveHeader*)_header)->Flags;
         }
 
-        if (IsQueued(flags))
+        if ((flags & HeaderInQueue) != 0)
         {
             return 0;
         }
@@ -192,11 +192,6 @@ public sealed partial class WaveOutFeedback : IDisposable
     private static int HResultFromMultimedia(uint result)
     {
         return result == 0 ? 0 : unchecked((int)(0x80070000 | (result & 0xFFFF)));
-    }
-
-    internal static bool IsQueued(uint headerFlags)
-    {
-        return (headerFlags & HeaderInQueue) != 0;
     }
 
     [LibraryImport("winmm.dll", EntryPoint = "waveOutOpen")]

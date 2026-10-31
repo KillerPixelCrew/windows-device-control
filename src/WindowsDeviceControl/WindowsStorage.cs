@@ -36,8 +36,6 @@ public sealed record StorageVolume(
 public static class WindowsStorage
 {
     private const uint IoctlStorageGetDeviceNumber = 0x2D1080;
-    private const uint FileShareRead = 0x00000001;
-    private const uint FileShareWrite = 0x00000002;
 
     /// <summary>Every mounted volume Windows will describe, with its backing disk.</summary>
     /// <returns>
@@ -114,7 +112,7 @@ public static class WindowsStorage
         using var volume = Kernel32.CreateFile(
             $@"\\.\{char.ToUpperInvariant(letter)}:",
             0,
-            FileShareRead | FileShareWrite,
+            Kernel32.FileShareRead | Kernel32.FileShareWrite,
             0,
             Kernel32.OpenExisting,
             0,

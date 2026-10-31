@@ -61,9 +61,6 @@ public static partial class CoreAudio
     private const int InvalidArgument = unchecked((int)0x80070057);
     private const int Failure = unchecked((int)0x80004005);
 
-    private static readonly Guid AudioEndpointVolumeId =
-        new("5CDF2C82-841E-4546-9722-0CF74078229A");
-
     private static readonly PropertyKey DeviceFriendlyNameKey = new(
         new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
         14);
@@ -239,7 +236,6 @@ public static partial class CoreAudio
         }
 
         IMMDeviceCollection? collection = null;
-        IMMDevice? defaultDevice = null;
         try
         {
             var enumerator = Enumerator();
@@ -248,22 +244,12 @@ public static partial class CoreAudio
                 dataFlow,
                 DeviceStateActive,
                 out collection));
-            string? defaultId = null;
-            if (result >= 0
-                && ForgetEnumeratorIfGone(enumerator, enumerator.GetDefaultAudioEndpoint(
-                    dataFlow,
-                    AudioRole.Console,
-                    out defaultDevice)) >= 0
-                && defaultDevice is not null)
-            {
-                defaultDevice.GetId(out defaultId);
-            }
-
             if (result < 0 || collection is null)
             {
                 return result;
             }
 
+            _ = ReadDefaultEndpointId(enumerator, dataFlow, AudioRole.Console, out var defaultId);
             result = collection.GetCount(out var count);
             if (result < 0)
             {
@@ -305,7 +291,6 @@ public static partial class CoreAudio
         }
         finally
         {
-            Release(defaultDevice);
             Release(collection);
         }
     }
@@ -492,7 +477,6 @@ public static partial class CoreAudio
         out IReadOnlyList<DefaultEndpointRoleResult> updates)
     {
         var results = new List<DefaultEndpointRoleResult>(DefaultRoles.Length);
-        var applied = new List<AudioRole>(DefaultRoles.Length);
         var failure = 0;
         foreach (var role in DefaultRoles)
         {
@@ -503,18 +487,17 @@ public static partial class CoreAudio
                 failure = result;
                 break;
             }
-
-            applied.Add(role);
         }
 
         if (failure < 0)
         {
-            for (var index = applied.Count - 1; index >= 0; index--)
+            // The last entry is the failed role, which is never rolled back; every entry before it
+            // was applied and is rolled back in reverse order.
+            for (var index = results.Count - 2; index >= 0; index--)
             {
-                var role = applied[index];
+                var role = results[index].Role;
                 var rollback = setDefault(previous[role], role);
-                var resultIndex = results.FindIndex(item => item.Role == role);
-                results[resultIndex] = results[resultIndex] with { RollbackHResult = rollback };
+                results[index] = results[index] with { RollbackHResult = rollback };
             }
         }
 
@@ -549,7 +532,7 @@ public static partial class CoreAudio
                 return result < 0 ? result : Failure;
             }
 
-            result = Activate(device, AudioEndpointVolumeId, out volume);
+            result = Activate(device, out volume);
             if (result < 0 || volume is null)
             {
                 return result < 0 ? result : Failure;
@@ -648,7 +631,7 @@ public static partial class CoreAudio
             return result;
         }
 
-        result = Activate(device, AudioEndpointVolumeId, out volume);
+        result = Activate(device, out volume);
         return result >= 0 && volume is null ? Failure : result;
     }
 

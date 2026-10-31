@@ -182,20 +182,16 @@ public static partial class PowerRequestList
     private static PowerRequestEntry? DecodeOne(
         ReadOnlySpan<byte> buffer, int request, int modes, int diagOffset)
     {
-        // Validate the whole counter array is present, even for modes we ignore.
+        // Validate the whole counter array is present, even for modes we ignore. Every layout has
+        // at least three counters, so a passing check also puts display, system and away mode in bounds.
         if (!TryUInt32(buffer, request + 4 + (modes - 1) * 4, out _))
         {
             return null;
         }
 
-        Span<uint> counts = stackalloc uint[6];
-        for (var mode = 0; mode < Math.Min(modes, 6); mode++)
-        {
-            if (!TryUInt32(buffer, request + 4 + mode * 4, out counts[mode]))
-            {
-                return null;
-            }
-        }
+        var display = BinaryPrimitives.ReadUInt32LittleEndian(buffer[(request + 4)..]);
+        var system = BinaryPrimitives.ReadUInt32LittleEndian(buffer[(request + 8)..]);
+        var away = BinaryPrimitives.ReadUInt32LittleEndian(buffer[(request + 12)..]);
 
         var db = request + diagOffset;
 
@@ -235,9 +231,9 @@ public static partial class PowerRequestList
         }
 
         return new PowerRequestEntry(
-            counts[0] > 0,
-            counts[1] > 0,
-            counts[2] > 0,
+            display > 0,
+            system > 0,
+            away > 0,
             callerType,
             name,
             pid,

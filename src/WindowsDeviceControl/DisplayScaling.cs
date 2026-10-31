@@ -24,10 +24,7 @@ public static partial class DisplayScaling
     /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
     public static bool TryRead(DisplayTargetIdentity target, out int percent)
     {
-        ArgumentNullException.ThrowIfNull(target);
-        percent = 0;
-        return TryFindSource(target, out var adapter, out var source)
-               && TryRead(adapter, source, out percent, out _, out _);
+        return TryReadRange(target, out percent, out _, out _);
     }
 
     /// <summary>Reads the scaling percentages a display supports.</summary>
@@ -41,8 +38,9 @@ public static partial class DisplayScaling
     {
         ArgumentNullException.ThrowIfNull(target);
         current = recommended = maximum = 0;
-        return TryFindSource(target, out var adapter, out var source)
-               && TryRead(adapter, source, out current, out recommended, out maximum);
+        // Scaling is a property of the source, so an inactive monitor has none.
+        return DisplayTopology.FindActive(target, out var path) == ActiveLookup.Found
+               && TryRead(path.SourceInfo.AdapterId, path.SourceInfo.Id, out current, out recommended, out maximum);
     }
 
     /// <summary>Sets a display's scaling percentage with one write.</summary>
@@ -80,37 +78,35 @@ public static partial class DisplayScaling
     /// <param name="source">Source ID shared by every clone on this route.</param>
     /// <param name="percent">Requested scaling percentage, clamped to the reported maximum and snapped to a known step.</param>
     /// <returns>The selected percentage and preflight/write status; Written is acceptance without readback.</returns>
+    /// <remarks>The caller already holds <see cref="DisplayTopology.WriteGate" /> (the public overload or DisplayLayouts.Apply).</remarks>
     internal static DisplayScaleResult Set(DisplayTopology.Luid adapter, uint source, int percent)
     {
-        lock (DisplayTopology.WriteGate)
+        if (!TryRead(adapter, source, out var current, out var recommended, out var maximum))
         {
-            if (!TryRead(adapter, source, out var current, out var recommended, out var maximum))
-            {
-                return new DisplayScaleResult(DisplaySetOutcome.Unreadable, 0, Snap(percent));
-            }
-
-            var wanted = Snap(Math.Min(percent, maximum));
-            if (wanted == current)
-            {
-                return new DisplayScaleResult(DisplaySetOutcome.AlreadySet, 0, wanted);
-            }
-
-            var index = Array.IndexOf(Steps, wanted);
-            var recommendedIndex = Array.IndexOf(Steps, recommended);
-            if (index < 0 || recommendedIndex < 0)
-            {
-                return new DisplayScaleResult(DisplaySetOutcome.Unsupported, 0, wanted);
-            }
-
-            DpiScaleSet packet = new()
-            {
-                Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
-                ScaleRelative = index - recommendedIndex
-            };
-            var status = DisplayConfigSetDeviceInfo(ref packet);
-            return new DisplayScaleResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused,
-                status, wanted);
+            return new DisplayScaleResult(DisplaySetOutcome.Unreadable, 0, Snap(percent));
         }
+
+        var wanted = Snap(Math.Min(percent, maximum));
+        if (wanted == current)
+        {
+            return new DisplayScaleResult(DisplaySetOutcome.AlreadySet, 0, wanted);
+        }
+
+        var index = Array.IndexOf(Steps, wanted);
+        var recommendedIndex = Array.IndexOf(Steps, recommended);
+        if (index < 0 || recommendedIndex < 0)
+        {
+            return new DisplayScaleResult(DisplaySetOutcome.Unsupported, 0, wanted);
+        }
+
+        DpiScaleSet packet = new()
+        {
+            Header = DisplayTopology.Header<DpiScaleSet>(SetDpiScale, adapter, source),
+            ScaleRelative = index - recommendedIndex
+        };
+        var status = DisplayConfigSetDeviceInfo(ref packet);
+        return new DisplayScaleResult(status == 0 ? DisplaySetOutcome.Written : DisplaySetOutcome.Refused,
+            status, wanted);
     }
 
     /// <summary>Snaps a percentage to the nearest scaling step this library knows, without querying a display.</summary>
@@ -154,18 +150,6 @@ public static partial class DisplayScaling
         recommended = Steps[recommendedIndex];
         maximum = Steps[recommendedIndex + packet.MaxScaleRelative];
         return true;
-    }
-
-    /// <summary>
-    ///     Finds the CCD source currently driving one monitor, taken from the same path that
-    ///     matched it. Scaling is a property of the source, so an inactive monitor has none.
-    /// </summary>
-    private static bool TryFindSource(DisplayTargetIdentity target, out DisplayTopology.Luid adapter, out uint source)
-    {
-        var found = DisplayTopology.FindActive(target, out var path) == ActiveLookup.Found;
-        adapter = path.SourceInfo.AdapterId;
-        source = path.SourceInfo.Id;
-        return found;
     }
 
     [LibraryImport("user32.dll")]

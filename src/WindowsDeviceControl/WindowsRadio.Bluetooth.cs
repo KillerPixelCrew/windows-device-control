@@ -232,13 +232,12 @@ public static partial class WindowsRadio
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);
         ArgumentNullException.ThrowIfNull(onRequest);
-        return PairBluetoothCoreAsync(deviceId, onRequest, PairingTimeout, cancellationToken);
+        return PairBluetoothCoreAsync(deviceId, onRequest, cancellationToken);
     }
 
     private static async Task<PairingResult> PairBluetoothCoreAsync(
         string deviceId,
         Action<PairingRequest> onRequest,
-        TimeSpan deadline,
         CancellationToken cancellationToken)
     {
         var attempt = Interlocked.Increment(ref _nextPairingAttempt);
@@ -263,7 +262,7 @@ public static partial class WindowsRadio
                 // exception would end the process.
             }
         });
-        bound.CancelAfter(deadline);
+        bound.CancelAfter(PairingTimeout);
         DeviceInformationCustomPairing? custom = null;
         TypedEventHandler<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>? requested = null;
         var result = default(PairingResult);
@@ -362,7 +361,7 @@ public static partial class WindowsRadio
         {
             var deferral = args.GetDeferral();
             var kind = MapPairingKind(args.PairingKind);
-            pending = new PendingPairing(attempt, kind, pin => Accept(args, pin), deferral.Complete);
+            pending = new PendingPairing(attempt, kind, args, deferral);
             if (!ActivePairingAttempts.ContainsKey(attempt))
             {
                 deferral.Complete();
@@ -399,18 +398,6 @@ public static partial class WindowsRadio
             }
 
             return ex;
-        }
-    }
-
-    private static void Accept(DevicePairingRequestedEventArgs args, string? pin)
-    {
-        if (pin is null)
-        {
-            args.Accept();
-        }
-        else
-        {
-            args.Accept(pin);
         }
     }
 
@@ -555,17 +542,15 @@ public static partial class WindowsRadio
 
     private static BluetoothDevice ReadBluetoothDevice(DeviceInformation info)
     {
-        var connected = info.Properties.TryGetValue(AepConnected, out var connectedValue)
-                        && connectedValue is bool isConnected
-                        && isConnected;
-        var container = info.Properties.TryGetValue(AepContainer, out var containerValue)
-            ? NormalizeContainer(containerValue)
-            : string.Empty;
+        var properties = info.Properties;
+        var pairing = info.Pairing;
+        var connected = properties.GetValueOrDefault(AepConnected) is true;
+        var container = NormalizeContainer(properties.GetValueOrDefault(AepContainer));
         return new BluetoothDevice(
             info.Id ?? string.Empty,
             info.Name ?? string.Empty,
-            info.Pairing.IsPaired,
-            info.Pairing.CanPair,
+            pairing.IsPaired,
+            pairing.CanPair,
             connected,
             container);
     }
@@ -792,17 +777,34 @@ public static partial class WindowsRadio
     /// <summary>One unanswered pairing question and the two ways it can be answered.</summary>
     /// <param name="attempt">The attempt that raised it.</param>
     /// <param name="kind">The ceremony, which decides whether an accept carries the PIN.</param>
-    /// <param name="accept">Accepts the question, with the PIN or, for null, without one.</param>
-    /// <param name="complete">Completes the question's deferral.</param>
+    /// <param name="args">The native question, accepted with or without the PIN.</param>
+    /// <param name="deferral">The question's deferral, which holds the ceremony open until it is answered.</param>
     private sealed class PendingPairing(
         long attempt,
         PairingKind kind,
-        Action<string?> accept,
-        Action complete)
+        DevicePairingRequestedEventArgs args,
+        Deferral deferral)
     {
         internal long Attempt { get; } = attempt;
         internal PairingKind Kind { get; } = kind;
-        internal Action<string?> Accept { get; } = accept;
-        internal Action Complete { get; } = complete;
+
+        /// <summary>Accepts the question, with the PIN or, for null, without one.</summary>
+        internal void Accept(string? pin)
+        {
+            if (pin is null)
+            {
+                args.Accept();
+            }
+            else
+            {
+                args.Accept(pin);
+            }
+        }
+
+        /// <summary>Completes the question's deferral.</summary>
+        internal void Complete()
+        {
+            deferral.Complete();
+        }
     }
 }

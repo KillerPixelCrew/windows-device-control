@@ -217,11 +217,6 @@ public sealed record DisplayLayoutResult(
 /// </remarks>
 public static partial class DisplayLayouts
 {
-    internal const uint PathActiveFlag = 0x1;
-    internal const uint InvalidModeIndex = 0xffffffff;
-    internal const uint SourceModeType = 1;
-    internal const uint Pixel32Bpp = 4;
-
     /// <summary>Observes every monitor the adapter can see, without changing anything.</summary>
     /// <returns>Readable monitor identities and their topology fingerprint; unreadable identities are omitted.</returns>
     /// <exception cref="Win32Exception">A CCD query failed.</exception>
@@ -254,7 +249,7 @@ public static partial class DisplayLayouts
                 continue;
             }
 
-            var active = (path.Flags & PathActiveFlag) != 0;
+            var active = (path.Flags & DisplayTopology.PathActiveFlag) != 0;
             AddObservation(targets, new DisplayTargetObservation(identity, path.TargetInfo.TargetAvailable != 0, active,
                 active ? ReadOutput(path, modes, identity) : null));
         }
@@ -385,7 +380,7 @@ public static partial class DisplayLayouts
 
         if (apply && Matches(arrangement, layout))
         {
-            var active = paths.Where(path => (path.Flags & PathActiveFlag) != 0).ToArray();
+            var active = paths.Where(path => (path.Flags & DisplayTopology.PathActiveFlag) != 0).ToArray();
             return new DisplayLayoutResult(DisplayLayoutOutcome.AlreadyActive, [], 0, false, 0,
                 ApplyExtras(layout.Outputs.Select(output => (output, Driving(active, read, output.Target)))));
         }
@@ -468,27 +463,9 @@ public static partial class DisplayLayouts
     private static DisplayTopology.PathInfo? Driving(DisplayTopology.PathInfo[] active,
         Dictionary<DisplayTopology.RouteKey, DisplayTargetIdentity> read, DisplayTargetIdentity target)
     {
-        DisplayTopology.PathInfo? found = null;
-        foreach (var path in active)
-        {
-            try
-            {
-                if (target.Matches(DisplayTopology.ReadTarget(path, read)))
-                {
-                    if (found is not null)
-                    {
-                        return null;
-                    }
-
-                    found = path;
-                }
-            }
-            catch (Win32Exception)
-            {
-            }
-        }
-
-        return found;
+        var lookup = DisplayTopology.Match(active, target, path => DisplayTopology.ReadTarget(path, read),
+            out var found, out _);
+        return lookup == ActiveLookup.Found ? found : null;
     }
 
     /// <summary>
@@ -619,7 +596,7 @@ public static partial class DisplayLayouts
         }
 
         var mode = modes[path.SourceInfo.ModeInfoIdx];
-        if (mode.InfoType != SourceModeType)
+        if (mode.InfoType != DisplayTopology.SourceModeType)
         {
             return null;
         }

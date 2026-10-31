@@ -23,7 +23,7 @@ public static partial class DisplayTopology
     /// <exception cref="Win32Exception">The CCD query itself failed.</exception>
     public static DisplayTopologySnapshot CaptureActive()
     {
-        var native = Query(OnlyActivePaths, "Active display topology query failed.");
+        var native = Query(OnlyActivePaths);
         List<ActiveDisplayPath> result = new(native.Paths.Length);
         foreach (var path in native.Paths)
         {
@@ -65,21 +65,42 @@ public static partial class DisplayTopology
         PathInfo[] paths;
         try
         {
-            paths = Query(OnlyActivePaths, "Active display topology query failed.").Paths;
+            paths = Query(OnlyActivePaths).Paths;
         }
         catch (Win32Exception)
         {
             return ActiveLookup.Unreadable;
         }
 
+        return Match(paths, target, ReadTarget, out path, out _);
+    }
+
+    /// <summary>
+    ///     Finds the one path among <paramref name="paths" /> whose target is this monitor. A path whose
+    ///     identity cannot be read is skipped; a second match makes the result ambiguous and ends the search.
+    /// </summary>
+    /// <param name="paths">Native paths from one topology query.</param>
+    /// <param name="target">Persisted monitor identity to match.</param>
+    /// <param name="read">Reads a path's monitor identity, throwing <see cref="Win32Exception" /> when Windows refuses.</param>
+    /// <param name="path">The matched native path only when Found is returned; default otherwise.</param>
+    /// <param name="identity">The matched path's identity only when Found is returned; null otherwise.</param>
+    /// <returns>
+    ///     Found for exactly one match; Unreadable for a second match, or for no match while an unreadable path
+    ///     sits on the identity's last known route; NotActive otherwise.
+    /// </returns>
+    internal static ActiveLookup Match(PathInfo[] paths, DisplayTargetIdentity target,
+        Func<PathInfo, DisplayTargetIdentity> read, out PathInfo path, out DisplayTargetIdentity? identity)
+    {
+        path = default;
+        identity = null;
         var unreadable = false;
         var found = false;
         foreach (var candidate in paths)
         {
-            DisplayTargetIdentity identity;
+            DisplayTargetIdentity candidateIdentity;
             try
             {
-                identity = ReadTarget(candidate);
+                candidateIdentity = read(candidate);
             }
             catch (Win32Exception)
             {
@@ -89,15 +110,17 @@ public static partial class DisplayTopology
                 continue;
             }
 
-            if (target.Matches(identity))
+            if (target.Matches(candidateIdentity))
             {
                 if (found)
                 {
                     path = default;
+                    identity = null;
                     return ActiveLookup.Unreadable;
                 }
 
                 path = candidate;
+                identity = candidateIdentity;
                 found = true;
             }
         }
@@ -107,10 +130,9 @@ public static partial class DisplayTopology
 
     /// <summary>Captures CCD arrays, retrying sizing races up to four times.</summary>
     /// <param name="flags">QueryDisplayConfig path-selection flags.</param>
-    /// <param name="failure">Message attached to a native query failure.</param>
     /// <returns>Owned managed path and mode arrays from one successful query.</returns>
     /// <exception cref="Win32Exception">Sizing/query failed or topology kept changing through all attempts.</exception>
-    internal static NativeSnapshot Query(uint flags, string failure = "Display topology query failed.")
+    internal static NativeSnapshot Query(uint flags)
     {
         for (var attempt = 0; attempt < 4; attempt++)
         {
@@ -130,7 +152,8 @@ public static partial class DisplayTopology
 
             if (status != 0)
             {
-                throw new Win32Exception(status, failure);
+                throw new Win32Exception(status,
+                    flags == OnlyActivePaths ? "Active display topology query failed." : "Display topology query failed.");
             }
 
             if (pathCount != paths.Length)
@@ -166,11 +189,12 @@ public static partial class DisplayTopology
 
         var (manufacturerId, productCodeId) =
             DecodeEdidIds(target.Flags, target.EdidManufacturerId, target.EdidProductCodeId);
-        return new DisplayTargetIdentity(NativeText.ReadFixed(target.MonitorDevicePath, 128),
+        var devicePath = NativeText.ReadFixed(target.MonitorDevicePath, 128);
+        return new DisplayTargetIdentity(devicePath,
             manufacturerId, productCodeId, NativeText.ReadFixed(target.MonitorFriendlyDeviceName, 64),
             path.TargetInfo.AdapterId.LowPart, path.TargetInfo.AdapterId.HighPart, path.TargetInfo.Id)
         {
-            EdidIdentity = DisplayEdid.ReadIdentity(NativeText.ReadFixed(target.MonitorDevicePath, 128))
+            EdidIdentity = DisplayEdid.ReadIdentity(devicePath)
         };
     }
 
@@ -202,7 +226,7 @@ public static partial class DisplayTopology
     /// <exception cref="Win32Exception">Windows refused a target-identity read.</exception>
     internal static DisplayTargetIdentity ReadTarget(PathInfo path, Dictionary<RouteKey, DisplayTargetIdentity> read)
     {
-        RouteKey key = new(path.TargetInfo.AdapterId, path.TargetInfo.Id);
+        var key = path.TargetRoute;
         if (!read.TryGetValue(key, out var identity))
         {
             identity = ReadTarget(path);
@@ -248,7 +272,7 @@ public static partial class DisplayTopology
     }
 }
 
-/// <summary>Where <see cref="DisplayTopology.FindActive" /> found a monitor.</summary>
+/// <summary>Where <see cref="DisplayTopology.FindActive" /> or <see cref="DisplayTopology.Match" /> found a monitor.</summary>
 internal enum ActiveLookup
 {
     Found,

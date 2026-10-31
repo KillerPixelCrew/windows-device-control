@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using static WindowsDeviceControl.Win32Error;
@@ -210,6 +211,24 @@ public static partial class ModernStandby
 
     private static IReadOnlyList<WakeDevice> EnumerateWakeDevicesCore()
     {
+        var (programmable, armed) = ReadWakeSets();
+        SortedSet<string> names = new(programmable, StringComparer.Ordinal);
+        names.UnionWith(armed);
+
+        return [.. names.Select(name => new WakeDevice(
+            name,
+            armed.Contains(name),
+            programmable.Contains(name)
+                ? WakeDeviceControl.Programmable
+                : WakeDeviceControl.Fixed))];
+    }
+
+    /// <summary>Reads the present programmable devices, then the present armed ones, in one device-list session.</summary>
+    /// <remarks>Call only while holding <see cref="WakeDeviceGate" />.</remarks>
+    /// <returns>Both name sets, compared ordinally.</returns>
+    /// <exception cref="Win32Exception">The device list could not be opened or read completely.</exception>
+    private static (HashSet<string> Programmable, HashSet<string> Armed) ReadWakeSets()
+    {
         if (!DevicePowerOpen(0))
         {
             throw Failure((uint)Marshal.GetLastWin32Error(), "DevicePowerOpen");
@@ -218,34 +237,9 @@ public static partial class ModernStandby
         try
         {
             var buffer = new byte[InitialNameBytes];
-            HashSet<string> programmable = new(
-                Enumerate(FilterDevicesPresent | FilterWakeProgrammable, ref buffer), StringComparer.Ordinal);
-            HashSet<string> armed = new(
-                Enumerate(FilterDevicesPresent | FilterWakeEnabled, ref buffer), StringComparer.Ordinal);
-
-            List<string> names = [.. programmable];
-            foreach (var name in armed)
-            {
-                if (!programmable.Contains(name))
-                {
-                    names.Add(name);
-                }
-            }
-
-            names.Sort(StringComparer.Ordinal);
-
-            List<WakeDevice> devices = [];
-            foreach (var name in names)
-            {
-                devices.Add(new WakeDevice(
-                    name,
-                    armed.Contains(name),
-                    programmable.Contains(name)
-                        ? WakeDeviceControl.Programmable
-                        : WakeDeviceControl.Fixed));
-            }
-
-            return devices;
+            var programmable = Enumerate(FilterDevicesPresent | FilterWakeProgrammable, ref buffer);
+            var armed = Enumerate(FilterDevicesPresent | FilterWakeEnabled, ref buffer);
+            return (programmable, armed);
         }
         finally
         {
@@ -275,28 +269,18 @@ public static partial class ModernStandby
         // Excludes competing library writes; external device changes can still race this check.
         lock (WakeDeviceGate)
         {
-            foreach (var device in EnumerateWakeDevicesCore())
+            var (programmable, armedNow) = ReadWakeSets();
+            if (!programmable.Contains(name))
             {
-                if (!string.Equals(device.Name, name, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                if (device.Control != WakeDeviceControl.Programmable)
-                {
-                    return false;
-                }
-
-                if (device.Armed == armed)
-                {
-                    return true;
-                }
-
-                SetArmedCore(name, armed);
-                return true;
+                return false;
             }
 
-            return false;
+            if (armedNow.Contains(name) != armed)
+            {
+                SetArmedCore(name, armed);
+            }
+
+            return true;
         }
     }
 
@@ -418,21 +402,17 @@ public static partial class ModernStandby
     /// <exception cref="Win32Exception">The name is blank or has no terminator within the buffer.</exception>
     internal static string DecodeDeviceName(byte[] buffer)
     {
-        for (var end = 0; end + 1 < buffer.Length; end += 2)
+        var end = MemoryMarshal.Cast<byte, char>(buffer.AsSpan()).IndexOf('\0');
+        if (end < 0)
         {
-            if (buffer[end] != 0 || buffer[end + 1] != 0)
-            {
-                continue;
-            }
-
-            var name = Encoding.Unicode.GetString(buffer, 0, end);
-            // Names are write identities; never accept an empty or unterminated descriptor.
-            return string.IsNullOrWhiteSpace(name)
-                ? throw Failure(ErrorInvalidData, "DevicePowerEnumDevices")
-                : name;
+            throw Failure(ErrorInvalidData, "DevicePowerEnumDevices");
         }
 
-        throw Failure(ErrorInvalidData, "DevicePowerEnumDevices");
+        var name = Encoding.Unicode.GetString(buffer, 0, end * 2);
+        // Names are write identities; never accept an empty or unterminated descriptor.
+        return string.IsNullOrWhiteSpace(name)
+            ? throw Failure(ErrorInvalidData, "DevicePowerEnumDevices")
+            : name;
     }
 
     /// <summary>One interrupt-time value, in 100 ns units, read through the power information call.</summary>
@@ -466,9 +446,9 @@ public static partial class ModernStandby
             "DevicePowerSetDeviceState");
     }
 
-    private static List<string> Enumerate(uint interpretation, ref byte[] buffer)
+    private static HashSet<string> Enumerate(uint interpretation, ref byte[] buffer)
     {
-        List<string> names = [];
+        HashSet<string> names = new(StringComparer.Ordinal);
         uint index = 0;
         while (true)
         {

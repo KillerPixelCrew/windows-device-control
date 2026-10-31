@@ -69,7 +69,7 @@ public static partial class DisplayModes
     {
         ArgumentNullException.ThrowIfNull(target);
         var path = Find(target);
-        if (path is null || !ReadNative(path.SourceName, uint.MaxValue, out var current))
+        if (path is null || !ReadNative(path.SourceName, CurrentSettings, out var current))
         {
             return null;
         }
@@ -131,7 +131,7 @@ public static partial class DisplayModes
                 return new DisplayModeResult(DisplayModeOutcome.Stale, 0, false, false);
             }
 
-            if (!ReadNative(path!.SourceName, uint.MaxValue, out var original))
+            if (!ReadNative(path!.SourceName, CurrentSettings, out var original))
             {
                 return new DisplayModeResult(DisplayModeOutcome.Unreadable, 0, false, false);
             }
@@ -182,7 +182,7 @@ public static partial class DisplayModes
     /// <returns>The mode, or null when the display cannot be read.</returns>
     public static PrimaryDisplayMode? ReadPrimaryMode()
     {
-        return ReadNative(null, uint.MaxValue, out var current) ? ProjectPrimary(current) : null;
+        return ReadNative(null, CurrentSettings, out var current) ? ProjectPrimary(current) : null;
     }
 
     /// <summary>Lists every mode the driver enumerates for the primary display.</summary>
@@ -291,46 +291,16 @@ public static partial class DisplayModes
         DisplayTopology.PathInfo[] paths;
         try
         {
-            paths = DisplayTopology.Query(DisplayTopology.OnlyActivePaths, "Active display topology query failed.")
-                .Paths;
+            paths = DisplayTopology.Query(DisplayTopology.OnlyActivePaths).Paths;
         }
         catch (Win32Exception)
         {
             return null;
         }
 
-        DisplayTopology.PathInfo? match = null;
-        DisplayTargetIdentity? identity = null;
-        foreach (var path in paths)
-        {
-            DisplayTargetIdentity candidate;
-            try
-            {
-                candidate = DisplayTopology.ReadTarget(path);
-            }
-            catch (Win32Exception)
-            {
-                continue;
-            }
-
-            if (!target.Matches(candidate))
-            {
-                continue;
-            }
-
-            if (match is not null)
-            {
-                return null;
-            }
-
-            match = path;
-            identity = candidate;
-        }
-
-        if (match is not { } found || identity is null || paths.Count(path =>
-                path.SourceInfo.AdapterId.LowPart == found.SourceInfo.AdapterId.LowPart
-                && path.SourceInfo.AdapterId.HighPart == found.SourceInfo.AdapterId.HighPart
-                && path.SourceInfo.Id == found.SourceInfo.Id) != 1)
+        var lookup = DisplayTopology.Match(paths, target, DisplayTopology.ReadTarget, out var found, out var identity);
+        if (lookup != ActiveLookup.Found || identity is null
+                                         || paths.Count(path => path.SourceRoute == found.SourceRoute) != 1)
         {
             return null;
         }

@@ -71,18 +71,20 @@ public static partial class CoreAudio
     /// </summary>
     /// <param name="result">HRESULT returned by the shared enumerator.</param>
     /// <returns>True only for a recognized service-disconnection HRESULT.</returns>
-    internal static bool IsEnumeratorGone(int result)
+    private static bool IsEnumeratorGone(int result)
     {
         return result is RpcDisconnected or RpcServerUnavailable or AudioServiceNotRunning;
     }
 
     /// <summary>
-    ///     Activates one interface on a device. An activation that succeeds without exposing
+    ///     Activates one interface on a device, with the interface ID taken from the [Guid] attribute
+    ///     on <typeparamref name="T" />. An activation that succeeds without exposing
     ///     <typeparamref name="T" /> is released and leaves the instance null.
     /// </summary>
-    private static int Activate<T>(IMMDevice device, Guid interfaceId, out T? instance)
+    private static int Activate<T>(IMMDevice device, out T? instance)
         where T : class
     {
+        var interfaceId = typeof(T).GUID;
         var result = device.Activate(ref interfaceId, ClsctxAll, 0, out var activated);
         instance = result >= 0 ? activated as T : null;
         if (instance is null)
@@ -182,13 +184,7 @@ public static partial class CoreAudio
     [StructLayout(LayoutKind.Sequential, Pack = 2)]
     internal struct WaveFormatExtensible
     {
-        internal ushort FormatTag;
-        internal ushort Channels;
-        internal uint SamplesPerSecond;
-        internal uint AverageBytesPerSecond;
-        internal ushort BlockAlign;
-        internal ushort BitsPerSample;
-        internal ushort ExtraSize;
+        internal WaveFormat Format;
         internal ushort ValidBitsPerSample;
         internal uint ChannelMask;
         internal Guid SubFormat;

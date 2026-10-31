@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Xunit;
+using static WindowsDeviceControl.Tests.TestFixtures;
 
 namespace WindowsDeviceControl.Tests;
 
@@ -54,30 +55,9 @@ public sealed class DisplayTopologyTests
     [Fact]
     public void ExistingPathIdentitySurvivesEdidPopulation()
     {
-        DisplayTargetIdentity saved = new(
-            "monitor-path",
-            null,
-            null,
-            "Monitor",
-            1,
-            0,
-            2);
-        DisplayTargetIdentity current = new(
-            "monitor-path",
-            0x4321,
-            0x7654,
-            "Monitor",
-            1,
-            0,
-            2);
-        DisplayTargetIdentity differentPath = new(
-            "other-monitor-path",
-            0x4321,
-            0x7654,
-            "Monitor",
-            1,
-            0,
-            2);
+        var saved = Target("monitor-path", id: 2);
+        var current = saved with { EdidManufacturerId = 0x4321, EdidProductCodeId = 0x7654 };
+        var differentPath = current with { DevicePath = "other-monitor-path" };
 
         Assert.True(saved.Matches(current));
         Assert.False(current.Matches(differentPath));
