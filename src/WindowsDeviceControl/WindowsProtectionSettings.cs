@@ -42,6 +42,8 @@ public static class WindowsProtectionSettings
 {
     private const string MemoryKey = @"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity";
     private const string BlocklistKey = @"SYSTEM\CurrentControlSet\Control\CI\Config";
+    private const string MemoryPolicyKey = @"SOFTWARE\Policies\Microsoft\Windows\DeviceGuard";
+    private const string MemoryPolicyValue = "HypervisorEnforcedCodeIntegrity";
 
     /// <summary>Reads configured protection overrides; this does not claim they took effect in the current boot.</summary>
     /// <param name="controlFlowGuard">
@@ -80,8 +82,25 @@ public static class WindowsProtectionSettings
     }
 
     /// <summary>Sets or removes the HVCI configured override. A restart is required; firmware locks are not bypassed.</summary>
+    /// <remarks>
+    ///     Windows 11 re-enabled HVCI on its own after only the scenario value was cleared (an Atlas,
+    ///     2026-10-31, <c>WasEnabledBy</c> 2). Off therefore also sets the Device Guard policy value Windows
+    ///     respects; any other value removes a disabling policy value again.
+    /// </remarks>
     /// <param name="enabled">True/false for an explicit override, null to restore absence.</param>
-    public static void SetMemoryIntegrity(bool? enabled) => WriteDword(MemoryKey, "Enabled", enabled);
+    public static void SetMemoryIntegrity(bool? enabled)
+    {
+        WriteDword(MemoryKey, "Enabled", enabled);
+        using var policy = Registry.LocalMachine.CreateSubKey(MemoryPolicyKey, writable: true);
+        if (enabled == false)
+        {
+            policy.SetValue(MemoryPolicyValue, 0, RegistryValueKind.DWord);
+        }
+        else if (policy.GetValue(MemoryPolicyValue) is 0)
+        {
+            policy.DeleteValue(MemoryPolicyValue, throwOnMissingValue: false);
+        }
+    }
 
     /// <summary>Sets or removes the vulnerable-driver-blocklist override; this does not bypass certificate validation.</summary>
     /// <param name="enabled">True/false for an explicit override, null to restore absence.</param>
