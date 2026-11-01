@@ -60,6 +60,9 @@ including callback threading, completion timing, consent, error meanings, and ow
   interface. Persist it with the target and prefer it over volatile device paths when both
   observations have it. Manufacturer/product alone cannot distinguish identical models; ambiguous
   routes are refused.
+  `DisplayEdid.Override.cs` reads the reported EDID and reads, writes or removes the
+  `EDID_OVERRIDE` key of one exact interface. The caller decides whether an override may be
+  replaced; the library never writes one on its own.
 - `DisplayScaling.cs` and `DisplayColor.cs`: per-display scaling percentage and advanced colour,
   addressed by monitor identity. Support and current value are read before every write as its input,
   nothing is read after it, and a refusal is reported with its native status rather than retried.

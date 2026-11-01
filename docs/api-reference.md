@@ -79,6 +79,7 @@ failure code; false is unavailable/failed, not evidence that no physical panel e
 | [DisplayLayoutPlanner.cs](../src/WindowsDeviceControl/DisplayLayoutPlanner.cs)                                                                             | No separate public operations; rules surfaced through `DisplayLayouts.Describe`                                                                      | Pure arrangement constraints and source/path planning over supplied native arrays                                                               |
 | [DisplayModes.cs](../src/WindowsDeviceControl/DisplayModes.cs)                                                                                             | `DisplayModes.Read`, `Apply`, `ReadPrimaryMode`, `EnumeratePrimaryModes`, `TestPrimaryMode`, `ApplyPrimaryResolution`                                | Driver mode enumeration/tests, route checks, transient or saved writes and route-scoped rollback for snapshot apply                             |
 | [DisplayEdid.cs](../src/WindowsDeviceControl/DisplayEdid.cs)                                                                                               | `DisplayEdid.ReadModes`, `ReadIdentity`, `ParseIdentity`; `DisplayEdidStatus`, `DisplayEdidModes`                                                    | Exact-interface EDID timings and checksum-validated raw or cached serial identity in `DisplayEdid.Identity.cs`                                  |
+| [DisplayEdid.Override.cs](../src/WindowsDeviceControl/DisplayEdid.Override.cs) | `DisplayEdid.ReadReported`, `ReadOverride`, `WriteOverride`, `RemoveOverride`; `DisplayEdidOverride` | The reported `Device Parameters\EDID` bytes and the `EDID_OVERRIDE` key of one monitor interface, one 128-byte block per value |
 | [DisplayScaling.cs](../src/WindowsDeviceControl/DisplayScaling.cs)                                                                                         | `DisplayScaling.TryRead`, `TryReadRange`, `Set`, `Snap`                                                                                              | Active source resolution and relative DPI step conversion, clamping and one write                                                               |
 | [DisplayColor.cs](../src/WindowsDeviceControl/DisplayColor.cs)                                                                                             | `DisplayColor.TryReadHdr`, `SetHdr`                                                                                                                  | Advanced-colour support/state reads and one target write                                                                                        |
 
@@ -94,6 +95,7 @@ Display contract groups:
   `DisplayModeResult` (`Applied`).
 - Per-display settings: `DisplaySetOutcome`, `DisplaySetResult`, `DisplayScaleResult` (`Succeeded`).
 - EDID candidates: `DisplayEdidStatus`, `DisplayEdidModes`.
+- EDID overrides: `DisplayEdidOverride`.
 
 `Validate` returning Applied means validation passed without writing. `Apply` returning
 AlreadyActive means topology was unchanged, but requested extras were still applied.
@@ -172,6 +174,7 @@ test-bearing gates.
 | [DisplayTopologyTests.cs](../tests/WindowsDeviceControl.Tests/DisplayTopologyTests.cs)           | Monitor matching, EDID validity flags and native topology contracts                                                           |
 | [DisplayLayoutTests.cs](../tests/WindowsDeviceControl.Tests/DisplayLayoutTests.cs)               | Pure arrangement constraints, path planning, matching and observation fingerprints                                            |
 | [DisplayEdidTests.cs](../tests/WindowsDeviceControl.Tests/DisplayEdidTests.cs)                   | EDID parser boundaries, checksums and recognized timing formats                                                               |
+| [DisplayEdidOverrideTests.cs](../tests/WindowsDeviceControl.Tests/DisplayEdidOverrideTests.cs) | Override block joining, shapes that are not an EDID and monitor interface key paths |
 | [ClawAdvertisedTimingTests.cs](../tests/WindowsDeviceControl.Tests/ClawAdvertisedTimingTests.cs) | Captured monitor descriptor fixture and advertised timing expectations                                                        |
 | [WindowsPowerTests.cs](../tests/WindowsDeviceControl.Tests/WindowsPowerTests.cs)                 | Localized scheme-name decoding and power-action dispatch/cancellation seams                                                   |
 | [HybridCoreTests.cs](../tests/WindowsDeviceControl.Tests/HybridCoreTests.cs)                     | Synthetic CPU set records, efficiency grouping, processor groups and malformed entry bounds                                   |

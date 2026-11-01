@@ -121,7 +121,7 @@ DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, Alr
 | `DisplayTopology`               | Active CCD paths and rematchable monitor identities (`DisplayTargetIdentity`, `ActiveDisplayPath`, `DisplayTopologySnapshot`)                                                                                             |
 | `DisplayLayouts`                | Complete desktop arrangements by value: which monitors are on, which is primary, position, mode, scaling and HDR                                                                                                          |
 | `DisplayModes`                  | Driver-validated modes of one active display, applied once without persisting, plus the primary display's transient mode                                                                                                  |
-| `DisplayEdid`                   | Progressive timings read from one monitor's EDID, even while its source is disabled                                                                                                                                       |
+| `DisplayEdid`                   | Progressive timings read from one monitor's EDID, even while its source is disabled; the reported EDID and its `EDID_OVERRIDE` key                                                                                                                                       |
 | `DisplayScaling`                | One display's Windows scaling percentage, read and written through the relative-step packets                                                                                                                              |
 | `DisplayColor`                  | One display's advanced colour (HDR) state, with support read before every write                                                                                                                                           |
 | `WindowsPower`                  | Schemes, AC and DC values, effective mode overlays, status, suspend and shutdown, notifications, hybrid core placement                                                                                                    |
@@ -239,6 +239,12 @@ connected keeps it available even while no route is active. For an editor's inve
 `DisplayLayouts.ObserveConnected()` supplements CCD with enabled Windows monitor interfaces,
 including connected displays disabled in the current desktop. It does no display write and bounds
 monitor lookup to five seconds; use `Observe()` for repeated topology polling.
+`DisplayEdid.ReadReported(devicePath)` returns the EDID Windows reports for a monitor interface,
+which is the overriding one while an override is loaded. `ReadOverride`, `WriteOverride` and
+`RemoveOverride` handle the `Device Parameters\EDID_OVERRIDE` key Windows reads at the next start:
+one binary value per 128-byte block, named `0` to `n-1`. A key holding anything else is reported as
+present with no EDID, so a caller can tell another tool's override from its own. Writing and
+removing need administrator rights, and nothing changes on screen before the next start.
 `DisplayEdid.ParseIdentity(edid)` extracts the same checksum-validated serial identity from raw
 descriptor bytes supplied by a graphics driver; duplicate serials still require an unambiguous
 route. Two equal fingerprints a moment apart help a caller wait for an arrival to settle but do not

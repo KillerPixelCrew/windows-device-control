@@ -17,18 +17,14 @@ public static partial class DisplayEdid
     public static string? ReadIdentity(string devicePath)
     {
         ArgumentNullException.ThrowIfNull(devicePath);
-        var parts = devicePath.Split('#');
-        if (parts.Length != 4 || !string.Equals(parts[0], @"\\?\DISPLAY", StringComparison.OrdinalIgnoreCase)
-                              || parts[1].Length == 0 || parts[2].Length == 0
-                              || parts[1].Contains('\\') || parts[2].Contains('\\'))
+        if (DeviceParameters(devicePath) is not { } path)
         {
             return null;
         }
 
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Enum\DISPLAY\" + parts[1] + "\\" + parts[2] + @"\Device Parameters");
+            using var key = Registry.LocalMachine.OpenSubKey(path);
             return key?.GetValue("EDID") is byte[] edid ? ParseIdentity(edid) : null;
         }
         catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
