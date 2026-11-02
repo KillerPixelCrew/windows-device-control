@@ -104,6 +104,22 @@ public static partial class DisplayModes
         return new DisplayModeSnapshot(path, Project(current), Sorted(supported));
     }
 
+    /// <summary>Reads only the mode a target runs now.</summary>
+    /// <param name="target">The target to read.</param>
+    /// <returns>The current mode, or null when the target is not active or cannot be read.</returns>
+    /// <remarks>
+    ///     <see cref="Read" /> also lists and tests every supported mode, dozens of driver calls; a caller
+    ///     that only needs the current rate asked for all of them every time.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="target" /> is null.</exception>
+    public static DisplayMode? ReadCurrent(DisplayTargetIdentity target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return Find(target) is { } path && ReadNative(path.SourceName, CurrentSettings, out var current)
+            ? Project(current)
+            : null;
+    }
+
     /// <summary>Revalidates a selected mode and applies it once.</summary>
     /// <param name="observation">Observation from which the user selected the mode.</param>
     /// <param name="requested">Mode explicitly selected by the user.</param>
