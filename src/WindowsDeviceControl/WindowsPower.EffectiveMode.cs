@@ -17,14 +17,17 @@ namespace WindowsDeviceControl;
 /// </remarks>
 public sealed class EffectivePowerModeRegistration : IDisposable
 {
-    private readonly Action<Exception>? _failed;
+    private readonly WindowsPower.EffectiveModeCallback _callback;
+    private readonly Func<nint, int> _unregister;
     private nint _registration;
 
-    internal EffectivePowerModeRegistration(nint id, nint registration, Action<Exception>? failed)
+    internal EffectivePowerModeRegistration(nint id, nint registration, WindowsPower.EffectiveModeCallback callback,
+        Func<nint, int> unregister)
     {
         Id = id;
         _registration = registration;
-        _failed = failed;
+        _callback = callback;
+        _unregister = unregister;
     }
 
     internal nint Id { get; }
@@ -36,9 +39,9 @@ public sealed class EffectivePowerModeRegistration : IDisposable
     public void Dispose()
     {
         var result = Unregister();
-        if (result < 0 && _failed is { } failed)
+        if (result < 0)
         {
-            failed(Marshal.GetExceptionForHR(result)!);
+            _callback.Fail(Marshal.GetExceptionForHR(result)!);
         }
     }
 
@@ -57,7 +60,7 @@ public sealed class EffectivePowerModeRegistration : IDisposable
         }
 
         WindowsPower.RemoveEffectiveModeCallback(Id);
-        return WindowsPower.PowerUnregisterFromEffectivePowerModeNotifications(registration);
+        return _unregister(registration);
     }
 }
 
@@ -88,22 +91,29 @@ public static unsafe partial class WindowsPower
         Action<Exception>? failed = null)
     {
         ArgumentNullException.ThrowIfNull(changed);
-        nint id;
-        lock (EffectiveModeGate)
-        {
-            id = ++_lastEffectiveModeId;
-            EffectiveModeCallbacks.Add(id, new EffectiveModeCallback(changed, failed));
-        }
-
+        EffectiveModeCallback callback = new(changed, failed);
+        var id = AddEffectiveModeCallback(callback);
         var result = PowerRegisterForEffectivePowerModeNotifications(
             EffectivePowerModeV2, &OnEffectiveModeChanged, id, out var registration);
         if (result >= 0)
         {
-            return new EffectivePowerModeRegistration(id, registration, failed);
+            return new EffectivePowerModeRegistration(id, registration, callback,
+                PowerUnregisterFromEffectivePowerModeNotifications);
         }
 
         RemoveEffectiveModeCallback(id);
         throw Marshal.GetExceptionForHR(result)!;
+    }
+
+    /// <summary>Adds a callback to the dispatch table under a new id, the context Windows calls back with.</summary>
+    internal static nint AddEffectiveModeCallback(EffectiveModeCallback callback)
+    {
+        lock (EffectiveModeGate)
+        {
+            var id = ++_lastEffectiveModeId;
+            EffectiveModeCallbacks.Add(id, callback);
+            return id;
+        }
     }
 
     internal static void RemoveEffectiveModeCallback(nint id)
@@ -114,35 +124,23 @@ public static unsafe partial class WindowsPower
         }
     }
 
-    [UnmanagedCallersOnly]
-    private static void OnEffectiveModeChanged(int mode, nint context)
+    /// <summary>Calls the callback registered under an id, if one still is; never throws.</summary>
+    /// <param name="id">The context Windows passed back.</param>
+    internal static void DispatchEffectiveModeChange(nint id)
     {
         EffectiveModeCallback? callback;
         lock (EffectiveModeGate)
         {
-            EffectiveModeCallbacks.TryGetValue(context, out callback);
+            EffectiveModeCallbacks.TryGetValue(id, out callback);
         }
 
-        if (callback is null)
-        {
-            return;
-        }
+        callback?.Invoke();
+    }
 
-        try
-        {
-            callback.Changed();
-        }
-        catch (Exception ex)
-        {
-            try
-            {
-                callback.Failed?.Invoke(ex);
-            }
-            catch (Exception)
-            {
-                // Escaping an UnmanagedCallersOnly method terminates the process.
-            }
-        }
+    [UnmanagedCallersOnly]
+    private static void OnEffectiveModeChanged(int mode, nint context)
+    {
+        DispatchEffectiveModeChange(context);
     }
 
     [LibraryImport("powrprof.dll")]
@@ -150,7 +148,38 @@ public static unsafe partial class WindowsPower
         uint version, delegate* unmanaged<int, nint, void> callback, nint context, out nint registration);
 
     [LibraryImport("powrprof.dll")]
-    internal static partial int PowerUnregisterFromEffectivePowerModeNotifications(nint registration);
+    private static partial int PowerUnregisterFromEffectivePowerModeNotifications(nint registration);
 
-    private sealed record EffectiveModeCallback(Action Changed, Action<Exception>? Failed);
+    /// <summary>One registration's caller code: the change callback and the optional failure handler.</summary>
+    /// <param name="Changed">Called for every notification.</param>
+    /// <param name="Failed">Receives what <paramref name="Changed" /> threw and a refused unregistration.</param>
+    internal sealed record EffectiveModeCallback(Action Changed, Action<Exception>? Failed)
+    {
+        /// <summary>Runs <see cref="Changed" />; an exception goes to <see cref="Fail" />.</summary>
+        internal void Invoke()
+        {
+            try
+            {
+                Changed();
+            }
+            catch (Exception ex)
+            {
+                Fail(ex);
+            }
+        }
+
+        /// <summary>Hands an exception to <see cref="Failed" />; one it throws is discarded.</summary>
+        /// <param name="error">The failure.</param>
+        internal void Fail(Exception error)
+        {
+            try
+            {
+                Failed?.Invoke(error);
+            }
+            catch (Exception)
+            {
+                // Reached from an UnmanagedCallersOnly method, where an escaping exception ends the process.
+            }
+        }
+    }
 }

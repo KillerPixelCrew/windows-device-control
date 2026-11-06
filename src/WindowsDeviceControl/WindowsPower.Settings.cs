@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using static WindowsDeviceControl.Win32Error;
 
 namespace WindowsDeviceControl;
 
@@ -23,18 +22,21 @@ public static partial class WindowsPower
     /// <summary>Processor performance boost mode (PERFBOOSTMODE), under <see cref="SubgroupProcessor" />.</summary>
     public static readonly Guid SettingProcessorBoostMode = new("be337238-0d82-4146-a960-4f3749d470c7");
 
-    /// <summary>
-    ///     Writes how Power Options presents a setting. The setting's stored values are untouched.
-    ///     Native failures throw Win32Exception.
-    /// </summary>
+    /// <summary>Writes how Power Options presents a setting. The setting's stored values are untouched.</summary>
     /// <param name="subgroup">Policy subgroup identity.</param>
     /// <param name="setting">Policy setting identity.</param>
     /// <param name="attributes">The presentation attributes to store.</param>
-    /// <remarks>Machine-wide; Windows may refuse an unelevated caller. The request is issued once.</remarks>
-    /// <exception cref="System.ComponentModel.Win32Exception">Windows refused the write.</exception>
-    public static void WriteSettingAttributes(Guid subgroup, Guid setting, PowerSettingAttributes attributes)
+    /// <param name="status">The Win32 status Windows returned; zero on success.</param>
+    /// <returns>Whether Windows accepted the write.</returns>
+    /// <remarks>
+    ///     Machine-wide; Windows may refuse an unelevated caller. The request is issued once and a refusal
+    ///     changes nothing about the setting's values.
+    /// </remarks>
+    public static bool TryWriteSettingAttributes(Guid subgroup, Guid setting, PowerSettingAttributes attributes,
+        out uint status)
     {
-        Check(PowerWriteSettingAttributes(in subgroup, in setting, (uint)attributes), "Write power setting attributes");
+        status = PowerWriteSettingAttributes(in subgroup, in setting, (uint)attributes);
+        return status == Win32Error.ErrorSuccess;
     }
 
     /// <summary>Posts the display-off system command (<c>SC_MONITORPOWER</c>) to every top-level window.</summary>
@@ -47,17 +49,12 @@ public static partial class WindowsPower
     /// </remarks>
     public static bool TurnOffDisplay()
     {
-        const nint HwndBroadcast = 0xFFFF;
         const uint WmSysCommand = 0x0112;
         const nint ScMonitorPower = 0xF170;
         const nint MonitorOff = 2;
-        return PostMessageW(HwndBroadcast, WmSysCommand, ScMonitorPower, MonitorOff);
+        return User32.PostMessageW(User32.HwndBroadcast, WmSysCommand, ScMonitorPower, MonitorOff);
     }
 
     [LibraryImport("powrprof.dll")]
     private static partial uint PowerWriteSettingAttributes(in Guid subgroup, in Guid setting, uint attributes);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool PostMessageW(nint window, uint message, nint wParam, nint lParam);
 }

@@ -8,21 +8,10 @@ using Microsoft.Win32.SafeHandles;
 
 namespace WindowsDeviceControl;
 
-/// <summary>
-///     Storage device primitives for eject, card and format flows: volume-to-disk mapping
-///     (<c>IOCTL_STORAGE_GET_DEVICE_NUMBER</c>), the hotplug classification that separates a USB device
-///     from a built-in card reader (<c>IOCTL_STORAGE_GET_HOTPLUG_INFO</c>), disk identity, capacity and
-///     partition layout, the PnP device eject (<c>CM_Request_Device_EjectW</c>), the media-level
-///     dismount sequence (<c>FSCTL_LOCK_VOLUME</c>, <c>FSCTL_DISMOUNT_VOLUME</c>,
-///     <c>IOCTL_STORAGE_EJECT_MEDIA</c>) and volume labels.
-/// </summary>
-/// <remarks>
-///     Everything here is cfgmgr32, kernel32 and one user32 broadcast: no COM and no WMI. Devnode
-///     discovery goes through the cfgmgr32 interface list rather than SetupAPI's devinfo sets: same
-///     data, no variable-size detail-struct marshalling. Each call is issued once; the caller decides
-///     which flow is safe, in what order, and how to report a refusal. Methods that return false leave
-///     the native error on the calling thread for <see cref="LastWin32Error" />.
-/// </remarks>
+// The storage device primitives: cfgmgr32 interface lists, kernel32 storage IOCTLs and one user32
+// broadcast; no COM and no WMI. Interface discovery uses the cfgmgr32 list rather than SetupAPI's
+// devinfo sets: same data, no variable-size detail-struct marshalling. A failure is returned with its
+// native error rather than left on the calling thread.
 public static unsafe partial class WindowsStorage
 {
     /// <summary>CONFIGRET success.</summary>
@@ -73,11 +62,6 @@ public static unsafe partial class WindowsStorage
     /// <summary><c>CM_DEVCAP_REMOVABLE</c>: the devnode itself can be ejected.</summary>
     private const uint DevCapRemovable = 0x4;
 
-    // CM_DRP_* registry properties (SPDRP value + 1).
-    private const uint DrpDeviceDesc = 0x01;
-    private const uint DrpFriendlyName = 0x0D;
-    private const uint DrpCapabilities = 0x10;
-
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
     private const uint FileShareReadWrite = Kernel32.FileShareRead | Kernel32.FileShareWrite;
@@ -94,13 +78,6 @@ public static unsafe partial class WindowsStorage
 
     /// <summary>The fixed header size of <c>STORAGE_DEVICE_DESCRIPTOR</c>.</summary>
     private const int DeviceDescriptorHeaderSize = 36;
-
-    /// <summary><c>DEVPKEY_Device_InstanceId</c>.</summary>
-    private static readonly DevPropKey DevicePropertyInstanceId = new()
-    {
-        Fmtid = new Guid("78c34fc8-104a-4aca-9ea4-524d52996e57"),
-        Pid = 256
-    };
 
     /// <summary>
     ///     <c>GUID_DEVINTERFACE_DISK</c>: every present disk exposes one of these interfaces; enumerating
@@ -144,11 +121,14 @@ public static unsafe partial class WindowsStorage
 
     /// <summary>Opens a volume for the lock, dismount and eject sequence.</summary>
     /// <param name="letter">The drive letter.</param>
+    /// <param name="error">The Win32 error when the handle is invalid; zero otherwise.</param>
     /// <returns>Caller-owned handle, possibly invalid on failure; inspect IsInvalid and dispose after use.</returns>
-    public static SafeFileHandle OpenVolumeForEject(char letter)
+    public static SafeFileHandle OpenVolumeForEject(char letter, out int error)
     {
-        return Kernel32.CreateFile($@"\\.\{letter}:", GenericRead | GenericWrite, FileShareReadWrite, 0,
+        var volume = Kernel32.CreateFile($@"\\.\{letter}:", GenericRead | GenericWrite, FileShareReadWrite, 0,
             Kernel32.OpenExisting, 0, 0);
+        error = volume.IsInvalid ? Marshal.GetLastPInvokeError() : 0;
+        return volume;
     }
 
     /// <summary>Opens the exact enumerated disk interface for a media eject request.</summary>
@@ -156,7 +136,7 @@ public static unsafe partial class WindowsStorage
     ///     Exact currently enumerated device-interface path; this method does not revalidate its physical
     ///     identity.
     /// </param>
-    /// <returns>Caller-owned handle; inspect IsInvalid and LastWin32Error before use, then dispose it.</returns>
+    /// <returns>Caller-owned handle, possibly invalid on failure; inspect IsInvalid and dispose after use.</returns>
     public static SafeFileHandle OpenDeviceForMediaEject(string path)
     {
         return Kernel32.CreateFile(path, GenericRead | GenericWrite, FileShareReadWrite, 0, Kernel32.OpenExisting,
@@ -246,37 +226,28 @@ public static unsafe partial class WindowsStorage
     /// <returns>
     ///     A new snapshot of resolvable volume identities and mount points. No readiness or device-type
     ///     filtering is applied: a letterless or not-ready card is meaningful to some callers. A drive that
-    ///     vanishes mid-walk or may not be queried is skipped.
+    ///     vanishes mid-walk or may not be queried is skipped, and an IO failure enumerating drives returns
+    ///     an empty list.
     /// </returns>
     public static List<MountedVolume> MountedVolumes()
     {
-        var result = new List<MountedVolume>();
-        foreach (var drive in DriveInfo.GetDrives())
+        return WalkDrives<MountedVolume>((drive, volumes) =>
         {
-            try
+            if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable))
             {
-                if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable))
-                {
-                    continue;
-                }
-
-                var letter = char.ToUpperInvariant(drive.Name[0]);
-                using var volume = OpenVolumeForQuery(letter);
-                if (volume.IsInvalid || !TryGetDeviceNumber(volume, out var type, out var disk))
-                {
-                    continue;
-                }
-
-                var ready = drive.IsReady;
-                result.Add(new MountedVolume(letter, disk, type, ready, drive.DriveType, ready ? drive.TotalSize : 0));
+                return;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+
+            var letter = char.ToUpperInvariant(drive.Name[0]);
+            using var volume = OpenVolumeForQuery(letter);
+            if (volume.IsInvalid || !TryGetDeviceNumber(volume, out var type, out var disk))
             {
-                // A volume that vanished mid-scan or that may not even be queried is not one a caller can act on.
+                return;
             }
-        }
 
-        return result;
+            var ready = drive.IsReady;
+            volumes.Add(new MountedVolume(letter, disk, type, ready, drive.DriveType, ready ? drive.TotalSize : 0));
+        });
     }
 
     /// <summary>Lists the device-interface paths of every present disk.</summary>
@@ -302,51 +273,11 @@ public static unsafe partial class WindowsStorage
         return ListInterfaces(VolumeInterfaceGuid);
     }
 
-    /// <summary>Resolves a device-interface path to its devnode.</summary>
-    /// <param name="interfacePath">A path from <see cref="ListDiskInterfaces" />.</param>
-    /// <param name="devInst">The devnode handle.</param>
-    /// <returns>True when a nonempty interface instance ID resolves to a current devnode; otherwise false.</returns>
-    public static bool TryGetDevNode(string interfacePath, out uint devInst)
-    {
-        devInst = 0;
-        var size = 1024u;
-        var buffer = stackalloc char[512];
-        if (CM_Get_Device_Interface_PropertyW(interfacePath, in DevicePropertyInstanceId, out _, buffer, ref size,
-                0) != CrSuccess)
-        {
-            return false;
-        }
-
-        // size is the byte count cfgmgr32 wrote back (buffer holds 512 chars).
-        var instanceId = NativeText.ReadFixed(buffer, (int)(Math.Min(size, 1024u) / 2));
-        return instanceId.Length > 0 && CM_Locate_DevNodeW(out devInst, instanceId, 0) == CrSuccess;
-    }
-
-    /// <summary>Reads the devnode's device instance path, the stable identity a list row keys on.</summary>
-    /// <param name="devInst">The devnode.</param>
-    /// <returns>Device instance ID bounded to the native buffer, or an empty string on query failure.</returns>
-    public static string GetDeviceInstanceId(uint devInst)
-    {
-        // CM_Get_Device_IDW is capped at MAX_DEVICE_ID_LEN (200); an id that exactly fills the buffer
-        // carries no terminator, so it is decoded bounded.
-        var buffer = stackalloc char[200];
-        return CM_Get_Device_IDW(devInst, buffer, 200, 0) == CrSuccess ? NativeText.ReadFixed(buffer, 200) : "";
-    }
-
-    /// <summary>Reads the devnode's display name: the friendly name when set, else the device description.</summary>
-    /// <param name="devInst">The devnode.</param>
-    /// <returns>Friendly name, device description, or an empty string when neither is available.</returns>
-    public static string GetDeviceDisplayName(uint devInst)
-    {
-        var name = ReadDevNodeString(devInst, DrpFriendlyName);
-        return name.Length > 0 ? name : ReadDevNodeString(devInst, DrpDeviceDesc);
-    }
-
     /// <summary>
     ///     Walks from a disk devnode to the node a PnP eject should target: the first ancestor (or the disk
     ///     itself) whose capabilities say <c>CM_DEVCAP_REMOVABLE</c>.
     /// </summary>
-    /// <param name="diskDevInst">The disk devnode.</param>
+    /// <param name="diskDevInst">The disk devnode, from <see cref="DeviceNodes.TryGetDevNode" />.</param>
     /// <returns>The first removable node within four inspected levels, otherwise the immediate parent or original node.</returns>
     /// <remarks>
     ///     For USB storage that is the USB device above the USBSTOR disk; ejecting the disk node itself
@@ -357,12 +288,12 @@ public static unsafe partial class WindowsStorage
         var node = diskDevInst;
         for (var depth = 0; depth < 4; depth++)
         {
-            if ((GetCapabilities(node) & DevCapRemovable) != 0)
+            if ((DeviceNodes.ReadCapabilities(node) & DevCapRemovable) != 0)
             {
                 return node;
             }
 
-            if (CM_Get_Parent(out var parent, node, 0) != CrSuccess)
+            if (!DeviceNodes.TryGetParent(node, out var parent))
             {
                 break;
             }
@@ -370,7 +301,7 @@ public static unsafe partial class WindowsStorage
             node = parent;
         }
 
-        return CM_Get_Parent(out var fallback, diskDevInst, 0) == CrSuccess ? fallback : diskDevInst;
+        return DeviceNodes.TryGetParent(diskDevInst, out var fallback) ? fallback : diskDevInst;
     }
 
     /// <summary>Reads the disk's total size in bytes.</summary>
@@ -549,7 +480,6 @@ public static unsafe partial class WindowsStorage
         const nuint DbtDeviceArrival = 0x8000;
         const int DbtDevTypVolume = 2;
         const uint SmtoAbortIfHung = 0x0002;
-        const nint HwndBroadcast = 0xFFFF;
         var index = char.ToUpperInvariant(letter) - 'A';
         if (index is < 0 or > 25)
         {
@@ -561,8 +491,8 @@ public static unsafe partial class WindowsStorage
         BitConverter.TryWriteBytes(new Span<byte>(broadcast, 4), 20);
         BitConverter.TryWriteBytes(new Span<byte>(broadcast + 4, 4), DbtDevTypVolume);
         BitConverter.TryWriteBytes(new Span<byte>(broadcast + 12, 4), 1u << index);
-        SendMessageTimeoutW(HwndBroadcast, WmDeviceChange, (nint)DbtDeviceArrival, (nint)broadcast, SmtoAbortIfHung,
-            1000, out _);
+        User32.SendMessageTimeoutW(User32.HwndBroadcast, WmDeviceChange, (nint)DbtDeviceArrival, (nint)broadcast,
+            SmtoAbortIfHung, 1000, out _);
     }
 
     /// <summary>
@@ -588,18 +518,20 @@ public static unsafe partial class WindowsStorage
     ///     other handle is open on the volume.
     /// </summary>
     /// <param name="volume">A volume opened through <see cref="OpenVolumeForEject" />.</param>
-    /// <returns>True when the exclusive lock was obtained; false preserves the native error for LastWin32Error.</returns>
-    public static bool LockVolume(SafeFileHandle volume)
+    /// <param name="error">The Win32 error when the lock was refused; zero on success.</param>
+    /// <returns>True when the exclusive lock was obtained.</returns>
+    public static bool LockVolume(SafeFileHandle volume, out int error)
     {
-        return Kernel32.DeviceIoControl(volume, FsctlLockVolume, 0, 0, 0, 0, out _, 0);
+        return Succeeded(Kernel32.DeviceIoControl(volume, FsctlLockVolume, 0, 0, 0, 0, out _, 0), out error);
     }
 
     /// <summary>Dismounts the file system, flushing it first.</summary>
     /// <param name="volume">A locked volume handle.</param>
-    /// <returns>True when Windows accepted the dismount; false preserves the native error for LastWin32Error.</returns>
-    public static bool DismountVolume(SafeFileHandle volume)
+    /// <param name="error">The Win32 error when the dismount was refused; zero on success.</param>
+    /// <returns>True when Windows accepted the dismount.</returns>
+    public static bool DismountVolume(SafeFileHandle volume, out int error)
     {
-        return Kernel32.DeviceIoControl(volume, FsctlDismountVolume, 0, 0, 0, 0, out _, 0);
+        return Succeeded(Kernel32.DeviceIoControl(volume, FsctlDismountVolume, 0, 0, 0, 0, out _, 0), out error);
     }
 
     /// <summary>
@@ -607,20 +539,17 @@ public static unsafe partial class WindowsStorage
     ///     eject the media.
     /// </summary>
     /// <param name="volume">A locked, dismounted volume handle.</param>
-    /// <returns>True when Windows accepted media eject; false preserves the native error for LastWin32Error.</returns>
-    /// <remarks>Card readers without a motor may fail the final call; lock and dismount are the real removal.</remarks>
-    public static bool EjectMedia(SafeFileHandle volume)
+    /// <param name="error">The Win32 error of the eject request when it was refused; zero on success.</param>
+    /// <returns>True when Windows accepted media eject.</returns>
+    /// <remarks>
+    ///     Two IOCTLs: the media-lock release, whose result is not reported, then the eject. Card readers
+    ///     without a motor may refuse the eject; lock and dismount are the real removal.
+    /// </remarks>
+    public static bool EjectMedia(SafeFileHandle volume, out int error)
     {
         byte allow = 0;
         Kernel32.DeviceIoControl(volume, IoctlStorageMediaRemoval, (nint)(&allow), 1, 0, 0, out _, 0);
-        return Kernel32.DeviceIoControl(volume, IoctlStorageEjectMedia, 0, 0, 0, 0, out _, 0);
-    }
-
-    /// <summary>The calling thread's last Win32 error, for the caller's report.</summary>
-    /// <returns>Last P/Invoke error on the current thread; read immediately after the failed native operation.</returns>
-    public static int LastWin32Error()
-    {
-        return Marshal.GetLastPInvokeError();
+        return Succeeded(Kernel32.DeviceIoControl(volume, IoctlStorageEjectMedia, 0, 0, 0, 0, out _, 0), out error);
     }
 
     /// <summary>
@@ -629,18 +558,19 @@ public static unsafe partial class WindowsStorage
     /// </summary>
     /// <param name="letter">The drive letter, without a colon.</param>
     /// <param name="volumeRoot">The volume GUID path with its trailing separator, or null when the letter names no volume.</param>
+    /// <param name="error">The Win32 error when Windows refused; zero otherwise, including an empty answer.</param>
     /// <returns>True when the letter resolved.</returns>
     /// <remarks>
     ///     A drive letter is a mount point and can be re-pointed at different media without any user
     ///     action. File work that must stay on the medium it validated addresses the volume: if the volume
     ///     goes away, opens through this path fail instead of landing on whatever took the letter over.
     /// </remarks>
-    public static bool TryGetVolumeGuidPath(char letter, out string? volumeRoot)
+    public static bool TryGetVolumeGuidPath(char letter, out string? volumeRoot, out int error)
     {
         volumeRoot = null;
         // The documented minimum for a volume GUID path is 50 characters.
         var buffer = stackalloc char[64];
-        if (!GetVolumeNameForVolumeMountPointW($"{letter}:\\", buffer, 64))
+        if (!Succeeded(GetVolumeNameForVolumeMountPointW($"{letter}:\\", buffer, 64), out error))
         {
             return false;
         }
@@ -659,15 +589,18 @@ public static unsafe partial class WindowsStorage
     /// <param name="volumeRoot">A root path with a trailing separator: a drive root or a volume GUID path.</param>
     /// <param name="label">The current volume label, empty when it has none.</param>
     /// <param name="fileSystem">The filesystem name, for example <c>NTFS</c>.</param>
-    /// <returns>False when the volume could not be queried; the Win32 error is the caller's to report.</returns>
-    public static bool TryGetVolumeInformation(string volumeRoot, out string label, out string fileSystem)
+    /// <param name="error">The Win32 error when the volume could not be queried; zero on success.</param>
+    /// <returns>False when the volume could not be queried.</returns>
+    public static bool TryGetVolumeInformation(string volumeRoot, out string label, out string fileSystem,
+        out int error)
     {
         label = "";
         fileSystem = "";
         // MAX_PATH+1 each, the documented cap for both strings.
         var labelBuffer = stackalloc char[261];
         var fileSystemBuffer = stackalloc char[261];
-        if (!GetVolumeInformationW(volumeRoot, labelBuffer, 261, null, null, null, fileSystemBuffer, 261))
+        if (!Succeeded(GetVolumeInformationW(volumeRoot, labelBuffer, 261, null, null, null, fileSystemBuffer, 261),
+                out error))
         {
             return false;
         }
@@ -683,10 +616,18 @@ public static unsafe partial class WindowsStorage
     ///     The new label; it must already be within the filesystem's length limit and free of characters it
     ///     rejects.
     /// </param>
-    /// <returns>False when Windows refused; the Win32 error is the caller's to report.</returns>
-    public static bool TrySetVolumeLabel(string volumeRoot, string label)
+    /// <param name="error">The Win32 error when Windows refused; zero on success.</param>
+    /// <returns>False when Windows refused.</returns>
+    public static bool TrySetVolumeLabel(string volumeRoot, string label, out int error)
     {
-        return SetVolumeLabelW(volumeRoot, label);
+        return Succeeded(SetVolumeLabelW(volumeRoot, label), out error);
+    }
+
+    /// <summary>Pairs a native result with the error it left, read immediately after the call.</summary>
+    private static bool Succeeded(bool result, out int error)
+    {
+        error = result ? 0 : Marshal.GetLastPInvokeError();
+        return result;
     }
 
     private static string[] ListInterfaces(Guid guid)
@@ -744,27 +685,6 @@ public static unsafe partial class WindowsStorage
         return [.. result];
     }
 
-    private static string ReadDevNodeString(uint devInst, uint property)
-    {
-        var length = 1024u;
-        var buffer = stackalloc byte[1024];
-        // REG_SZ data is not guaranteed NUL-terminated; decode at most the returned byte count.
-        return CM_Get_DevNode_Registry_PropertyW(devInst, property, out _, buffer, ref length, 0) != CrSuccess
-            ? ""
-            : NativeText.ReadFixed((char*)buffer, (int)(Math.Min(length, 1024u) / 2));
-    }
-
-    /// <summary>Reads the devnode's <c>CM_DEVCAP_*</c> capability bits, 0 on failure.</summary>
-    private static uint GetCapabilities(uint devInst)
-    {
-        var length = 4u;
-        uint capabilities = 0;
-        return CM_Get_DevNode_Registry_PropertyW(devInst, DrpCapabilities, out _, (byte*)&capabilities, ref length,
-            0) == CrSuccess
-            ? capabilities
-            : 0;
-    }
-
     /// <summary>Reads a NUL-terminated ANSI string at a descriptor-relative offset; empty when out of range.</summary>
     private static string ReadAnsiAt(ReadOnlySpan<byte> buffer, int offset)
     {
@@ -793,28 +713,9 @@ public static unsafe partial class WindowsStorage
     private static partial int CM_Get_Device_Interface_ListW(
         in Guid interfaceClassGuid, string? deviceId, char* buffer, uint bufferLength, uint flags);
 
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_Interface_PropertyW",
-        StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int CM_Get_Device_Interface_PropertyW(
-        string deviceInterface, in DevPropKey propertyKey, out uint propertyType, char* propertyBuffer,
-        ref uint propertyBufferSize, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Locate_DevNodeW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int CM_Locate_DevNodeW(out uint devInst, string deviceInstanceId, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_DevNode_Registry_PropertyW")]
-    private static partial int CM_Get_DevNode_Registry_PropertyW(
-        uint devInst, uint property, out uint regDataType, byte* buffer, ref uint length, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Parent")]
-    private static partial int CM_Get_Parent(out uint parentDevInst, uint devInst, uint flags);
-
     [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Request_Device_EjectW")]
     private static partial int CM_Request_Device_EjectW(
         uint devInst, out int vetoType, char* vetoName, uint nameLength, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_IDW")]
-    private static partial int CM_Get_Device_IDW(uint devInst, char* buffer, uint bufferLength, uint flags);
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetVolumeNameForVolumeMountPointW", SetLastError = true,
         StringMarshalling = StringMarshalling.Utf16)]
@@ -833,9 +734,6 @@ public static unsafe partial class WindowsStorage
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetVolumeLabelW(string rootPath, string? volumeLabel);
 
-    [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW", SetLastError = true)]
-    private static partial nint SendMessageTimeoutW(
-        nint window, uint message, nint wParam, nint lParam, uint flags, uint timeout, out nint result);
 
     /// <summary>How Windows says an eject was refused (cfg.h <c>PNP_VETO_TYPE</c>, zero-based).</summary>
     public enum PnpVetoType
@@ -878,14 +776,6 @@ public static unsafe partial class WindowsStorage
 
         /// <summary>The caller lacks the rights to eject.</summary>
         InsufficientRights = 12
-    }
-
-    /// <summary>DEVPROPKEY, blittable: a property category GUID plus an id.</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DevPropKey
-    {
-        public Guid Fmtid;
-        public uint Pid;
     }
 
     /// <summary>One mounted local volume, mapped back to its physical disk.</summary>

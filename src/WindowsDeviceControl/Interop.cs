@@ -70,6 +70,24 @@ internal static partial class Kernel32
         nint outBuffer, uint outBufferSize, out uint bytesReturned, nint overlapped);
 }
 
+/// <summary>The user32 window messages shared by the power, storage and window callers.</summary>
+internal static partial class User32
+{
+    internal const nint HwndBroadcast = 0xFFFF;
+    internal const uint WmClose = 0x0010;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool PostMessageW(nint window, uint message, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW", SetLastError = true)]
+    internal static partial nint SendMessageTimeoutW(
+        nint window, uint message, nint wParam, nint lParam, uint flags, uint timeout, out nint result);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial uint GetWindowThreadProcessId(nint window, out uint processId);
+}
+
 /// <summary>Reads fixed-width native character buffers.</summary>
 internal static unsafe class NativeText
 {

@@ -127,6 +127,8 @@ DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, Alr
 | `WindowsPower`                  | Schemes, AC and DC values, effective mode overlays, status, suspend and shutdown, notifications, hybrid core placement                                                                                                    |
 | `PowerNotificationRegistration` | A power-setting or suspend and resume notification registration; disposing it unregisters                                                                                                                                 |
 | `EffectivePowerModeRegistration` | An effective power mode callback registration; disposing it stops the callbacks |
+| `DesktopWindows` | The PID-checked close request to another process's window |
+| `Authenticode` | WinVerifyTrust with an explicit revocation policy and expected signer |
 | `WindowsPowerRequest`           | A display or system wake request and its reason string                                                                                                                                                                    |
 | `PowerRequestList`              | The system-wide power request list that `powercfg /requests` shows, decoded with bounds checks                                                                                                                            |
 | `WindowsWakeSecurity`           | Wake-policy recovery values, capture and restore                                                                                                                                                                          |
@@ -354,8 +356,9 @@ PBT_APMSUSPEND and the resume codes to a message-only window, which the broadcas
 reaches. `RegisterEffectivePowerModeNotification` takes a managed callback instead of a window: Windows
 calls it on a thread-pool thread once with the current mode and then on every power mode change, and
 a callback exception goes to the optional `failed` handler, never across the native boundary.
-`WriteSettingAttributes` changes how Power Options presents a setting (for example
-`SettingProcessorBoostMode` with `PowerSettingAttributes.ShowAoac`) without touching its values.
+`TryWriteSettingAttributes` changes how Power Options presents a setting (for example
+`SettingProcessorBoostMode` with `PowerSettingAttributes.ShowAoac`) without touching its values, and
+returns the Win32 status rather than throwing.
 `TurnOffDisplay` posts `SC_MONITORPOWER`, which on a Modern Standby machine enters standby, where
 `SuspendAsync` would hibernate.
 
@@ -462,15 +465,29 @@ The string overload of `DiskNumberFor` uses the first character as a drive lette
 resolve folder mount points, volume GUID paths or UNC paths. Those calls are read-only.
 
 The device half serves eject, card and format flows. `MountedVolumes` maps every Fixed or Removable
-letter to its disk; `ListDiskInterfaces`, `ListVolumeInterfaces`, `TryGetDevNode`,
-`GetDeviceInstanceId` and `GetDeviceDisplayName` walk the PnP tree. The `Open*` methods return
+letter to its disk; `DiskOfVolume` reads the disk behind any volume or disk device path, and
+`VolumesOnDisk` lists every volume interface on one disk, lettered or not. `ListDiskInterfaces` and
+`ListVolumeInterfaces` enumerate interfaces, and `DeviceNodes.TryGetDevNode`, `GetDeviceInstanceId`
+and `GetDeviceDisplayName` resolve and name their devnodes. The `Open*` methods return
 caller-owned handles for `TryGetDeviceNumber`, `TryGetHotplugInfo`, `TryGetDeviceDescriptor` (bus
 type and product), `GetDiskLength`, `GetDiskCapacityForQuery` and `TryGetPartitionTypes`.
 `FindEjectTarget` and `RequestDeviceEject` perform Explorer's Safely Remove with the veto reason;
 `LockVolume`, `DismountVolume` and `EjectMedia` are the media-level sequence. `TryGetVolumeGuidPath`,
 `TryGetVolumeInformation` and `TrySetVolumeLabel` address a volume rather than its letter, and
-`BroadcastVolumeArrival` asks drive watchers to look at a letter again. Each call is issued once and
-a false result leaves the native error for `LastWin32Error`; the caller decides which flow is safe.
+`BroadcastVolumeArrival` asks drive watchers to look at a letter again. A refused call is not retried,
+and the lock, dismount, eject, open-for-eject, volume path and label calls return the Win32 error with
+their result; the caller decides which flow is safe.
+
+## Windows and signatures
+
+`DesktopWindows.RequestClose(window, processId)` posts `WM_CLOSE` to a window only while it still
+belongs to the process it was listed for; nothing is terminated. `Authenticode.Verify(path, handle,
+revocation, expectedSigner)` runs WinVerifyTrust's generic Authenticode policy without the lifetime
+signing flag, so a timestamped signature outlives its certificate. `AuthenticodeRevocation.None`
+checks no revocation and stays offline; `ChainExcludingRoot` checks every certificate but the root.
+`AuthenticodeSigner.WithThumbprint` pins one certificate and `WithName` accepts subject names. The
+disposable `AuthenticodeResult` carries the outcome, the WinVerifyTrust status and the leaf
+certificate. A self-signed file is never trusted here.
 
 ## Building and testing
 

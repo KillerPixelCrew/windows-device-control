@@ -85,13 +85,24 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
-- `WindowsStorage.cs`: read-only volume-to-disk-number mapping. Paths are drive-letter paths only;
-  failed disk lookups retain a metadata row with -1, which must never be used to group unknown
-  disks. `WindowsStorage.Devices.cs` holds the device primitives for eject, card and format flows:
-  interface walks, storage IOCTL decoders, PnP and media eject, volume GUID paths and labels. Each is
-  one native call; nothing here formats or mounts, and the caller decides what is safe to eject.
+- `WindowsStorage.cs`: volume-to-disk mapping on one drive-letter walk (`DescribeVolumes`,
+  `MountedVolumes`) and the composites `DiskOfVolume` and `VolumesOnDisk`. Drive-letter paths only for
+  `DiskNumberFor`; failed disk lookups retain a metadata row with -1, which must never be used to group
+  unknown disks. `WindowsStorage.Devices.cs` holds the device primitives for eject, card and format
+  flows: interface walks, storage IOCTL decoders, PnP and media eject, volume GUID paths and labels.
+  Nothing is retried after a refusal, but some calls are more than one native request: interface lists
+  retry the size/list race, the partition layout grows its buffer, and `EjectMedia` releases the media
+  lock before it ejects. A failure is returned with its Win32 error. Nothing here formats or mounts,
+  and the caller decides what is safe to eject.
+- `DeviceNodes.cs`: setup-class enumeration and problem status; `DeviceNodes.Interfaces.cs` resolves an
+  interface path to its devnode and reads devnode names, capabilities and parents, sharing one set of
+  Configuration Manager imports with the storage eject.
+- `DesktopWindows.cs`: the PID-checked `WM_CLOSE` request to another process's window.
+- `Authenticode.cs`: WinVerifyTrust over a held handle or a path, with an explicit revocation policy, an
+  optional pinned thumbprint or accepted signer names, and the leaf certificate in the result.
 - `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
-  that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
+  that preserve them, the kernel32 device calls, the shared user32 window messages, fixed-width string
+  reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
 - `docs/README.md`, `docs/how-it-works.md` and `docs/api-reference.md`: reading order, complete
   request paths and source/public API/test navigation. Update these alongside XML when a contract

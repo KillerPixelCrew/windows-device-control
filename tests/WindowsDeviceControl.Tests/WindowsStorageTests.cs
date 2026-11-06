@@ -1,10 +1,29 @@
 using System;
+using System.Collections.Generic;
 using Xunit;
 
 namespace WindowsDeviceControl.Tests;
 
 public sealed class WindowsStorageTests
 {
+    [Fact]
+    public void VolumesOnDiskKeepOnlyThatDiskInEnumerationOrder()
+    {
+        Dictionary<string, int> disks = new() { ["a"] = 2, ["b"] = 3, ["c"] = 2, ["d"] = -1 };
+
+        var volumes = WindowsStorage.VolumesOnDisk(2, ["a", "b", "c", "d"], path => disks[path]);
+
+        Assert.Equal(["a", "c"], volumes);
+    }
+
+    [Fact]
+    public void AnUnknownDiskHasNoVolumesEvenWhereReadsAlsoFailed()
+    {
+        var volumes = WindowsStorage.VolumesOnDisk(-1, ["a", "b"], _ => -1);
+
+        Assert.Empty(volumes);
+    }
+
     // STORAGE_DEVICE_NUMBER: DeviceType @0, DeviceNumber @4, PartitionNumber @8.
     [Fact]
     public void DeviceNumberRecordsDecodeTheFixedLayout()
@@ -61,7 +80,7 @@ public sealed class WindowsStorageTests
 
         var (busType, product) = WindowsStorage.ReadDeviceDescriptor(buffer);
 
-        Assert.Equal(WindowsStorage.BusTypeSd, busType);
+        Assert.Equal(12, busType);
         Assert.Equal("SanDisk Extreme", product);
     }
 

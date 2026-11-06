@@ -261,9 +261,12 @@ successful stored value does not guarantee every Windows edition honors that pol
 zero-access volume handle supplies `IOCTL_STORAGE_GET_DEVICE_NUMBER`. Unknown disk numbers remain -1,
 not a shared device identity. Not-ready rows have zero sizes; inaccessible metadata can omit a row.
 
-The storage device primitives in `WindowsStorage.Devices.cs` are single native calls over
-caller-owned handles. Interface lists retry the documented size/list race three times before
-reporting empty. Record decoders read only complete fixed layouts. A PnP eject targets the first
+`DiskOfVolume` opens a zero-access handle on a volume or disk path and returns its disk only when the
+device is a disk; `VolumesOnDisk` filters the volume interface list through it.
+
+The storage device primitives in `WindowsStorage.Devices.cs` work over caller-owned handles and
+return the Win32 error beside a refusal. Interface lists retry the documented size/list race three
+times before reporting empty, and the partition layout grows its buffer until it fits. Record decoders read only complete fixed layouts. A PnP eject targets the first
 removable ancestor within four levels; the media sequence is lock, dismount, release the media lock
 and eject. Volume labels and volume GUID paths are read or written only when the caller asks; the
 library never formats or mounts, and it never decides which disk is safe to eject.
@@ -273,3 +276,7 @@ registered instance IDs and problem codes, including disabled nodes. Buffer-size
 bounded read retries; other Windows failures propagate. Hosts choose which nodes matter and own
 subsequent writes and restoration. The library neither disables devices nor changes a shared
 keyboard driver.
+
+`Authenticode.Verify` opens and closes WinVerifyTrust state around one verification of the caller's
+handle or path, then reads the leaf certificate from the path and compares it with the expected
+signer. `DesktopWindows.RequestClose` re-reads the window's owner before posting `WM_CLOSE`.

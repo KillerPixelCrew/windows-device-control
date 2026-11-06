@@ -10,7 +10,10 @@ namespace WindowsDeviceControl;
 /// <param name="ProblemCode">Configuration Manager problem code; 22 means disabled.</param>
 public sealed record DeviceNode(string InstanceId, uint ProblemCode);
 
-/// <summary>Read-only device-node enumeration and problem status through Configuration Manager.</summary>
+/// <summary>
+///     Read-only device-node enumeration, problem status, interface-to-devnode resolution and devnode names
+///     through Configuration Manager.
+/// </summary>
 /// <remarks>Calls are synchronous. Callers own device selection, writes, permission and recovery policy.</remarks>
 public static partial class DeviceNodes
 {
