@@ -126,11 +126,12 @@ DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, Alr
 | `DisplayColor`                  | One display's advanced colour (HDR) state, with support read before every write                                                                                                                                           |
 | `WindowsPower`                  | Schemes, AC and DC values, effective mode overlays, status, suspend and shutdown, notifications, hybrid core placement                                                                                                    |
 | `PowerNotificationRegistration` | A power-setting or suspend and resume notification registration; disposing it unregisters                                                                                                                                 |
+| `EffectivePowerModeRegistration` | An effective power mode callback registration; disposing it stops the callbacks |
 | `WindowsPowerRequest`           | A display or system wake request and its reason string                                                                                                                                                                    |
 | `PowerRequestList`              | The system-wide power request list that `powercfg /requests` shows, decoded with bounds checks                                                                                                                            |
 | `WindowsWakeSecurity`           | Wake-policy recovery values, capture and restore                                                                                                                                                                          |
 | `ModernStandby`                 | S0 idle support, wake devices, resume attribution, standby timing                                                                                                                                                         |
-| `WindowsStorage`                | Mounted volumes and the physical disk number behind each one, read-only                                                                                                                                                   |
+| `WindowsStorage` | Mounted volumes and their disks, disk identity, capacity and partitions, PnP and media eject, volume labels |
 
 The other public types are the records, results and enums these members take and return, documented
 beside them.
@@ -350,7 +351,13 @@ owners can register power-setting notifications and suspend and resume notificat
 `PowerNotificationRegistration` that unregisters when disposed, and a refused registration throws
 `Win32Exception` with the native error. The suspend and resume registration is what delivers
 PBT_APMSUSPEND and the resume codes to a message-only window, which the broadcast alone never
-reaches.
+reaches. `RegisterEffectivePowerModeNotification` takes a managed callback instead of a window: Windows
+calls it on a thread-pool thread once with the current mode and then on every power mode change, and
+a callback exception goes to the optional `failed` handler, never across the native boundary.
+`WriteSettingAttributes` changes how Power Options presents a setting (for example
+`SettingProcessorBoostMode` with `PowerSettingAttributes.ShowAoac`) without touching its values.
+`TurnOffDisplay` posts `SC_MONITORPOWER`, which on a Modern Standby machine enters standby, where
+`SuspendAsync` would hibernate.
 
 `WindowsPowerRequest` owns a display or system wake request and its reason string. Acquire and
 Release are idempotent, failures throw with native error codes, and a failed release stays held
@@ -452,7 +459,18 @@ available free space, readiness and the disk number returned by `IOCTL_STORAGE_G
 Network drives are excluded. An unreadable drive's metadata can omit that row, while a failed disk
 lookup retains the row with `DiskNumber = -1`. Never join unknown disk numbers as one physical disk.
 The string overload of `DiskNumberFor` uses the first character as a drive letter; it does not
-resolve folder mount points, volume GUID paths or UNC paths. All storage operations are read-only.
+resolve folder mount points, volume GUID paths or UNC paths. Those calls are read-only.
+
+The device half serves eject, card and format flows. `MountedVolumes` maps every Fixed or Removable
+letter to its disk; `ListDiskInterfaces`, `ListVolumeInterfaces`, `TryGetDevNode`,
+`GetDeviceInstanceId` and `GetDeviceDisplayName` walk the PnP tree. The `Open*` methods return
+caller-owned handles for `TryGetDeviceNumber`, `TryGetHotplugInfo`, `TryGetDeviceDescriptor` (bus
+type and product), `GetDiskLength`, `GetDiskCapacityForQuery` and `TryGetPartitionTypes`.
+`FindEjectTarget` and `RequestDeviceEject` perform Explorer's Safely Remove with the veto reason;
+`LockVolume`, `DismountVolume` and `EjectMedia` are the media-level sequence. `TryGetVolumeGuidPath`,
+`TryGetVolumeInformation` and `TrySetVolumeLabel` address a volume rather than its letter, and
+`BroadcastVolumeArrival` asks drive watchers to look at a letter again. Each call is issued once and
+a false result leaves the native error for `LastWin32Error`; the caller decides which flow is safe.
 
 ## Building and testing
 

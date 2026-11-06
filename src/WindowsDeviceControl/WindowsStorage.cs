@@ -33,7 +33,7 @@ public sealed record StorageVolume(
 ///     Synchronous, read-only drive-letter discovery. Call from a worker thread because local device
 ///     metadata reads can block. Native volume handles are owned and closed within each query.
 /// </remarks>
-public static class WindowsStorage
+public static partial class WindowsStorage
 {
     private const uint IoctlStorageGetDeviceNumber = 0x2D1080;
 

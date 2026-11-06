@@ -73,7 +73,9 @@ including callback threading, completion timing, consent, error meanings, and ow
   callers own policy ordering and UI, and the library preserves native error codes.
   `WindowsPower.Status.cs` preserves battery/AC unknown sentinels, `WindowsPower.Actions.cs` owns
   asynchronous suspend/session actions, and `WindowsPower.Notifications.cs` owns caller-window
-  registrations and their SafeHandle lifetime. Cancellation cannot undo a dispatched session action.
+  registrations and their SafeHandle lifetime, `WindowsPower.EffectiveMode.cs` the effective power
+  mode callback registration, and `WindowsPower.Settings.cs` setting attributes and the display-off
+  broadcast. Cancellation cannot undo a dispatched session action.
 - `WindowsPowerRequest.cs`: thread-safe native power-request ownership and reason-buffer lifetime.
 - `PowerRequestList.cs`: bounds-checked system-wide wake-request decoding; an unreadable layout is
   unknown.
@@ -83,9 +85,11 @@ including callback threading, completion timing, consent, error meanings, and ow
 - `ModernStandby.cs`: S0 low-power-idle capability, wake-capable device enumeration and per-device
   arming with snapshot/restore, unattended-resume detection and standby timing, plus the identities
   of the software wake-source power settings.
-- `WindowsStorage.cs`: read-only volume-to-disk-number mapping; nothing here mounts, ejects or
-  writes. Paths are drive-letter paths only; failed disk lookups retain a metadata row with -1,
-  which must never be used to group unknown disks.
+- `WindowsStorage.cs`: read-only volume-to-disk-number mapping. Paths are drive-letter paths only;
+  failed disk lookups retain a metadata row with -1, which must never be used to group unknown
+  disks. `WindowsStorage.Devices.cs` holds the device primitives for eject, card and format flows:
+  interface walks, storage IOCTL decoders, PnP and media eject, volume GUID paths and labels. Each is
+  one native call; nothing here formats or mounts, and the caller decides what is safe to eject.
 - `Interop.cs`: internal helpers shared by the native callers: Win32 error codes and the exceptions
   that preserve them, the kernel32 device calls, fixed-width string reads, and blocking WinRT waits.
 - `docs/radios.md`: platform rationale, failure modes, and rejected approaches.
