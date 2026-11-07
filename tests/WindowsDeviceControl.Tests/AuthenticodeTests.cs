@@ -65,6 +65,29 @@ public sealed class AuthenticodeTests
     }
 
     [Fact]
+    public void ASignerIsReadFromTheVerifiedBytesWhileAWriterHandleIsHeld()
+    {
+        // A download keeps its read-write handle and denies other writers, so the path cannot be reopened.
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".dll");
+        File.Copy(typeof(object).Assembly.Location, path);
+        try
+        {
+            using var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            held.Seek(0, SeekOrigin.End);
+
+            using var result = Authenticode.Verify(path, held.SafeFileHandle, AuthenticodeRevocation.None,
+                AuthenticodeSigner.WithName(".NET", "Microsoft Corporation"));
+
+            Assert.Equal(AuthenticodeOutcome.Trusted, result.Outcome);
+            Assert.Contains("O=Microsoft Corporation", result.Signer!.Subject, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void AnOverlappedHandleIsRefusedBeforeItCanYieldABadDigest()
     {
         var path = typeof(object).Assembly.Location;

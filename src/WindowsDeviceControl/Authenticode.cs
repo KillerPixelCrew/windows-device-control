@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32.SafeHandles;
 
@@ -137,7 +136,7 @@ public static unsafe partial class Authenticode
     private static readonly Guid GenericVerifyV2 = new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
 
     /// <summary>Verifies a file's embedded signature and, when asked, who signed it.</summary>
-    /// <param name="path">The file to verify; the signer certificate is read from this path.</param>
+    /// <param name="path">The file to verify.</param>
     /// <param name="handle">
     ///     An open handle to the same file that denies writers, so trust describes the bytes the caller
     ///     holds; null to verify by path alone. It is borrowed, not closed. It must be synchronous:
@@ -148,6 +147,11 @@ public static unsafe partial class Authenticode
     /// <param name="expectedSigner">The signer the file must carry, or null to accept any trusted signer.</param>
     /// <returns>The outcome, the WinVerifyTrust status and the leaf certificate; dispose it.</returns>
     /// <exception cref="ArgumentException">The handle was opened for overlapped I/O.</exception>
+    /// <remarks>
+    ///     The signer is read from the verification's own provider state, the signature WinVerifyTrust just
+    ///     trusted, never by opening the path again; a reopen would fail against a held writer handle and
+    ///     could describe other bytes.
+    /// </remarks>
     public static AuthenticodeResult Verify(string path, SafeFileHandle? handle, AuthenticodeRevocation revocation,
         AuthenticodeSigner? expectedSigner = null)
     {
@@ -157,27 +161,17 @@ public static unsafe partial class Authenticode
             throw new ArgumentException("Authenticode verification needs a synchronous file handle.", nameof(handle));
         }
 
-        var status = VerifyTrust(path, handle, revocation);
+        var (status, signer) = VerifyTrust(path, handle, revocation);
         if (status != 0)
         {
             return new AuthenticodeResult(AuthenticodeOutcome.NotTrusted, status, null, null);
         }
 
-        X509Certificate2 signer;
-        try
-        {
-            // X509Certificate.CreateFromSignedFile is the only managed way to read an Authenticode
-            // signer; X509CertificateLoader does not parse signed PE files.
-#pragma warning disable SYSLIB0057
-            using var read = X509Certificate.CreateFromSignedFile(path);
-            signer = new X509Certificate2(read);
-#pragma warning restore SYSLIB0057
-        }
-        catch (CryptographicException ex)
+        if (signer is null)
         {
             return new AuthenticodeResult(
                 expectedSigner is null ? AuthenticodeOutcome.Trusted : AuthenticodeOutcome.SignerUnreadable, status,
-                null, ex.Message);
+                null, "The trusted signature carries no signer certificate.");
         }
 
         var outcome = expectedSigner is null || expectedSigner.Matches(signer)
@@ -199,7 +193,8 @@ public static unsafe partial class Authenticode
         };
     }
 
-    private static int VerifyTrust(string path, SafeFileHandle? handle, AuthenticodeRevocation revocation)
+    private static (int Status, X509Certificate2? Signer) VerifyTrust(string path, SafeFileHandle? handle,
+        AuthenticodeRevocation revocation)
     {
         var (revocationChecks, providerFlags) = Flags(revocation);
         var added = false;
@@ -226,9 +221,15 @@ public static unsafe partial class Authenticode
                 };
                 var action = GenericVerifyV2;
                 var result = WinVerifyTrust(0, ref action, ref data);
-                data.StateAction = StateActionClose;
-                WinVerifyTrust(0, ref action, ref data);
-                return result;
+                try
+                {
+                    return (result, result == 0 ? Signer(data.StateData) : null);
+                }
+                finally
+                {
+                    data.StateAction = StateActionClose;
+                    WinVerifyTrust(0, ref action, ref data);
+                }
             }
         }
         finally
@@ -240,8 +241,40 @@ public static unsafe partial class Authenticode
         }
     }
 
+    /// <summary>Copies the leaf certificate of the first signer WinVerifyTrust evaluated.</summary>
+    /// <param name="state">The open verification state.</param>
+    /// <returns>The certificate, or null when the provider state carries none.</returns>
+    private static X509Certificate2? Signer(nint state)
+    {
+        var provider = WTHelperProvDataFromStateData(state);
+        var signer = provider == 0 ? 0 : WTHelperGetProvSignerFromChain(provider, 0, false, 0);
+        var certificate = signer == 0 ? null : WTHelperGetProvCertFromChain(signer, 0);
+        // The constructor duplicates the context, so the copy outlives the state closed after this.
+        return certificate is null || certificate->Certificate == 0
+            ? null
+            : new X509Certificate2(certificate->Certificate);
+    }
+
     [LibraryImport("wintrust.dll", EntryPoint = "WinVerifyTrust")]
     private static partial int WinVerifyTrust(nint window, ref Guid action, ref TrustData data);
+
+    [LibraryImport("wintrust.dll", EntryPoint = "WTHelperProvDataFromStateData")]
+    private static partial nint WTHelperProvDataFromStateData(nint state);
+
+    [LibraryImport("wintrust.dll", EntryPoint = "WTHelperGetProvSignerFromChain")]
+    private static partial nint WTHelperGetProvSignerFromChain(nint provider, uint signer,
+        [MarshalAs(UnmanagedType.Bool)] bool counterSigner, uint counterSignerIndex);
+
+    [LibraryImport("wintrust.dll", EntryPoint = "WTHelperGetProvCertFromChain")]
+    private static partial ProviderCertificate* WTHelperGetProvCertFromChain(nint signer, uint certificate);
+
+    /// <summary>The leading fields of <c>CRYPT_PROVIDER_CERT</c>.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProviderCertificate
+    {
+        public uint Size;
+        public nint Certificate;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TrustFileInfo
