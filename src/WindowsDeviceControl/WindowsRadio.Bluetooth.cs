@@ -20,9 +20,13 @@ public static partial class WindowsRadio
     private const string AepConnected = "System.Devices.Aep.IsConnected";
     private const string AepContainer = "System.Devices.Aep.ContainerId";
     private const string DeviceContainer = "System.Devices.ContainerId";
+    private const string AepCodMajor = "System.Devices.Aep.Bluetooth.Cod.Major";
+    private const string AepCodMinor = "System.Devices.Aep.Bluetooth.Cod.Minor";
+    private const string AepLeAppearance = "System.Devices.Aep.Bluetooth.Le.Appearance";
 
     /// <summary>The association endpoint properties every Bluetooth endpoint read asks for.</summary>
-    private static readonly string[] EndpointProperties = [AepConnected, AepContainer];
+    private static readonly string[] EndpointProperties =
+        [AepConnected, AepContainer, AepCodMajor, AepCodMinor, AepLeAppearance];
 
     private static readonly TimeSpan PairingTimeout = TimeSpan.FromSeconds(90);
     private static int _nextPairingToken;
@@ -79,6 +83,7 @@ public static partial class WindowsRadio
         return preferred with
         {
             Name = name,
+            Kind = MergeKind(endpoints, preferred),
             Paired = endpoints.Any(device => device.Paired),
             CanPair = endpoints.Any(device => device.CanPair),
             Connected = endpoints.Any(device => device.Connected)
@@ -538,7 +543,100 @@ public static partial class WindowsRadio
             pairing.IsPaired,
             pairing.CanPair,
             connected,
-            container);
+            container,
+            ClassifyBluetooth(properties.GetValueOrDefault(AepCodMajor) as ushort?,
+                properties.GetValueOrDefault(AepCodMinor) as ushort?,
+                properties.GetValueOrDefault(AepLeAppearance) as ushort?));
+    }
+
+    /// <summary>The kind of the preferred endpoint, or of the first other endpoint that reports one.</summary>
+    /// <param name="endpoints">The endpoints of one device.</param>
+    /// <param name="preferred">The endpoint that represents it.</param>
+    /// <returns>The kind; a classic headset's Low Energy side often reports headphones, so the preferred one wins.</returns>
+    internal static BluetoothDeviceKind MergeKind(IEnumerable<BluetoothDevice> endpoints, BluetoothDevice preferred)
+    {
+        return preferred.Kind != BluetoothDeviceKind.Unknown
+            ? preferred.Kind
+            : endpoints.Select(device => device.Kind).FirstOrDefault(kind => kind != BluetoothDeviceKind.Unknown);
+    }
+
+    /// <summary>Classifies an endpoint by the Bluetooth assigned numbers it reports.</summary>
+    /// <param name="codMajor">The Class of Device major class a classic endpoint reports.</param>
+    /// <param name="codMinor">The Class of Device minor class, the six bits after the major class.</param>
+    /// <param name="appearance">The GAP Appearance a Low Energy endpoint reports.</param>
+    /// <returns>The kind, or unknown when neither value names one.</returns>
+    /// <remarks>
+    ///     The numbers are the Bluetooth SIG Assigned Numbers (section 2.8 Class of Device, section 2.6
+    ///     Appearance Values). Measured on 2026-11-08: a WH-1000XM6 classic endpoint reports major 4 minor 1
+    ///     and its Low Energy endpoint appearance 0x0943; a Steam Controller reports appearance 0x03C4.
+    /// </remarks>
+    internal static BluetoothDeviceKind ClassifyBluetooth(ushort? codMajor, ushort? codMinor, ushort? appearance)
+    {
+        if (codMajor is { } major && ClassifyCod(major, codMinor ?? 0) is var classic
+                                  && classic != BluetoothDeviceKind.Unknown)
+        {
+            return classic;
+        }
+
+        return appearance is { } value ? ClassifyAppearance(value) : BluetoothDeviceKind.Unknown;
+    }
+
+    private static BluetoothDeviceKind ClassifyCod(ushort major, ushort minor)
+    {
+        return major switch
+        {
+            1 => BluetoothDeviceKind.Computer,
+            2 => BluetoothDeviceKind.Phone,
+            // Audio/Video: wearable headset and hands-free, headphones, loudspeaker, then the rest.
+            4 => minor switch
+            {
+                1 or 2 => BluetoothDeviceKind.Headset,
+                6 => BluetoothDeviceKind.Headphones,
+                5 => BluetoothDeviceKind.Speakers,
+                _ => BluetoothDeviceKind.OtherAudio
+            },
+            // Peripheral: the low four bits name a gaming device, the upper two keyboard and pointing.
+            5 => (minor & 0xF) switch
+            {
+                1 => BluetoothDeviceKind.Joystick,
+                2 => BluetoothDeviceKind.Gamepad,
+                _ => (minor >> 4) switch
+                {
+                    1 or 3 => BluetoothDeviceKind.Keyboard,
+                    2 => BluetoothDeviceKind.Mouse,
+                    _ => BluetoothDeviceKind.Unknown
+                }
+            },
+            _ => BluetoothDeviceKind.Unknown
+        };
+    }
+
+    private static BluetoothDeviceKind ClassifyAppearance(ushort appearance)
+    {
+        var subcategory = appearance & 0x3F;
+        return (appearance >> 6) switch
+        {
+            1 => BluetoothDeviceKind.Phone,
+            2 => BluetoothDeviceKind.Computer,
+            // Human Interface Device.
+            15 => subcategory switch
+            {
+                1 => BluetoothDeviceKind.Keyboard,
+                2 or 9 => BluetoothDeviceKind.Mouse,
+                3 => BluetoothDeviceKind.Joystick,
+                4 => BluetoothDeviceKind.Gamepad,
+                _ => BluetoothDeviceKind.Unknown
+            },
+            // Audio Sink: speakers and soundbars.
+            33 => BluetoothDeviceKind.Speakers,
+            // Audio Source, such as a microphone.
+            34 => BluetoothDeviceKind.OtherAudio,
+            // Wearable Audio Device: earbud, headset, headphones, neck band.
+            37 => subcategory == 2 ? BluetoothDeviceKind.Headset : BluetoothDeviceKind.Headphones,
+            // Hearing aid.
+            41 => BluetoothDeviceKind.OtherAudio,
+            _ => BluetoothDeviceKind.Unknown
+        };
     }
 
     private static PairingKind MapPairingKind(DevicePairingKinds kind)

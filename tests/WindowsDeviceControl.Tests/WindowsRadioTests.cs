@@ -10,6 +10,54 @@ namespace WindowsDeviceControl.Tests;
 
 public sealed class WindowsRadioTests
 {
+    [Theory]
+    // Classic Class of Device: computer, phone, wearable headset, hands-free, headphones, loudspeaker,
+    // car audio, joystick, gamepad, keyboard, mouse, combo keyboard and pointing, health.
+    [InlineData((ushort)1, (ushort)3, null, WindowsRadio.BluetoothDeviceKind.Computer)]
+    [InlineData((ushort)2, (ushort)3, null, WindowsRadio.BluetoothDeviceKind.Phone)]
+    [InlineData((ushort)4, (ushort)1, null, WindowsRadio.BluetoothDeviceKind.Headset)]
+    [InlineData((ushort)4, (ushort)2, null, WindowsRadio.BluetoothDeviceKind.Headset)]
+    [InlineData((ushort)4, (ushort)6, null, WindowsRadio.BluetoothDeviceKind.Headphones)]
+    [InlineData((ushort)4, (ushort)5, null, WindowsRadio.BluetoothDeviceKind.Speakers)]
+    [InlineData((ushort)4, (ushort)8, null, WindowsRadio.BluetoothDeviceKind.OtherAudio)]
+    [InlineData((ushort)5, (ushort)1, null, WindowsRadio.BluetoothDeviceKind.Joystick)]
+    [InlineData((ushort)5, (ushort)2, null, WindowsRadio.BluetoothDeviceKind.Gamepad)]
+    [InlineData((ushort)5, (ushort)16, null, WindowsRadio.BluetoothDeviceKind.Keyboard)]
+    [InlineData((ushort)5, (ushort)32, null, WindowsRadio.BluetoothDeviceKind.Mouse)]
+    [InlineData((ushort)5, (ushort)48, null, WindowsRadio.BluetoothDeviceKind.Keyboard)]
+    [InlineData((ushort)9, (ushort)1, null, WindowsRadio.BluetoothDeviceKind.Unknown)]
+    // Low Energy Appearance: the measured WH-1000XM6 (0x0943) and Steam Controller (0x03C4), then a
+    // wearable headset, keyboard, mouse, touchpad, speaker, hearing aid, watch and the generic value.
+    [InlineData(null, null, (ushort)0x0943, WindowsRadio.BluetoothDeviceKind.Headphones)]
+    [InlineData(null, null, (ushort)0x03C4, WindowsRadio.BluetoothDeviceKind.Gamepad)]
+    [InlineData(null, null, (ushort)0x0942, WindowsRadio.BluetoothDeviceKind.Headset)]
+    [InlineData(null, null, (ushort)0x03C1, WindowsRadio.BluetoothDeviceKind.Keyboard)]
+    [InlineData(null, null, (ushort)0x03C2, WindowsRadio.BluetoothDeviceKind.Mouse)]
+    [InlineData(null, null, (ushort)0x03C9, WindowsRadio.BluetoothDeviceKind.Mouse)]
+    [InlineData(null, null, (ushort)0x0841, WindowsRadio.BluetoothDeviceKind.Speakers)]
+    [InlineData(null, null, (ushort)0x0A41, WindowsRadio.BluetoothDeviceKind.OtherAudio)]
+    [InlineData(null, null, (ushort)0x00C1, WindowsRadio.BluetoothDeviceKind.Unknown)]
+    [InlineData(null, null, (ushort)0, WindowsRadio.BluetoothDeviceKind.Unknown)]
+    [InlineData(null, null, null, WindowsRadio.BluetoothDeviceKind.Unknown)]
+    // A classic class without a kind falls through to the appearance.
+    [InlineData((ushort)9, (ushort)1, (ushort)0x03C4, WindowsRadio.BluetoothDeviceKind.Gamepad)]
+    public void BluetoothDevicesAreClassifiedByTheirAssignedNumbers(ushort? major, ushort? minor,
+        ushort? appearance, WindowsRadio.BluetoothDeviceKind expected)
+    {
+        Assert.Equal(expected, WindowsRadio.ClassifyBluetooth(major, minor, appearance));
+    }
+
+    [Fact]
+    public void AMergedDeviceKeepsThePreferredEndpointsKindOrTheFirstReportedOne()
+    {
+        var classic = new WindowsRadio.BluetoothDevice("classic", "WH-1000XM6", true, false, true, "c",
+            WindowsRadio.BluetoothDeviceKind.Headset);
+        var le = classic with { Id = "le", Kind = WindowsRadio.BluetoothDeviceKind.Headphones };
+        Assert.Equal(WindowsRadio.BluetoothDeviceKind.Headset, WindowsRadio.MergeKind([le, classic], classic));
+        var silent = classic with { Kind = WindowsRadio.BluetoothDeviceKind.Unknown };
+        Assert.Equal(WindowsRadio.BluetoothDeviceKind.Headphones, WindowsRadio.MergeKind([silent, le], silent));
+    }
+
     [Fact]
     public void AggregatePowerReportsDisabledBeforeOff()
     {

@@ -32,7 +32,9 @@ Members in this section belong to `WindowsRadio` unless another owner is named.
   `WifiSecurity`, `WifiWatchEvent`, `WifiNetwork`, `WifiStatus`, `WifiConnectResult`,
   `WifiForgetResult` and `WifiNetworkKey`.
 - Bluetooth: `BluetoothChangeKind`, `PairingKind`, `PairingOutcome`, `BluetoothDevice`,
-  `BluetoothChange`, `PairingRequest`, `PairingResult` and `BluetoothUnpairResult`.
+  `BluetoothDeviceKind`, `BluetoothChange`, `PairingRequest`, `PairingResult` and
+  `BluetoothUnpairResult`. `BluetoothDevice.Kind` comes from the Class of Device a classic endpoint
+  reports or the Appearance a Low Energy endpoint reports (Bluetooth SIG Assigned Numbers).
 
 Important distinctions: `WifiConnectResult.ReasonCode` is a WLAN connection reason;
 `WifiForgetResult.Status` is the deletion's native status. `RadioAdapterResult.Access` can be null

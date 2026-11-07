@@ -496,13 +496,56 @@ public static partial class WindowsRadio
     ///     lower-case hyphenated GUID form, or empty when Windows reports no container or the empty
     ///     GUID, so endpoints without a real container are never grouped together.
     /// </param>
+    /// <param name="Kind">
+    ///     What the device is, from the Bluetooth Class of Device a classic endpoint reports or the
+    ///     Appearance a Low Energy endpoint reports; <see cref="BluetoothDeviceKind.Unknown" /> when it
+    ///     reports neither or a value without a kind here.
+    /// </param>
     public readonly record struct BluetoothDevice(
         string Id,
         string Name,
         bool Paired,
         bool CanPair,
         bool Connected,
-        string Container);
+        string Container,
+        BluetoothDeviceKind Kind = BluetoothDeviceKind.Unknown);
+
+    /// <summary>What a Bluetooth device is, by the Bluetooth assigned numbers it reports.</summary>
+    public enum BluetoothDeviceKind
+    {
+        /// <summary>No class or appearance, or one without a kind here.</summary>
+        Unknown,
+
+        /// <summary>A phone.</summary>
+        Phone,
+
+        /// <summary>A computer.</summary>
+        Computer,
+
+        /// <summary>A headset with a microphone, including a hands-free device.</summary>
+        Headset,
+
+        /// <summary>Headphones or earbuds.</summary>
+        Headphones,
+
+        /// <summary>A loudspeaker or soundbar.</summary>
+        Speakers,
+
+        /// <summary>Another audio device, such as a microphone, car audio or a hearing aid.</summary>
+        OtherAudio,
+
+        /// <summary>A mouse, touchpad or other pointing device.</summary>
+        Mouse,
+
+        /// <summary>A joystick.</summary>
+        Joystick,
+
+        /// <summary>A gamepad.</summary>
+        Gamepad,
+
+        /// <summary>A keyboard.</summary>
+        Keyboard
+    }
 
     /// <summary>A Bluetooth discovery change.</summary>
     /// <param name="Kind">What happened to the device.</param>
