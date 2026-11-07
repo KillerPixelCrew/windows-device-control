@@ -140,15 +140,23 @@ public static unsafe partial class Authenticode
     /// <param name="path">The file to verify; the signer certificate is read from this path.</param>
     /// <param name="handle">
     ///     An open handle to the same file that denies writers, so trust describes the bytes the caller
-    ///     holds; null to verify by path alone. It is borrowed, not closed.
+    ///     holds; null to verify by path alone. It is borrowed, not closed. It must be synchronous:
+    ///     WinVerifyTrust reads through it without an OVERLAPPED structure, and an overlapped handle yields a
+    ///     wrong digest (<c>TRUST_E_BAD_DIGEST</c>) for a correctly signed file.
     /// </param>
     /// <param name="revocation">The revocation checks to perform.</param>
     /// <param name="expectedSigner">The signer the file must carry, or null to accept any trusted signer.</param>
     /// <returns>The outcome, the WinVerifyTrust status and the leaf certificate; dispose it.</returns>
+    /// <exception cref="ArgumentException">The handle was opened for overlapped I/O.</exception>
     public static AuthenticodeResult Verify(string path, SafeFileHandle? handle, AuthenticodeRevocation revocation,
         AuthenticodeSigner? expectedSigner = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (handle is { IsAsync: true })
+        {
+            throw new ArgumentException("Authenticode verification needs a synchronous file handle.", nameof(handle));
+        }
+
         var status = VerifyTrust(path, handle, revocation);
         if (status != 0)
         {

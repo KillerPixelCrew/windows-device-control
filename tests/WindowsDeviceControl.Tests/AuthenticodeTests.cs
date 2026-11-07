@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Xunit;
@@ -47,6 +48,31 @@ public sealed class AuthenticodeTests
         Assert.True(expected.Matches(signer));
         Assert.False(unrelated.Matches(signer));
         Assert.False(AuthenticodeSigner.WithName("NVIDIA Corporation").Matches(signer));
+    }
+
+    [Fact]
+    public void ASignedFileVerifiesThroughAHeldHandleAtItsEnd()
+    {
+        // The .NET runtime libraries carry an embedded Microsoft Authenticode signature.
+        var path = typeof(object).Assembly.Location;
+        using var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        held.Seek(0, SeekOrigin.End);
+
+        using var result = Authenticode.Verify(path, held.SafeFileHandle, AuthenticodeRevocation.None);
+
+        Assert.Equal(AuthenticodeOutcome.Trusted, result.Outcome);
+        Assert.Equal(0, result.TrustStatus);
+    }
+
+    [Fact]
+    public void AnOverlappedHandleIsRefusedBeforeItCanYieldABadDigest()
+    {
+        var path = typeof(object).Assembly.Location;
+        using var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
+            FileOptions.Asynchronous);
+
+        Assert.Throws<ArgumentException>(() =>
+            Authenticode.Verify(path, held.SafeFileHandle, AuthenticodeRevocation.None));
     }
 
     [Fact]
