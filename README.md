@@ -127,7 +127,8 @@ DisplayScaleResult scaled = DisplayScaling.Set(television, 150); // Written, Alr
 | `WindowsPower`                  | Schemes, AC and DC values, effective mode overlays, status, suspend and shutdown, notifications, hybrid core placement                                                                                                    |
 | `PowerNotificationRegistration` | A power-setting or suspend and resume notification registration; disposing it unregisters                                                                                                                                 |
 | `EffectivePowerModeRegistration` | An effective power mode callback registration; disposing it stops the callbacks |
-| `DesktopWindows` | The PID-checked close request to another process's window |
+| `DesktopWindows` | The PID-checked close request to another process's window, and a window's application user model id |
+| `InstalledApplications` | The Applications folder (`shell:AppsFolder`): Start Menu and packaged apps, their icons, and whether a package family is installed |
 | `Authenticode` | WinVerifyTrust with an explicit revocation policy and expected signer |
 | `WindowsPowerRequest`           | A display or system wake request and its reason string                                                                                                                                                                    |
 | `PowerRequestList`              | The system-wide power request list that `powercfg /requests` shows, decoded with bounds checks                                                                                                                            |
