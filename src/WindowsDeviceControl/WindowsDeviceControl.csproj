@@ -27,7 +27,7 @@
          omits the rest, which is exactly the state that produces a half-filled IntelliSense
          tooltip. Both are errors here so the surface cannot regress. -->
     <WarningsAsErrors>$(WarningsAsErrors);CS1573;CS1591</WarningsAsErrors>
-    <NoWarn/>
+    <NoWarn />
     <!-- Embeds generated and untracked source files in the PDB so source-link debugging works. -->
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
@@ -51,6 +51,10 @@
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false"/>
     <InternalsVisibleTo Include="WindowsDeviceControl.Tests"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0"/>
   </ItemGroup>
 
 </Project>

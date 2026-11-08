@@ -1,5 +1,18 @@
 # API and source reference
 
+`ProcessSnapshot.Read` returns process and parent IDs without opening every process.
+`ProcessSnapshot.Inspect` reads an exact image path and creation time in a requested session.
+`ProcessSnapshot.Retain` returns an owned `ProcessImageLease`, which retains the process object even
+after exit to prevent its ID being recycled while a caller observes descendants. Dispose every lease;
+disposal never stops the process. Parent IDs alone and image filenames do not establish ownership.
+
+`ProcessStartWatch` owns a uniquely named ETW session for kernel process starts and executable image
+loads. It delivers full image paths and kernel process/parent creation sequences, without command
+lines, including starts too brief for live inspection. `Flush` requests buffered delivery; callbacks
+run on its owned reader task. Windows tracing permission and creation-sequence event support are
+required. Event loss suppresses subsequent callbacks. `DisposeAsync` stops only its own trace and
+joins the reader. Microsoft TraceEvent is a runtime dependency.
+
 All library code is under `src/WindowsDeviceControl` in the `WindowsDeviceControl` namespace. This
 index covers every implementation file and callable public operation. Follow a source link for the
 complete XML documentation on parameters, result properties, enum values, exceptions and ownership.
