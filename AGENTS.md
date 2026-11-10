@@ -301,3 +301,8 @@ lists as errors. Do not suppress CS1591 or CS1573 in the library to make a chang
 
 Do not commit `bin/`, `obj/`, or generated package output. Keep functional changes focused and avoid
 unrelated formatting.
+
+## Contributor skill
+
+Use `.agents/skills/windows-device-control/SKILL.md` for implementation and review here, including code
+conventions, dispatch outcomes and lifecycle checks. Read nearer family/domain guidance as well.
