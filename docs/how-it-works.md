@@ -228,9 +228,9 @@ values.
 caller-owned window receiving `WM_POWERBROADCAST`; they do not supply a managed callback or message
 loop. Dispose each registration before discarding its window. The effective power mode registration
 is the exception: it keeps a process-wide table of managed callbacks keyed by registration id, so a
-late native callback after disposal finds nothing. Suspend runs `SetSuspendState` on a
-worker and cancellation affects admission only. Session actions start the absolute system
-`shutdown.exe` path; cancelling its wait does not reverse a dispatched operation.
+late native callback after disposal finds nothing. Suspend runs `SetSuspendState` on a worker and
+cancellation affects admission only. Session actions start the absolute system `shutdown.exe` path;
+cancelling its wait does not reverse a dispatched operation.
 
 `WindowsPowerRequest` starts inert. `Acquire` creates a native handle and reason buffer and sets one
 request; repeat success is inert. `Release` clears once, and failure leaves `IsHeld` true. Disposal
@@ -257,19 +257,25 @@ attempts policy, still-installed captured schemes, active-scheme refresh and per
 reporting failures while continuing other steps. Retain the snapshot while any step fails. A
 successful stored value does not guarantee every Windows edition honors that policy.
 
-`WindowsStorage.DescribeVolumes` is read-only. `DriveInfo` supplies local drive-letter metadata and a
-zero-access volume handle supplies `IOCTL_STORAGE_GET_DEVICE_NUMBER`. Unknown disk numbers remain -1,
-not a shared device identity. Not-ready rows have zero sizes; inaccessible metadata can omit a row.
+`WindowsStorage.DescribeVolumes` is read-only. `DriveInfo` supplies local drive-letter metadata and
+a zero-access volume handle supplies `IOCTL_STORAGE_GET_DEVICE_NUMBER`. Unknown disk numbers remain
+-1, not a shared device identity. Not-ready rows have zero sizes; inaccessible metadata can omit a
+row.
 
-`DiskOfVolume` opens a zero-access handle on a volume or disk path and returns its disk only when the
-device is a disk; `VolumesOnDisk` filters the volume interface list through it.
+`DiskOfVolume` opens a zero-access handle on a volume or disk path and returns its disk only when
+the device is a disk; `VolumesOnDisk` filters the volume interface list through it. Volume GUID
+roots returned by `TryGetVolumeGuidPath` include a trailing backslash. `OpenVolumeForQueryPath`
+removes that separator only for an exact volume GUID root before `CreateFile`, so the handle
+addresses the volume rather than its root directory. The root retained by callers for filesystem
+operations still includes its separator.
 
 The storage device primitives in `WindowsStorage.Devices.cs` work over caller-owned handles and
 return the Win32 error beside a refusal. Interface lists retry the documented size/list race three
-times before reporting empty, and the partition layout grows its buffer until it fits. Record decoders read only complete fixed layouts. A PnP eject targets the first
-removable ancestor within four levels; the media sequence is lock, dismount, release the media lock
-and eject. Volume labels and volume GUID paths are read or written only when the caller asks; the
-library never formats or mounts, and it never decides which disk is safe to eject.
+times before reporting empty, and the partition layout grows its buffer until it fits. Record
+decoders read only complete fixed layouts. A PnP eject targets the first removable ancestor within
+four levels; the media sequence is lock, dismount, release the media lock and eject. Volume labels
+and volume GUID paths are read or written only when the caller asks; the library never formats or
+mounts, and it never decides which disk is safe to eject.
 
 `DeviceNodes` reads one device setup class through Configuration Manager. It returns exact
 registered instance IDs and problem codes, including disabled nodes. Buffer-size races receive

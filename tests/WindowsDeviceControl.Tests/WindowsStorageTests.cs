@@ -1,11 +1,31 @@
 using System;
 using System.Collections.Generic;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 
 namespace WindowsDeviceControl.Tests;
 
 public sealed class WindowsStorageTests
 {
+    [Theory]
+    [InlineData(@"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}\", @"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}")]
+    [InlineData(@"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}", @"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}")]
+    [InlineData(@"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}\folder\", @"\\?\Volume{1794279e-aec9-43a0-bbb7-32875c8ab1ab}\folder\")]
+    [InlineData(@"\\?\storage#volume#interface", @"\\?\storage#volume#interface")]
+    [InlineData(@"\\.\PhysicalDrive3", @"\\.\PhysicalDrive3")]
+    public void VolumeQueryOpensTheVolumeDeviceRatherThanItsRootDirectory(string supplied, string expected)
+    {
+        string? opened = null;
+        using var handle = WindowsStorage.OpenVolumeForQueryPath(supplied, path =>
+        {
+            opened = path;
+            return new SafeFileHandle(new IntPtr(-1), ownsHandle: false);
+        });
+
+        Assert.Equal(expected, opened);
+        Assert.True(handle.IsInvalid);
+    }
+
     [Fact]
     public void VolumesOnDiskKeepOnlyThatDiskInEnumerationOrder()
     {

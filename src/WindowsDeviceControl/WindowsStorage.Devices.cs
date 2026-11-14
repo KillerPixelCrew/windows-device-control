@@ -143,12 +143,29 @@ public static unsafe partial class WindowsStorage
             0, 0);
     }
 
-    /// <summary>Opens a device-interface path for attribute queries only.</summary>
-    /// <param name="path">A path from <see cref="ListDiskInterfaces" /> or <see cref="ListVolumeInterfaces" />.</param>
+    /// <summary>Opens a device-interface path or volume GUID root for attribute queries only.</summary>
+    /// <param name="path">
+    ///     A path from <see cref="ListDiskInterfaces" /> or <see cref="ListVolumeInterfaces" />,
+    ///     or a volume GUID root from <see cref="TryGetVolumeGuidPath" />.
+    /// </param>
     /// <returns>Caller-owned handle, possibly invalid on failure; inspect IsInvalid and dispose after use.</returns>
+    /// <remarks>A volume GUID root loses its trailing separator for CreateFile, which must open the volume itself.</remarks>
+    /// <exception cref="ArgumentException">The path is null or empty.</exception>
     public static SafeFileHandle OpenVolumeForQueryPath(string path)
     {
-        return Kernel32.CreateFile(path, 0, FileShareReadWrite, 0, Kernel32.OpenExisting, 0, 0);
+        return OpenVolumeForQueryPath(path, static devicePath =>
+            Kernel32.CreateFile(devicePath, 0, FileShareReadWrite, 0, Kernel32.OpenExisting, 0, 0));
+    }
+
+    internal static SafeFileHandle OpenVolumeForQueryPath(string path, Func<string, SafeFileHandle> open)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        // GetVolumeNameForVolumeMountPoint returns a trailing slash. With it, CreateFile addresses
+        // the root directory rather than the volume, so the subsequent disk-number IOCTL fails.
+        var volumeRoot = path.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase)
+                         && path.EndsWith(@"}\", StringComparison.Ordinal)
+                         && Guid.TryParse(path.AsSpan(10, path.Length - 11), out _);
+        return open(volumeRoot ? path[..^1] : path);
     }
 
     /// <summary>Opens a physical disk for attribute queries only.</summary>
@@ -265,7 +282,7 @@ public static unsafe partial class WindowsStorage
     /// <summary>Lists the device-interface paths of every volume the volume manager exposes, mounted or not.</summary>
     /// <returns>Present volume-interface paths, or an empty list when configuration-manager enumeration fails.</returns>
     /// <remarks>
-    ///     Each path opens with <see cref="OpenVolumeForQueryPath" /> for a device-number query, which maps
+    ///     Each path opens with <see cref="OpenVolumeForQueryPath(string)" /> for a device-number query, which maps
     ///     it back to its disk. The list call is retried as <see cref="ListDiskInterfaces" /> describes.
     /// </remarks>
     public static string[] ListVolumeInterfaces()
